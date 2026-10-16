@@ -9,9 +9,13 @@
 //! - 曲线空白处按下 = 在该处**插入**控制点并开始拖动
 //! - 右键控制点 = 删除
 //! - x 轴保持升序（拖拽时被相邻控制点夹住），与 libmypaint 的曲线约束一致
+//!
+//! 设置列表按 **MyPaint 的 11 个命名分组**呈现（成员表照抄
+//! `mypaint/gui/brusheditor.py` 的 `groups` 定义），`color_h/s/v` 与 MyPaint
+//! 一样不显示——它们由颜色 UI 管理，不该出现在笔刷编辑器里。
 
 use eframe::egui;
-use pigment_engine::hokusai::{Brush, BrushInput, BrushSetting, InputMapping};
+use pigment_engine::hokusai::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 
 use crate::thumb;
 
@@ -19,6 +23,141 @@ use crate::thumb;
 const CURVE_H: f32 = 170.0;
 /// 控制点命中半径（像素）。
 const HIT_R: f32 = 11.0;
+
+/// MyPaint 笔刷编辑器的分组结构。
+///
+/// 逐项照抄 `mypaint/gui/brusheditor.py:331-497` 的 `groups` 字面量（含顺序）。
+/// 唯一缺项是 `smudge_bucket` —— hokusai 的 `BrushSetting` 枚举里没有它
+/// （见《MyPaint源码逐项比对报告》第 1.1 节），所以这里无法列出。
+const MP_GROUPS: &[(&str, &[BrushSetting])] = &[
+    (
+        "Basic",
+        &[
+            BrushSetting::Radius,
+            BrushSetting::RadiusByRandom,
+            BrushSetting::Hardness,
+            BrushSetting::SnapToPixel,
+            BrushSetting::AntiAliasing,
+            BrushSetting::Eraser,
+            BrushSetting::OffsetByRandom,
+            BrushSetting::EllipticalDabAngle,
+            BrushSetting::EllipticalDabRatio,
+            BrushSetting::DirectionFilter,
+            BrushSetting::PressureGainLog,
+        ],
+    ),
+    (
+        "Opacity",
+        &[
+            BrushSetting::Opaque,
+            BrushSetting::OpaqueMultiply,
+            BrushSetting::OpaqueLinearize,
+            BrushSetting::LockAlpha,
+        ],
+    ),
+    (
+        "Dabs",
+        &[
+            BrushSetting::DabsPerBasicRadius,
+            BrushSetting::DabsPerActualRadius,
+            BrushSetting::DabsPerSecond,
+        ],
+    ),
+    (
+        "Smudge",
+        &[
+            BrushSetting::Smudge,
+            BrushSetting::SmudgeLength,
+            BrushSetting::SmudgeLengthLog,
+            BrushSetting::SmudgeRadiusLog,
+            BrushSetting::SmudgeTransparency,
+            // smudge_bucket 缺失（hokusai 未实现）
+        ],
+    ),
+    (
+        "Speed",
+        &[
+            BrushSetting::Speed1Slowness,
+            BrushSetting::Speed2Slowness,
+            BrushSetting::Speed1Gamma,
+            BrushSetting::Speed2Gamma,
+            BrushSetting::OffsetBySpeed,
+            BrushSetting::OffsetBySpeedSlowness,
+        ],
+    ),
+    (
+        "Directional Offsets",
+        &[
+            BrushSetting::OffsetMultiplier,
+            BrushSetting::OffsetAngleAdj,
+            BrushSetting::OffsetX,
+            BrushSetting::OffsetY,
+            BrushSetting::OffsetAngle,
+            BrushSetting::OffsetAngle2,
+            BrushSetting::OffsetAngleAsc,
+            BrushSetting::OffsetAngle2Asc,
+            BrushSetting::OffsetAngleView,
+            BrushSetting::OffsetAngle2View,
+        ],
+    ),
+    (
+        "Tracking",
+        &[
+            BrushSetting::SlowTracking,
+            BrushSetting::SlowTrackingPerDab,
+            BrushSetting::TrackingNoise,
+        ],
+    ),
+    (
+        "Stroke",
+        &[
+            BrushSetting::StrokeThreshold,
+            BrushSetting::StrokeDurationLogarithmic,
+            BrushSetting::StrokeHoldtime,
+        ],
+    ),
+    (
+        "Color",
+        &[
+            BrushSetting::Paint,
+            BrushSetting::ChangeColorH,
+            BrushSetting::ChangeColorL,
+            BrushSetting::ChangeColorHslS,
+            BrushSetting::ChangeColorV,
+            BrushSetting::ChangeColorHsvS,
+            BrushSetting::RestoreColor,
+            BrushSetting::Colorize,
+            BrushSetting::Posterize,
+            BrushSetting::PosterizeNum,
+        ],
+    ),
+    (
+        "GridMap",
+        &[
+            BrushSetting::GridmapScale,
+            BrushSetting::GridmapScaleX,
+            BrushSetting::GridmapScaleY,
+        ],
+    ),
+    (
+        "Custom",
+        &[BrushSetting::CustomInput, BrushSetting::CustomInputSlowness],
+    ),
+];
+
+/// MyPaint 刻意从编辑器隐藏的设置（`brusheditor.py` 的 `hidden_settings`）。
+///
+/// 这三个由颜色 UI 写入，不是用户直接调的笔刷动态。我们的颜色面板负责它们。
+const MP_HIDDEN: &[BrushSetting] = &[
+    BrushSetting::ColorH,
+    BrushSetting::ColorS,
+    BrushSetting::ColorV,
+];
+
+/// 该设置是否仍处于「零值」态（用于「仅显示非默认设置」过滤）。
+fn is_default(sv: &SettingValue) -> bool {
+    sv.base_value == 0.0 && sv.inputs.is_empty() && sv.unknown_inputs.is_empty()
+}
 
 pub struct BrushEditor {
     pub setting: BrushSetting,
@@ -69,38 +208,53 @@ impl BrushEditor {
         self.preview_section(ui, preview, color);
         ui.separator();
 
-        // ---- 设置列表 ----
+        // ---- 设置列表（按 MyPaint 的命名分组组织）----
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("设置").strong());
             ui.label(
-                egui::RichText::new(format!("{} 项", BrushSetting::ALL.len()))
+                egui::RichText::new(format!("{} 组", MP_GROUPS.len()))
                     .weak()
                     .small(),
             );
         });
-        ui.checkbox(&mut self.only_nondefault, "仅显示非默认设置");
+        ui.checkbox(&mut self.only_nondefault, "仅显示非默认设置")
+            .on_hover_text(
+                "分组与成员表照抄 MyPaint 的 gui/brusheditor.py；\n\
+                 color_h / color_s / color_v 与 MyPaint 一样不在此列出（由颜色面板管理）",
+            );
+
+        // 未被任何分组的设置 → MyPaint 会归入 Experimental
+        let ungrouped: Vec<BrushSetting> = BrushSetting::ALL
+            .iter()
+            .copied()
+            .filter(|s| {
+                !MP_HIDDEN.contains(s) && !MP_GROUPS.iter().any(|(_, m)| m.contains(s))
+            })
+            .collect();
+
         let mut pick: Option<BrushSetting> = None;
         egui::ScrollArea::vertical()
             .id_salt("brush-settings")
-            .max_height(150.0)
+            .max_height(260.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for s in BrushSetting::ALL {
-                    let sv = edit.get(*s);
-                    let default = sv.base_value == 0.0
-                        && sv.inputs.is_empty()
-                        && sv.unknown_inputs.is_empty();
-                    if self.only_nondefault && default {
-                        continue;
+                for (title, members) in MP_GROUPS {
+                    if let Some(p) =
+                        setting_group_ui(ui, edit, self.setting, self.only_nondefault, title, members)
+                    {
+                        pick = Some(p);
                     }
-                    let text = format!(
-                        "{:<26}{:>7.2}   ×{}",
-                        s.cname(),
-                        sv.base_value,
-                        sv.inputs.len()
-                    );
-                    if ui.selectable_label(self.setting == *s, text).clicked() {
-                        pick = Some(*s);
+                }
+                if !ungrouped.is_empty() {
+                    if let Some(p) = setting_group_ui(
+                        ui,
+                        edit,
+                        self.setting,
+                        self.only_nondefault,
+                        "Experimental",
+                        &ungrouped,
+                    ) {
+                        pick = Some(p);
                     }
                 }
             });
@@ -435,6 +589,43 @@ impl BrushEditor {
 
         changed
     }
+}
+
+/// 渲染 MyPaint 分组列表中的一个分组：小标题 + 缩进的成员行。
+///
+/// 「仅显示非默认设置」打开时，全为默认值的组会整体隐藏，避免列表变成长串空组。
+fn setting_group_ui(
+    ui: &mut egui::Ui,
+    edit: &Brush,
+    current: BrushSetting,
+    only_nondefault: bool,
+    title: &str,
+    members: &[BrushSetting],
+) -> Option<BrushSetting> {
+    let shown: Vec<BrushSetting> = members
+        .iter()
+        .copied()
+        .filter(|s| !only_nondefault || !is_default(edit.get(*s)))
+        .collect();
+    if shown.is_empty() {
+        return None;
+    }
+    ui.add_space(2.0);
+    ui.label(egui::RichText::new(title).strong().small());
+    let mut picked = None;
+    for s in shown {
+        let sv = edit.get(s);
+        let text = format!(
+            "{:<24}{:>7.2}  ×{}",
+            s.cname(),
+            sv.base_value,
+            sv.inputs.len()
+        );
+        if ui.selectable_label(current == s, text).clicked() {
+            picked = Some(s);
+        }
+    }
+    picked
 }
 
 /// 离指针最近且在命中半径内的控制点。

@@ -498,7 +498,7 @@ impl PigmentApp {
                 uploads.push(TileUpload {
                     coord,
                     revision: t.revision(),
-                    pixels: convert::tile_to_rgba8_on_white(t.pixels()),
+                    pixels: convert::tile_to_rgba8(t.pixels(), convert::CANVAS_BG),
                 });
             }
         }
@@ -582,7 +582,8 @@ impl eframe::App for PigmentApp {
         }
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::NONE.fill(egui::Color32::WHITE))
+            // 画布底色 = MyPaint 默认背景（米白纸色），不是纯白
+            .frame(egui::Frame::NONE.fill(convert::canvas_bg_color()))
             .show(ui, |ui| self.canvas(ui));
     }
 }

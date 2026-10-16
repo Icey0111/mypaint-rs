@@ -19,6 +19,16 @@ const ROW_H: f32 = 21.0;
 /// 缩略图显示宽度（像素）。
 const THUMB_W: f32 = 40.0;
 
+/// MyPaint 的启动默认笔刷 —— 对齐 `gui/brushmanager.py` 的 `_DEFAULT_BRUSH`。
+pub const DEFAULT_BRUSH: &str = "Dieterle/Fan#1";
+/// MyPaint 的默认橡皮 —— 对齐 `_DEFAULT_ERASER`。
+///
+/// 官方包实际目录名是全小写 `deevad/`，order.conf 里的分组展示名才是 `Deevad`。
+#[allow(dead_code)]
+pub const DEFAULT_ERASER: &str = "deevad/kneaded_eraser_large";
+/// `DEFAULT_BRUSH` 缺失时的兜底（官方包被裁剪等情况）。
+const FALLBACK_BRUSH: &str = "classic/dry_brush";
+
 pub struct BrushPanel {
     pub library: BrushLibrary,
     /// 当前选中项在 `library.entries` 中的下标。
@@ -38,7 +48,11 @@ pub struct BrushPanel {
 impl BrushPanel {
     pub fn new() -> Self {
         let library = BrushLibrary::load();
-        let selected = library.find("classic/dry_brush").unwrap_or(0);
+        // 对齐 MyPaint：默认选中 Dieterle/Fan#1（`brushmanager.py:_DEFAULT_BRUSH`）
+        let selected = library
+            .find(DEFAULT_BRUSH)
+            .or_else(|| library.find(FALLBACK_BRUSH))
+            .unwrap_or(0);
         let mut p = Self {
             library,
             selected,

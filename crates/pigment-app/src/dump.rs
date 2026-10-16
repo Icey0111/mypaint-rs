@@ -28,7 +28,7 @@ pub fn dump_surface_png(surface: &PigmentSurface) -> Result<PathBuf, String> {
     let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
 
     for (coord, tile) in surface.tiles() {
-        let px = convert::tile_to_rgba8_on_white(tile.pixels());
+        let px = convert::tile_to_rgba8(tile.pixels(), convert::CANVAS_BG);
         let ox = (coord.0 - min_tx) * ts;
         let oy = (coord.1 - min_ty) * ts;
         for y in 0..ts {
