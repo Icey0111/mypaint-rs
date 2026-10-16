@@ -47,6 +47,7 @@ use hokusai::TiledSurface;
 
 pub mod color;
 pub mod combine;
+pub mod layer;
 pub mod png;
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
@@ -160,6 +161,22 @@ pub struct PigmentSurface {
     in_atomic: bool,
     /// 全局时钟：revision 与 last_touched 的共同来源。
     clock: u64,
+}
+
+/// 克隆：与快照一样按 tile 共享 `Arc`（写借出时 COW 自动分离）。
+impl Clone for PigmentSurface {
+    fn clone(&self) -> Self {
+        Self {
+            tiles: self
+                .tiles
+                .iter()
+                .map(|(&coord, t)| (coord, Tile { pixels: Arc::clone(&t.pixels), revision: t.revision, last_touched: t.last_touched }))
+                .collect(),
+            dirty: HashSet::new(),
+            in_atomic: false,
+            clock: self.clock,
+        }
+    }
 }
 
 impl PigmentSurface {
