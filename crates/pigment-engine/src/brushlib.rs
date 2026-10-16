@@ -81,6 +81,43 @@ pub const NUM_BRUSHKEYS: usize = 10;
 /// 会回退到**成员最多的分组**（并列时取名字靠前者）。
 pub const DEFAULT_STARTUP_GROUP: &str = "set#2";
 
+/// 用户收藏分组 —— `brushmanager.FAVORITES_BRUSH_GROUP`（`gui/brushmanager.py:56`）。
+pub const FAVORITES_BRUSH_GROUP: &str = "favorites";
+/// 孤儿笔刷的归宿（分组被删时）—— `DELETED_BRUSH_GROUP`（`:55`）。
+pub const DELETED_BRUSH_GROUP: &str = "deleted";
+/// 新建笔刷的归属 —— `NEW_BRUSH_GROUP`（`:57`）。
+pub const NEW_BRUSH_GROUP: &str = "new";
+/// 未列入 `order.conf` 的笔刷归宿 —— `FOUND_BRUSHES_GROUP`（`:54`）。
+pub const FOUND_BRUSHES_GROUP: &str = "lost&found";
+
+/// 分组名 → 展示名 —— 照搬 `brushmanager.translate_group_name()`
+/// （`gui/brushmanager.py:129`）。
+///
+/// 表里的 key 全是**目录名风格**（小写、`set#N`、`lost&found`）：它们对应那些
+/// 没有 `order.conf` 条目的分组（用户目录、以及 `_init_unordered_groups`
+/// 兜底出来的 `Lost & Found`）。
+///
+/// 有 `order.conf` 条目的分组，其展示名直接取 `Group:` 行 —— 本项目就是
+/// `BrushEntry::group_display` —— 再经这里兜底（官方包里 `Group: Deevad`
+/// 与目录名 `deevad` 只差大小写，两张表结果一致）。
+pub fn translate_group_name(name: &str) -> &str {
+    match name {
+        FOUND_BRUSHES_GROUP => "Lost & Found",
+        DELETED_BRUSH_GROUP => "Deleted",
+        FAVORITES_BRUSH_GROUP => "Favorites",
+        "ink" => "Ink",
+        "classic" => "Classic",
+        "set#1" => "Set#1",
+        "set#2" => "Set#2",
+        "set#3" => "Set#3",
+        "set#4" => "Set#4",
+        "set#5" => "Set#5",
+        "experimental" => "Experimental",
+        NEW_BRUSH_GROUP => "New",
+        other => other,
+    }
+}
+
 /// 笔刷库中的一条记录（元数据 + 来源，不含解析后的 `Brush`）。
 #[derive(Debug, Clone)]
 pub struct BrushEntry {
@@ -186,12 +223,24 @@ impl std::error::Error for BrushLoadError {
     }
 }
 
-/// 分组摘要（供 UI 过滤条使用）。
+/// 分组摘要（供 `BrushGroupTool` 面板与分组菜单使用）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupInfo {
+    /// 分组 id —— 本项目取资产目录名（MyPaint 取 `order.conf` 的 `Group:` 名，
+    /// 见 `docs`/比对报告里记录的差异）。
     pub id: String,
+    /// 分组展示名（官方 `order.conf` 里的 `Group:` 名，如 `Deevad`；
+    /// 用户目录分组则退化为目录名）。
     pub display: String,
     pub count: usize,
+}
+
+impl GroupInfo {
+    /// 面板标题 / 菜单项文字 —— `BrushGroupTool.tool_widget_title`
+    /// （`gui/brushselectionwindow.py:384`）与 `BrushGroupsMenu._update`（`:603`）。
+    pub fn title(&self) -> &str {
+        translate_group_name(&self.display)
+    }
 }
 
 /// 笔刷库：内嵌官方包 + 可选用户目录。
@@ -462,5 +511,42 @@ mod tests {
             seed[0].map(|e| lib.entries[e].key.as_str()),
             Some(group[9])
         );
+    }
+
+    #[test]
+    fn translate_group_name_matches_mypaint_table() {
+        // 逐项对照 `gui/brushmanager.py:131-144` 的字面表
+        for (raw, want) in [
+            ("lost&found", "Lost & Found"),
+            ("deleted", "Deleted"),
+            ("favorites", "Favorites"),
+            ("ink", "Ink"),
+            ("classic", "Classic"),
+            ("set#1", "Set#1"),
+            ("set#2", "Set#2"),
+            ("set#3", "Set#3"),
+            ("set#4", "Set#4"),
+            ("set#5", "Set#5"),
+            ("experimental", "Experimental"),
+            ("new", "New"),
+        ] {
+            assert_eq!(translate_group_name(raw), want, "{raw} 的展示名不对");
+        }
+        // 表外原样返回（官方包的 `Group: Dieterle` / `Group: Deevad` 都走这条路）
+        assert_eq!(translate_group_name("Dieterle"), "Dieterle");
+        assert_eq!(translate_group_name("Deevad"), "Deevad");
+    }
+
+    #[test]
+    fn group_titles_use_order_conf_names() {
+        // `GroupInfo.title()` = `translate_group_name(group_display)`：
+        // 官方包里 `Deevad` 目录名是小写，但 order.conf 的 `Group: Deevad`
+        // 才是 MyPaint 的面板标题（`brushselectionwindow.py:384`）。
+        let lib = BrushLibrary::embedded();
+        let groups = lib.groups();
+        let deevad = groups.iter().find(|g| g.id == "deevad").unwrap();
+        assert_eq!(deevad.title(), "Deevad");
+        let kaerhon = groups.iter().find(|g| g.id == "kaerhon_v1").unwrap();
+        assert_eq!(kaerhon.title(), "Kaerhon");
     }
 }

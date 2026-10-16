@@ -1,40 +1,58 @@
-//! 笔刷面板 —— 照搬 MyPaint 的笔刷列表。
+//! 笔刷面板 —— 照搬 MyPaint 的 `BrushGroupTool`：**一个面板 = 一个分组**。
 //!
 //! 源码对照：
 //!
-//! | 本文件 | MyPaint |
-//! |---|---|
-//! | [`ICON_SIZE`] / [`cell`] | `BrushList.ICON_SIZE = 48`（`brushselectionwindow.py:66`） |
-//! | [`total_border`] | `PixbufList.update`（`pixbuflist.py:243`） |
-//! | [`grid_geometry`] | 同上（`tiles_w = width // total_w`，`tiles_h = ceil(n / tiles_w)`） |
-//! | [`index_at`] | `PixbufList.index`（`pixbuflist.py:308`） |
-//! | [`stroke_selection`] | `PixbufList.draw_cb`（`pixbuflist.py:373`） |
-//! | [`thumb_for`] | `managedbrush_pixbuffunc` + `helpers.pixbuf_thumbnail`（`lib/helpers.py:454`） |
-//! | `tooltips` | `managedbrush_namefunc`（`brushselectionwindow.py:46`） |
+//! | 本文件 | MyPaint | 位置 |
+//! |---|---|---|
+//! | [`ICON_SIZE`] / [`cell`] | `BrushList.ICON_SIZE = 48` | `gui/brushselectionwindow.py:66` |
+//! | [`total_border`] / [`grid_geometry`] | `PixbufList.update` 的 `total_w`/`tiles_w` | `gui/pixbuflist.py:240` |
+//! | [`index_at`] | `PixbufList.index` | `gui/pixbuflist.py:308` |
+//! | [`stroke_selection`] | `PixbufList.draw_cb` | `gui/pixbuflist.py:373` |
+//! | [`thumb_for`] | `managedbrush_pixbuffunc` → `helpers.pixbuf_thumbnail` | `lib/helpers.py:454` |
+//! | `tooltips` | `managedbrush_namefunc` | `gui/brushselectionwindow.py:46` |
+//! | `BrushPanel::header` | `_Notebook._make_tab_label` + `BrushGroupTool.tool_widget_*` | `gui/toolstack.py:464`、`gui/brushselectionwindow.py:384` |
+//! | [`header_icon_for`] | `BrushGroupTool.tool_widget_get_icon_pixbuf` | `gui/brushselectionwindow.py:401` |
+//! | `BrushPanel::group_menu` | `BrushGroupsMenu` | `gui/brushselectionwindow.py:550` |
+//! | [`brush_count_desc`] | `tool_widget_description` 的 ngettext | `gui/brushselectionwindow.py:388` |
+//! | [`TOOL_WIDGET_MIN_WIDTH`] | `TOOL_WIDGET_MIN_WIDTH` | `gui/toolstack.py:40` |
 //!
-//! MyPaint 的形态是 **48px 流式图标网格**：`BrushList` 是 `PixbufList` 的子类，
-//! 每个分组一个 `BrushGroupTool` 停靠面板，面板里是这个网格。
+//! MyPaint 的形态：**每个分组一个可停靠的 `BrushGroupTool` 面板**。面板页签上是
+//! 组内**第一支**笔刷的预览图（`TAB_ICON_SIZE` = 16px，拉伸到正方），
+//! tooltip 是 `<b>{标题}</b>\n{N brush(es)}`；面板内容是**该分组的** `BrushList`
+//! （48px 流式网格）。分组之间靠工具条上的 `BrushGroupsMenu`
+//! （「New Group…／Import Brushes…／Get More Brushes…／各分组」）来开面板。
 //!
-//! 两处**技术栈适配**（视觉结果一致，只是实现手段不同）：
+//! 三处**技术栈适配**（结果等价，手段不同）：
 //!
-//! 1. **按需建纹理**：`PixbufList.update()` 会为列表里**每一项**立刻取 pixbuf
-//!    （196 张 128×128 常驻 RAM）。我们改成只给滚动视口内的项建 GPU 纹理，
+//! 1. **一分组一面板 → 单面板 + 分组菜单**：egui 的 `Panel` 是固定 id 的，
+//!    没有 `Gtk.Notebook` 那种「为每个分组动态开一页」的能力。这里用一个左侧
+//!    面板显示当前分组，菜单项语义等价于 MyPaint 的
+//!    `workspace.add_tool_widget(BrushGroupTool, (name,))`（`:618`）。
+//! 2. **按需建纹理**：`PixbufList.update()` 会为列表里**每一项**立刻取 pixbuf
+//!    （196 张 128×128 常驻 RAM）。我们只给滚动视口内的项建 GPU 纹理，
 //!    否则 egui 里会一次性炸出 196 个纹理绑定。
-//! 2. **搜索框与「全部」过滤**：MyPaint 没有（它靠分组面板 + `Brush Groups` 菜单）。
-//!    这是本项目的**新增**入口，不是替换。
+//! 3. **跨分组搜索框 + 重扫按钮**（本项目新增，MyPaint 无这两样）：官方包
+//!    196 支笔刷按分组翻找较慢，保留一个跨分组搜索入口；**搜索框为空时面板
+//!    行为与 MyPaint 完全一致**。
 //!
 //! 权限：官方包图标为 CC0，见 `assets/brushes/COPYING`。
 
 use std::collections::HashMap;
 
 use eframe::egui;
-use pigment_engine::brushlib::{BrushEntry, BrushLibrary};
+use pigment_engine::brushlib::{translate_group_name, BrushEntry, BrushLibrary};
 use pigment_engine::hokusai::Brush;
 
 use crate::thumb;
 
 /// 图标边长 —— `BrushList.ICON_SIZE`（`gui/brushselectionwindow.py:66`）。
 pub const ICON_SIZE: f32 = 48.0;
+/// 工具面板最小宽度 —— `TOOL_WIDGET_MIN_WIDTH`（`gui/toolstack.py:40`）。
+pub const TOOL_WIDGET_MIN_WIDTH: f32 = 220.0;
+/// 面板头图标边长 —— `TAB_ICON_SIZE = Gtk.IconSize.MENU`（`gui/toolstack.py:203`）。
+///
+/// GTK3 的 `Gtk.IconSize.MENU` 就是 16×16。
+pub const TAB_ICON_SIZE: f32 = 16.0;
 /// 选中框线宽 —— `PixbufList.border_visible`（`gui/pixbuflist.py:69`）。
 const BORDER_VISIBLE: f32 = 2.0;
 /// 格内留白 —— `PixbufList.spacing_inside`。
@@ -53,6 +71,19 @@ pub const DEFAULT_BRUSH: &str = "Dieterle/Fan#1";
 pub const DEFAULT_ERASER: &str = "deevad/kneaded_eraser_large";
 /// `DEFAULT_BRUSH` 缺失时的兜底（官方包被裁剪等情况）。
 const FALLBACK_BRUSH: &str = "classic/dry_brush";
+
+/// 面板描述文字 —— `BrushGroupTool.tool_widget_description`
+/// （`gui/brushselectionwindow.py:388`）。
+///
+/// 原式 `ngettext("{count} brush", "{count} brushes", nbrushes)`：
+/// 单数取第一式，其余（含 0）取第二式。
+fn brush_count_desc(n: usize) -> String {
+    if n == 1 {
+        "1 brush".to_string()
+    } else {
+        format!("{n} brushes")
+    }
+}
 
 /// `PixbufList.update()` 的 `total_border`（`gui/pixbuflist.py:243`）。
 fn total_border() -> f32 {
@@ -90,25 +121,31 @@ fn index_at(x: f32, y: f32, tiles_w: usize, count: usize) -> usize {
     i.min(count - 1)
 }
 
+/// 一个分组面板 —— MyPaint 的 `BrushGroupTool`（`gui/brushselectionwindow.py:347`）。
 pub struct BrushPanel {
     pub library: BrushLibrary,
     /// 当前选中项在 `library.entries` 中的下标。
     pub selected: usize,
-    /// 名称搜索关键字（本项目的**新增**入口，MyPaint 无此控件）。
+    /// 面板当前显示的**分组 id** —— `BrushGroupTool._group`。
+    ///
+    /// 注意本项目这里存的是资产**目录名**（`deevad`），而 MyPaint 的 `_group`
+    /// 是 `order.conf` 的 `Group:` 名（`Deevad`）。面板标题一律走
+    /// `BrushEntry::group_display` / `GroupInfo::title()`，所以显示结果一致；
+    /// 差异只在 key 语义（影响 `order.conf` 三方合并与拖放排序，见比对报告 P1）。
+    pub group: String,
+    /// 跨分组搜索关键字（本项目**新增**入口，MyPaint 无此控件）。
     pub search: String,
-    /// 分组过滤（`None` = 全部）。
-    pub group: Option<String>,
     /// 缩略图缓存：library 下标 → 纹理（扮演 `PixbufList.thumbnails` 的角色）。
     thumbnails: HashMap<usize, egui::TextureHandle>,
-    /// 过滤后的 library 下标列表。
+    /// 面板头图标缓存：`(笔刷下标, 边长)` → 纹理。
+    header_icons: HashMap<(usize, usize), egui::TextureHandle>,
+    /// 面板内容的 library 下标列表（`BrushList.brushes` 的下标形式）。
     visible: Vec<usize>,
     /// 与 [`Self::visible`] 一一对应的 tooltip 文本（`managedbrush_namefunc` 的结果）。
     ///
     /// 在 [`Self::rebuild_visible`] 里一并算好：tooltip 需要闭包读它，
     /// 提前算好就不必在绘制闭包里再借 `&self`。
     tooltips: Vec<String>,
-    /// 与 [`Self::visible`] 一一对应的 `(笔刷名, description)`。
-    labels: Vec<(String, String)>,
 }
 
 impl BrushPanel {
@@ -119,15 +156,18 @@ impl BrushPanel {
             .find(DEFAULT_BRUSH)
             .or_else(|| library.find(FALLBACK_BRUSH))
             .unwrap_or(0);
+        // 面板初始分组 —— 对齐 `_init_default_brushkeys_and_history` 挑启动分组的规则
+        // （`set#2` 不存在 → 成员最多的分组）
+        let group = library.startup_group().unwrap_or_default();
         let mut p = Self {
             library,
             selected,
+            group,
             search: String::new(),
-            group: None,
             thumbnails: HashMap::new(),
+            header_icons: HashMap::new(),
             visible: Vec::new(),
             tooltips: Vec::new(),
-            labels: Vec::new(),
         };
         p.rebuild_visible();
         p
@@ -154,7 +194,9 @@ impl BrushPanel {
             .map_err(|e| e.to_string())
     }
 
-    /// 在过滤结果中前后移动选择，返回是否发生变化。
+    /// 在面板内容中前后移动选择，返回是否发生变化。
+    ///
+    /// MyPaint 的 `,` / `.` 也是在**当前列表**（= 当前分组）里前后走。
     pub fn step(&mut self, delta: isize) -> bool {
         if self.visible.is_empty() {
             return false;
@@ -172,42 +214,87 @@ impl BrushPanel {
         true
     }
 
-    fn rebuild_visible(&mut self) {
-        let needle = self.search.trim().to_lowercase();
-        self.visible = self
-            .library
+    /// 当前分组在 `library.entries` 里的成员下标 —— `BrushList.brushes`
+    /// （= `bm.get_group_brushes(group_name)`，`gui/brushselectionwindow.py:95`）。
+    fn group_members(&self) -> Vec<usize> {
+        self.library
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, e)| {
-                self.group.as_deref().is_none_or(|g| e.group == g)
-                    && (needle.is_empty()
-                        || e.display.to_lowercase().contains(&needle)
-                        || e.name.to_lowercase().contains(&needle)
-                        || e.key.to_lowercase().contains(&needle))
-            })
+            .filter(|(_, e)| e.group == self.group)
             .map(|(i, _)| i)
-            .collect();
-        // 当前选中项被过滤掉时，自动切到第一条可见项（避免"选中了但看不见"）
+            .collect()
+    }
+
+    /// 组内**第一支**笔刷的下标 —— `tool_widget_get_icon_pixbuf` 取的 `brushes[0]`。
+    fn first_in_group(&self) -> Option<usize> {
+        self.library
+            .entries
+            .iter()
+            .position(|e| e.group == self.group)
+    }
+
+    /// 面板标题 —— `tool_widget_title`（`gui/brushselectionwindow.py:384`）。
+    ///
+    /// `translate_group_name(self._group)`；本项目用 `group_display`
+    /// （`order.conf` 的 `Group:` 名）过一次同一张表。
+    fn group_title(&self) -> String {
+        let display = self
+            .library
+            .groups()
+            .into_iter()
+            .find(|g| g.id == self.group)
+            .map(|g| g.display)
+            .unwrap_or_else(|| self.group.clone());
+        translate_group_name(&display).to_string()
+    }
+
+    /// 面板描述 —— `tool_widget_description`（`gui/brushselectionwindow.py:388`）。
+    fn group_count(&self) -> usize {
+        self.library
+            .entries
+            .iter()
+            .filter(|e| e.group == self.group)
+            .count()
+    }
+
+    fn rebuild_visible(&mut self) {
+        let needle = self.search.trim().to_lowercase();
+        self.visible = if needle.is_empty() {
+            // ---- BrushGroupTool 形态：内容 = 该分组的 `BrushList.brushes` ----
+            self.group_members()
+        } else {
+            // ---- 跨分组搜索（本项目新增；MyPaint 无搜索，只能翻分组）----
+            self.library
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| {
+                    e.display.to_lowercase().contains(&needle)
+                        || e.name.to_lowercase().contains(&needle)
+                        || e.key.to_lowercase().contains(&needle)
+                })
+                .map(|(i, _)| i)
+                .collect()
+        };
+        // 当前选中项不在面板内容里时，自动切到第一条可见项（避免"选中了但看不见"）
         if !self.visible.is_empty() && !self.visible.contains(&self.selected) {
             self.selected = self.visible[0];
         }
-        self.rebuild_labels();
+        self.rebuild_tooltips();
     }
 
-    /// 预生成列表标签与 tooltip —— `managedbrush_namefunc`（`brushselectionwindow.py:46`）。
+    /// 预生成 tooltip 列表 —— `managedbrush_namefunc`（`gui/brushselectionwindow.py:46`）。
     ///
     /// tooltip 模板：`"{name}\n{description}"`（description 为空时只有 name）。
     /// 我们额外补一行路径与来源（MyPaint 的 tooltip 只有两行，这是新增信息）。
-    fn rebuild_labels(&mut self) {
-        self.labels.clear();
+    fn rebuild_tooltips(&mut self) {
         self.tooltips.clear();
         for &i in &self.visible {
             let Some(e) = self.library.entries.get(i) else {
                 continue;
             };
-            let name = e.mypaint_name();
-            let mut tip = name.clone();
+            let mut tip = e.mypaint_name();
             if !e.display.is_empty() {
                 tip.push('\n');
                 tip.push_str(&e.display);
@@ -221,78 +308,99 @@ impl BrushPanel {
                     "用户目录"
                 }
             ));
-            self.labels.push((name, e.display.clone()));
             self.tooltips.push(tip);
         }
     }
 
     /// 绘制面板。返回 `true` 表示**选中笔刷发生变化**（调用方需重载笔刷）。
     pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
-        ui.horizontal(|ui| {
-            ui.heading("笔刷");
-            ui.label(
-                egui::RichText::new(format!("{} 支", self.library.len()))
-                    .weak()
-                    .small(),
-            );
-            if !self.library.errors.is_empty() {
-                ui.label(
-                    egui::RichText::new(format!("{} 个失败", self.library.errors.len()))
-                        .color(egui::Color32::from_rgb(220, 120, 80))
-                        .small(),
-                );
-            }
-            if ui.button("↻").on_hover_text("重新扫描用户笔刷目录").clicked() {
-                self.rescan();
-            }
-        });
-
-        let mut need_rebuild = false;
-        if ui
+        // ---- 面板头（照搬工具面板页签：图标 + 标题 + 描述）----
+        let switched = self.header(ui);
+        // ---- 搜索框（本项目新增；为空时面板行为与 MyPaint 完全一致）----
+        let searched = ui
             .add(
                 egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("搜索笔刷…")
+                    .hint_text("搜索笔刷…（跨分组；MyPaint 无此控件）")
                     .desired_width(f32::INFINITY),
             )
-            .changed()
-        {
-            need_rebuild = true;
-        }
-
-        // ---- 分组过滤（本项目入口；MyPaint 用独立的 BrushGroupTool 面板）----
-        let groups = self.library.groups();
-        ui.horizontal_wrapped(|ui| {
-            if ui
-                .selectable_label(self.group.is_none(), format!("全部 {}", self.library.len()))
-                .clicked()
-            {
-                self.group = None;
-                need_rebuild = true;
-            }
-            for g in &groups {
-                let on = self.group.as_deref() == Some(g.id.as_str());
-                if ui
-                    .selectable_label(on, format!("{} {}", g.display, g.count))
-                    .clicked()
-                {
-                    self.group = Some(g.id.clone());
-                    need_rebuild = true;
-                }
-            }
-        });
-
-        if need_rebuild {
+            .changed();
+        if let Some(g) = switched {
+            // 切分组时清掉搜索，否则网格仍是跨分组结果、看起来像「菜单没反应」
+            self.group = g;
+            self.search.clear();
+            self.rebuild_visible();
+        } else if searched {
             self.rebuild_visible();
         }
 
         ui.separator();
-        ui.label(
-            egui::RichText::new(format!("{} 支", self.visible.len()))
-                .weak()
-                .small(),
-        );
-
         self.grid(ui)
+    }
+
+    /// 面板头 —— 照搬工具面板页签的构造（`gui/toolstack.py:464`
+    /// `_Notebook._make_tab_label`）。
+    ///
+    /// * 图标：**组内第一支**笔刷的 `preview`（`tool_widget_get_icon_pixbuf`，`:401`）
+    /// * 标题：`tool_widget_title` = `translate_group_name(group)`（`:384`）
+    /// * 描述：`tool_widget_description` = `"{N} brush(es)"`（`:388`），进 tooltip
+    /// * 右侧 ▾：`BrushGroupsMenu`（`:550`）
+    ///
+    /// 返回被选中的新分组（`None` = 没换分组）。
+    fn header(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        let title = self.group_title();
+        let desc = brush_count_desc(self.group_count());
+        let icon = self.first_in_group().map(|i| {
+            header_icon_for(ui.ctx(), &self.library, &mut self.header_icons, i)
+        });
+        // 菜单候选先收集好：`menu_button` 的闭包里不能再借 `self`
+        let menu = group_menu_items(&self.library);
+        let current = self.group.clone();
+
+        let mut picked: Option<String> = None;
+        let mut rescan = false;
+        ui.horizontal(|ui| {
+            match &icon {
+                Some(t) => {
+                    ui.image((t.id(), egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE)));
+                }
+                None => {
+                    ui.allocate_space(egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE));
+                }
+            }
+            ui.label(egui::RichText::new(&title).strong())
+                .on_hover_text(format!("{title}\n{desc}"));
+            ui.label(egui::RichText::new(&desc).weak().small());
+
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.menu_button("▾", |ui| {
+                    for (id, label) in &menu {
+                        if ui.selectable_label(*id == current, label).clicked() {
+                            picked = Some(id.clone());
+                            ui.close();
+                        }
+                    }
+                    ui.separator();
+                    // 静态项（`BrushGroupsMenu.__init__`，`:559-569`）：
+                    // 三项都需要写盘或联网，属未移植范围
+                    ui.add_enabled(false, egui::Button::new("New Group…"))
+                        .on_disabled_hover_text("未移植：需要把分组写回 order.conf");
+                    ui.add_enabled(false, egui::Button::new("Import Brushes…"))
+                        .on_disabled_hover_text("未移植：需要 .zip 笔刷包导入");
+                    ui.add_enabled(false, egui::Button::new("Get More Brushes…"))
+                        .on_disabled_hover_text("未移植：需要联网下载笔刷包");
+                    ui.separator();
+                    // 本项目新增入口（MyPaint 靠重启重扫笔刷目录）
+                    if ui.button("重新扫描笔刷目录（本项目新增）").clicked() {
+                        rescan = true;
+                        ui.close();
+                    }
+                });
+            });
+        });
+        if rescan {
+            self.rescan();
+        }
+        picked
     }
 
     /// 48px 流式图标网格 —— `PixbufList`。
@@ -370,7 +478,6 @@ impl BrushPanel {
                     Some(tip) => response.on_hover_text(tip.clone()),
                     None => response,
                 };
-                let _ = &self.labels;
 
                 // ---- 点击选中：照搬 `button_press_cb`（左键选中；右键菜单留待后续）----
                 if response.clicked() {
@@ -391,11 +498,19 @@ impl BrushPanel {
         changed
     }
 
-    /// 重新扫描用户笔刷目录（丢弃缓存，回到内嵌官方包 + 用户目录的合并结果）。
+    /// 重新扫描用户笔刷目录（本项目新增入口；MyPaint 靠重启）。
     fn rescan(&mut self) {
         let selected_key = self.selected_entry().map(|e| e.key.clone());
+        let group = self.group.clone();
         self.library = BrushLibrary::load();
         self.thumbnails.clear();
+        self.header_icons.clear();
+        // 分组可能随用户目录一起消失 → 退回启动分组规则
+        self.group = if self.library.entries.iter().any(|e| e.group == group) {
+            group
+        } else {
+            self.library.startup_group().unwrap_or_default()
+        };
         if let Some(k) = selected_key {
             if let Some(i) = self.library.find(&k) {
                 self.selected = i;
@@ -405,7 +520,26 @@ impl BrushPanel {
     }
 }
 
-/// 取（必要时解码并缓存）某支笔刷的 48×48 图标。
+/// 分组菜单的候选项 `(分组 id, 标题)` —— `BrushGroupsMenu._update`
+/// （`gui/brushselectionwindow.py:591`）。
+///
+/// 原式对 `sorted(bm.groups)` 的结果 `reversed` 后逐个 `prepend`，净效果就是
+/// **按分组名正序**；MyPaint 的 key 本身就是展示名，所以这里也按标题排，
+/// 标题并列时再按 id 做稳定的 tie-break。
+fn group_menu_items(library: &BrushLibrary) -> Vec<(String, String)> {
+    let mut items: Vec<(String, String)> = library
+        .groups()
+        .into_iter()
+        .map(|g| {
+            let title = g.title().to_string();
+            (g.id, title)
+        })
+        .collect();
+    items.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    items
+}
+
+/// 取（必要时解码并缓存）某支笔刷的 48×48 网格图标。
 ///
 /// 照搬 `BrushList` 的取图链：`managedbrush_pixbuffunc` → `ManagedBrush.preview`
 /// → 优先随附 `_prev.png`、否则实时渲染（[`thumb::render`]）；
@@ -419,10 +553,11 @@ fn thumb_for(
     if let Some(t) = cache.get(&idx) {
         return t.clone();
     }
+    let side = ICON_SIZE as usize;
     let Some(entry) = library.entries.get(idx) else {
         return ctx.load_texture(
             "thumb-missing",
-            icon_image(&white_icon()),
+            icon_image(&white_icon(side, side), side, side),
             egui::TextureOptions::LINEAR,
         );
     };
@@ -435,21 +570,78 @@ fn thumb_for(
     let (key, rgba) = match rgba {
         Some(src) => (
             entry.key.clone(),
-            thumbnail_on_white(&src, thumb::PREVIEW_W, thumb::PREVIEW_H, ICON_SIZE as usize, ICON_SIZE as usize),
+            thumbnail_on_white(&src, thumb::PREVIEW_W, thumb::PREVIEW_H, side, side),
         ),
-        None => (format!("{}-broken", entry.key), white_icon()),
+        None => (format!("{}-broken", entry.key), white_icon(side, side)),
     };
     let tex = ctx.load_texture(
         format!("thumb:{key}"),
-        icon_image(&rgba),
+        icon_image(&rgba, side, side),
         egui::TextureOptions::LINEAR,
     );
     cache.insert(idx, tex.clone());
     tex
 }
 
-fn icon_image(rgba: &[u8]) -> egui::ColorImage {
-    egui::ColorImage::from_rgba_unmultiplied([ICON_SIZE as usize, ICON_SIZE as usize], rgba)
+/// 面板头图标 —— `BrushGroupTool.tool_widget_get_icon_pixbuf()`
+/// （`gui/brushselectionwindow.py:401`）。
+///
+/// 取**组内第一支**笔刷的 `preview`（不是当前选中那支）；尺寸不等于原图时
+/// `scale_simple(size, size, BILINEAR)` —— 直接**拉伸**到正方，既不保持长宽比、
+/// 也不合成白底（与网格走 `helpers.pixbuf_thumbnail` 不是同一条路）。
+fn header_icon_for(
+    ctx: &egui::Context,
+    library: &BrushLibrary,
+    cache: &mut HashMap<(usize, usize), egui::TextureHandle>,
+    idx: usize,
+) -> egui::TextureHandle {
+    let size = TAB_ICON_SIZE as usize;
+    if let Some(t) = cache.get(&(idx, size)) {
+        return t.clone();
+    }
+    let rgba = raw_icon(library, idx, size, size);
+    let tex = ctx.load_texture(
+        format!("header-icon:{idx}:{size}"),
+        icon_image(&rgba, size, size),
+        egui::TextureOptions::LINEAR,
+    );
+    cache.insert((idx, size), tex.clone());
+    tex
+}
+
+/// 笔刷原始 `preview` 缩放到 `w×h`（**不做**白底合成）。
+fn raw_icon(library: &BrushLibrary, idx: usize, w: usize, h: usize) -> Vec<u8> {
+    let Some(entry) = library.entries.get(idx) else {
+        return white_icon(w, h);
+    };
+    let src = match entry.preview_png() {
+        Some(bytes) => decode_png(&bytes),
+        None => entry.load().ok().map(|b| thumb::render(&b)),
+    };
+    match src {
+        Some(src) => scale_to(&src, thumb::PREVIEW_W, thumb::PREVIEW_H, w, h),
+        None => white_icon(w, h),
+    }
+}
+
+/// `GdkPixbuf.Pixbuf.scale_simple(w, h, BILINEAR)`：**拉伸**到目标尺寸。
+fn scale_to(src: &[u8], sw: usize, sh: usize, w: usize, h: usize) -> Vec<u8> {
+    if sw == 0 || sh == 0 || src.len() < sw * sh * 4 || (sw, sh) == (w, h) {
+        return src.to_vec();
+    }
+    let buf = image::RgbaImage::from_raw(sw as u32, sh as u32, src.to_vec())
+        .expect("源图尺寸与缓冲不符");
+    image::imageops::resize(
+        &buf,
+        w as u32,
+        h as u32,
+        image::imageops::FilterType::Triangle,
+    )
+    .into_raw()
+}
+
+fn icon_image(rgba: &[u8], w: usize, h: usize) -> egui::ColorImage {
+    egui::ColorImage::from_rgba_unmultiplied([w, h], rgba)
 }
 
 /// 选中/悬停描边 —— `PixbufList.draw_cb`（`gui/pixbuflist.py:373`）。
@@ -536,8 +728,8 @@ fn thumbnail_on_white(src: &[u8], sw: usize, sh: usize, w: usize, h: usize) -> V
 }
 
 /// 全白图标（解析失败时的占位）。
-fn white_icon() -> Vec<u8> {
-    vec![255u8; ICON_SIZE as usize * ICON_SIZE as usize * 4]
+fn white_icon(w: usize, h: usize) -> Vec<u8> {
+    vec![255u8; w * h * 4]
 }
 
 #[cfg(test)]
@@ -629,7 +821,11 @@ mod tests {
         assert_eq!(&out[0..3], &[255, 255, 255]);
     }
 
-    /// 官方包 196 支全部自带 `_prev.png`，且都能解码成 128×128。
+    /// 官方包 196 支全部自带 `_prev.png`，且都能解码成 128×128 的**不透明**图。
+    ///
+    /// 不带 alpha 是这个资产包的事实（`PixbufList` 的白底合成路径对官方包是
+    /// no-op）：官方预渲染图把性格底色烘进去了，橡皮类也不例外 ——
+    /// 我们实测 30 张 RGB / 133 张调色板 / 33 张灰度，alpha 全为 255。
     #[test]
     fn every_embedded_brush_has_decodable_preview() {
         let lib = BrushLibrary::embedded();
@@ -637,7 +833,14 @@ mod tests {
         let mut bad = Vec::new();
         for e in &lib.entries {
             match e.preview_png().and_then(|b| decode_png(&b)) {
-                Some(px) => assert_eq!(px.len(), 128 * 128 * 4, "{} 尺寸不对", e.key),
+                Some(px) => {
+                    assert_eq!(px.len(), 128 * 128 * 4, "{} 尺寸不对", e.key);
+                    assert!(
+                        px.chunks(4).all(|p| p[3] == 255),
+                        "{} 的 _prev.png 不应含透明像素",
+                        e.key
+                    );
+                }
                 None => bad.push(e.key.clone()),
             }
         }
@@ -649,11 +852,194 @@ mod tests {
     fn tooltips_follow_mypaint_template() {
         let p = BrushPanel::new();
         assert_eq!(p.tooltips.len(), p.visible.len());
-        assert_eq!(p.labels.len(), p.visible.len());
         for (slot, &idx) in p.visible.iter().enumerate() {
             let e = &p.library.entries[idx];
             let first_line = p.tooltips[slot].lines().next().unwrap_or_default();
             assert_eq!(first_line, e.mypaint_name());
+        }
+    }
+
+    /// 面板描述文本 —— `ngettext("{count} brush", "{count} brushes", n)`。
+    #[test]
+    fn brush_count_desc_matches_ngettext() {
+        assert_eq!(brush_count_desc(0), "0 brushes");
+        assert_eq!(brush_count_desc(1), "1 brush");
+        assert_eq!(brush_count_desc(2), "2 brushes");
+        assert_eq!(brush_count_desc(36), "36 brushes");
+    }
+
+    /// 面板尺寸常量 —— `TOOL_WIDGET_MIN_WIDTH` / `TAB_ICON_SIZE`。
+    #[test]
+    fn tool_widget_metrics_match_mypaint() {
+        // gui/toolstack.py:40
+        assert_eq!(TOOL_WIDGET_MIN_WIDTH, 220.0);
+        // gui/toolstack.py:203 `TAB_ICON_SIZE = Gtk.IconSize.MENU` = 16×16
+        assert_eq!(TAB_ICON_SIZE, 16.0);
+        // 220px 至少放得下 4 列 52px 格（BrushList.NATURAL_WIDTH_NICONS = 4）
+        assert!(TOOL_WIDGET_MIN_WIDTH >= cell() * 4.0);
+    }
+
+    /// 面板开在启动分组上 —— `_init_default_brushkeys_and_history` 挑分组的规则。
+    #[test]
+    fn panel_opens_on_the_startup_group() {
+        let p = BrushPanel::new();
+        assert_eq!(Some(p.group.clone()), p.library.startup_group());
+        assert_eq!(p.group, "deevad", "官方包最大分组");
+        assert!(!p.visible.is_empty());
+    }
+
+    /// 面板内容 = **该分组**的成员列表（`BrushList.brushes`），顺序取库顺序。
+    #[test]
+    fn panel_content_is_the_group_list() {
+        let p = BrushPanel::new();
+        let expect: Vec<usize> = p
+            .library
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.group == p.group)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(p.visible, expect);
+        assert_eq!(p.group_count(), expect.len());
+        // 全库 196 支按分组切开，各组之和等于全库
+        let total: usize = p.library.groups().iter().map(|g| g.count).sum();
+        assert_eq!(total, p.library.len());
+    }
+
+    /// 面板标题用 `order.conf` 的 `Group:` 名（经 `translate_group_name` 兜底）。
+    #[test]
+    fn panel_title_uses_group_display_name() {
+        let p = BrushPanel::new();
+        assert_eq!(p.group_title(), "Deevad", "目录名 deevad → 展示名 Deevad");
+    }
+
+    /// 搜索框为空时面板 == 分组列表；非空时跨分组（本项目新增入口）。
+    #[test]
+    fn empty_search_equals_group_and_search_spans_groups() {
+        let mut p = BrushPanel::new();
+        let in_group = p.visible.clone();
+        assert!(p
+            .visible
+            .iter()
+            .all(|&i| p.library.entries[i].group == p.group));
+
+        p.search = "watercolor".to_string();
+        p.rebuild_visible();
+        assert!(!p.visible.is_empty(), "官方包里应有 watercolor 系笔刷");
+        let groups: std::collections::HashSet<&str> = p
+            .visible
+            .iter()
+            .map(|&i| p.library.entries[i].group.as_str())
+            .collect();
+        assert!(groups.len() > 1, "跨分组搜索应命中多个分组: {groups:?}");
+
+        p.search.clear();
+        p.rebuild_visible();
+        assert_eq!(p.visible, in_group, "清空搜索应回到分组列表");
+    }
+
+    /// `,` / `.` 在当前分组内环行，不会跳到别的分组去。
+    #[test]
+    fn step_stays_inside_the_group() {
+        let mut p = BrushPanel::new();
+        let n = p.visible.len();
+        let group = p.group.clone();
+        let start = p.visible.iter().position(|&i| i == p.selected).unwrap();
+        for k in 1..=(n * 2 + 1) {
+            p.step(1);
+            assert_eq!(p.selected, p.visible[(start + k) % n], "第 {k} 步位置不对");
+            assert_eq!(p.library.entries[p.selected].group, group);
+        }
+        // 反向也应该环行回来
+        p.step(-1);
+        assert_eq!(p.selected, p.visible[(start + n * 2) % n]);
+    }
+
+    /// 面板头图标取**组内第一支**笔刷，不是当前选中那支。
+    #[test]
+    fn header_icon_comes_from_first_brush_of_the_group() {
+        let p = BrushPanel::new();
+        let first = p.first_in_group().expect("分组非空");
+        let expect = p
+            .library
+            .entries
+            .iter()
+            .position(|e| e.group == p.group)
+            .unwrap();
+        assert_eq!(first, expect);
+        assert_eq!(
+            p.library.entries[first].key,
+            p.library.entries[p.visible[0]].key
+        );
+        // 选中项换成别的笔刷也不影响面板头（`tool_widget_get_icon_pixbuf` 只看组内第一支）
+        let mut q = BrushPanel::new();
+        q.selected = q.visible[3];
+        assert_eq!(q.first_in_group(), Some(first));
+    }
+
+    /// `scale_simple` 的拉伸语义：非方源图也被**拉成正方**（不保持长宽比）。
+    #[test]
+    fn header_icon_scales_by_stretching() {
+        // 128×64 → 16×16：GdkPixbuf 的 scale_simple 不做 letterbox
+        let src: Vec<u8> = (0..128 * 64 * 4)
+            .map(|i| if i % 4 == 3 { 255 } else { 40 })
+            .collect();
+        let out = scale_to(&src, 128, 64, 16, 16);
+        assert_eq!(out.len(), 16 * 16 * 4);
+        assert_eq!(&out[0..3], &[40, 40, 40], "整幅都被拉满，没有白边");
+        assert_eq!(out[3], 255);
+        // 尺寸相同则原样返回（`tool_widget_get_icon_pixbuf` 的 copy() 分支）
+        assert_eq!(scale_to(&src, 128, 64, 128, 64), src);
+    }
+
+    /// 面板头图标与网格图标是**两条路**：前者直接拉伸、不做白底合成。
+    ///
+    /// 官方 196 张 `_prev.png` 全是 128×128 且**都不带 alpha 通道**
+    /// （30 张 RGB / 133 张调色板 / 33 张灰度），所以这条差异在官方包上看不出来；
+    /// 它只在自制笔刷走 [`thumb::render`]（橡皮会擦出 alpha）时才显现。
+    #[test]
+    fn header_icon_keeps_alpha_where_thumbnail_paints_white() {
+        // 4×4 源图：四周全透明，中心 2×2 涂红
+        let mut src = vec![0u8; 4 * 4 * 4];
+        for y in 1..3 {
+            for x in 1..3 {
+                let i = (y * 4 + x) * 4;
+                src[i] = 255;
+                src[i + 3] = 255;
+            }
+        }
+        let head = scale_to(&src, 4, 4, 16, 16);
+        assert_eq!(head.len(), 16 * 16 * 4);
+        assert!(
+            head.chunks(4).any(|px| px[3] < 255),
+            "面板头不做白底合成，应保留源图 alpha"
+        );
+        let grid = thumbnail_on_white(&src, 4, 4, 48, 48);
+        assert!(
+            grid.chunks(4).all(|px| px[3] == 255),
+            "网格图经 `pixbuf_thumbnail` 一律合成到白底"
+        );
+        assert_eq!(&grid[0..3], &[255, 255, 255], "透明处应被填白");
+    }
+
+    /// 分组菜单：候选 = 全部分组，按标题正序。
+    #[test]
+    fn group_menu_is_sorted_by_title() {
+        let lib = BrushLibrary::embedded();
+        let items = group_menu_items(&lib);
+        assert_eq!(items.len(), lib.groups().len());
+        let titles: Vec<&str> = items.iter().map(|(_, t)| t.as_str()).collect();
+        let mut sorted = titles.clone();
+        sorted.sort_unstable();
+        assert_eq!(titles, sorted, "菜单应按展示名正序");
+        // 官方包的分组都在（`Group:` 名，不是目录名）
+        for want in ["Dieterle", "Classic", "Deevad", "Ramon", "Tanda", "Kaerhon"] {
+            assert!(titles.contains(&want), "菜单缺少分组 {want}");
+        }
+        // ids 仍是目录名（用于过滤条目）
+        for (id, _) in &items {
+            assert!(lib.entries.iter().any(|e| &e.group == id));
         }
     }
 }

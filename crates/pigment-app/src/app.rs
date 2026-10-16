@@ -789,12 +789,13 @@ impl eframe::App for PigmentApp {
         self.toolbar(ui);
 
         if self.show_panels {
-            // 左：笔刷库
+            // 左：笔刷分组面板（MyPaint 的 `BrushGroupTool`）
             let mut pick = false;
             egui::Panel::left("brushes")
                 .resizable(true)
                 .default_size(240.0)
-                .size_range(170.0..=420.0)
+                // 下界 = `TOOL_WIDGET_MIN_WIDTH`（`gui/toolstack.py:40`）
+                .size_range(crate::brushes::TOOL_WIDGET_MIN_WIDTH..=520.0)
                 .show(ui, |ui| {
                     pick = self.brushes.show(ui);
                 });
