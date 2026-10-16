@@ -1,11 +1,15 @@
 //! pigment —— MyPaint 精神续作（Rust + egui + wgpu 重构）。
 //!
-//! M2 里程碑：无限画布 + GPU tile 渲染 + 平移缩放 + 基础绘制。
+//! M2：无限画布 + GPU tile 渲染 + 平移缩放 + 绘制。
+//! M3：.myb 笔刷库（196 支官方包内嵌）+ 笔刷列表 + 笔刷编辑器。
 
 mod app;
+mod brushes;
 mod convert;
 mod dump;
+mod editor;
 mod gpu;
+mod thumb;
 mod view;
 
 fn main() -> eframe::Result<()> {

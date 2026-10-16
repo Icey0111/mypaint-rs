@@ -2832,6 +2832,7 @@ dependencies = [
  "hokusai",
  "image",
  "pigment-surface",
+ "serde_json",
 ]
 
 [[package]]
