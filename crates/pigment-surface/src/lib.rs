@@ -50,6 +50,8 @@ pub mod combine;
 pub mod layer;
 pub mod png;
 
+pub use layer::{Layer, LayerStack};
+
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
 ///
 /// `pixels` 是 `Arc`：与快照共享时写借出自动复制（见模块文档的写时复制一节）。
@@ -388,6 +390,24 @@ impl PigmentSurface {
     ///
     /// `(x, y)` 是内容左上角的模型坐标；像素按 tile 切分写入。
     /// 与 MyPaint 一致：**整层替换**，调用方应先 `clear()`。
+    /// 把一块已经处于 fix15 预乘格式的 tile 原样写入表面（MergeLayerDown 用）。
+    ///
+    /// 与写借出路径一致地分配缺 tile、抬 revision。长度必须是整 tile。
+    pub fn paste_tile(&mut self, tx: i32, ty: i32, pixels: &[u16]) {
+        assert_eq!(pixels.len(), TILE_SIZE * TILE_SIZE * 4);
+        self.clock += 1;
+        let entry = self.tiles.entry((tx, ty)).or_insert_with(|| Tile {
+            pixels: Arc::new(*empty_tile()),
+            revision: 0,
+            last_touched: 0,
+        });
+        let px = Arc::make_mut(&mut entry.pixels);
+        let flat = px.as_flattened_mut().as_flattened_mut();
+        flat.copy_from_slice(pixels);
+        entry.revision = self.clock;
+        entry.last_touched = self.clock;
+    }
+
     pub fn load_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
         let (w, h) = (w as i32, h as i32);
         for row in 0..h {

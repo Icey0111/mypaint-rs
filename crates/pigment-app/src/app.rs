@@ -449,8 +449,9 @@ impl PigmentApp {
     /// 打开文件（`gui/filehandling.py:890` 的 `open_file`）。
     fn open_from_path(&mut self, path: &std::path::Path, now: f64) {
         self.flush_pending_stroke();
-        // 先记下旧状态：载入失败时不该把用户的画弄丢（源码会弹错并保留文档）
-        let snapshot = self.doc.surface().save_snapshot();
+        // 先记下旧状态：载入失败时不该把用户的画弄丢（源码会弹错并保留文档）。
+        // B2-3 起文档是图层栈，整栈 COW 克隆（tile 共享 Arc，代价低）。
+        let snapshot = self.doc.layers().clone();
         match self.doc.load(path) {
             Ok(outcome) => {
                 self.current_file = Some(path.to_path_buf());
@@ -485,8 +486,8 @@ impl PigmentApp {
                 self.set_status(msg, now);
             }
             Err(e) => {
-                // 回滚：`Document::load` 会先 clear()，所以失败时表面已经空了
-                self.doc.surface_mut().load_snapshot(&snapshot);
+                // 回滚：`Document::load` 会先 clear()，所以失败时栈已经空了
+                *self.doc.layers_mut() = snapshot;
                 self.force_resync = true;
                 self.set_status(format!("打开失败：{e}"), now);
             }

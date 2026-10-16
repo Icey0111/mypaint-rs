@@ -34,7 +34,13 @@ impl PigmentApp {
 
         egui::CentralPanel::default()
             // 画布底色 = MyPaint 默认背景（米白纸色），不是纯白
-            .frame(egui::Frame::NONE.fill(convert::canvas_bg_color()))
+            // 面板底色 = 文档背景层颜色（照 tree.py 的背景 BLIT 语义；
+            // 默认白 (255,255,255)，随「背景色」对话框变化）
+            .frame(egui::Frame::NONE.fill(egui::Color32::from_rgb(
+                self.doc.layers().background_color()[0],
+                self.doc.layers().background_color()[1],
+                self.doc.layers().background_color()[2],
+            )))
             .show(ui, |ui| self.canvas(ui));
 
         // 浮动面板窗口（ToolStackWindow 的承接）
@@ -290,7 +296,10 @@ impl PigmentApp {
         if !modal && !space_down && response.drag_started_by(egui::PointerButton::Primary) {
             // 本应用的笔画开局：新建一份引擎状态（见 app.rs 文件头「撤销模型」注释）
             self.stroke_state = Some(pigment_engine::hokusai::BrushState::default());
-            self.brushwork = Some(pigment_engine::Brushwork::new());
+            let mut bw = pigment_engine::Brushwork::new();
+            // 目标层 = 起笔时的当前层（等价 command.py 的 layer=None → current）
+            bw.target_layer = Some(self.doc.layers().current_id());
+            self.brushwork = Some(bw);
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = pos - rect.min;
                 let [wx, wy] = self.view.screen_to_world(local.x, local.y);
@@ -357,28 +366,35 @@ impl PigmentApp {
                 renderer.invalidate_all();
                 self.force_resync = false;
             }
+            // B2-3：上传的是**图层栈的合成结果**（含背景与各层混合模式）。
+            // 水位线用全局合成版本号：任何影响合成的变化（作画/结构/属性/
+            // 背景）都会抬高它。粒度粗于逐 tile revision，但正确性不变；
+            // 逐 tile 哈希记账为后续优化。
+            let composite_rev = self.doc.layers().composite_revision();
             let plan = crate::gpu::plan_uploads(
-                self.doc.surface(),
                 |c| renderer.uploaded_rev(c),
                 &visible,
                 crate::gpu::MAX_UPLOADS_PER_FRAME,
+                |c| self.doc.layers().has_paint_at(c.0, c.1),
+                composite_rev,
             );
             for coord in plan {
-                let Some(t) = self.doc.surface().tile_entry(coord.0, coord.1) else {
+                let Some(pixels) = self.doc.layers().composite_tile_rgba8(coord.0, coord.1) else {
                     continue;
                 };
                 uploads.push(TileUpload {
                     coord,
-                    revision: t.revision(),
-                    pixels: convert::tile_to_rgba8(t.pixels(), convert::CANVAS_BG),
+                    revision: composite_rev,
+                    pixels,
                 });
             }
             // 撤销会把画布退回较早状态：那时"多出来"的 tile 已从 CPU 消失，
             // 但显存里还留着旧内容，必须剔除，否则画面残留撤销不掉的笔迹。
+            // 撤销后 CPU 侧已无笔迹的 tile 要从显存剔除
             crate::gpu::plan_evictions(
-                self.doc.surface(),
                 |c| renderer.uploaded_rev(c).is_some(),
                 &visible,
+                |c| self.doc.layers().has_paint_at(c.0, c.1),
             )
         };
         self.pending_uploads = uploads.len();

@@ -17,18 +17,30 @@
 //!   （repeating tile PNG）记账。
 //! - `VectorLayer`/`FallbackBitmapLayer` 不移植（MyPaint 2.0 已弃用建立）。
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
 
 use crate::color;
+use crate::color::TILE_RGBA8_BYTES;
 use crate::combine::{tile_combine, CombineMode, DEFAULT_MODE};
 use crate::PigmentSurface;
 
 /// 单 tile 的 u16 通道数。
 const TILE_CHANNELS: usize = TILE_SIZE * TILE_SIZE * 4;
 
+/// 图层 id 发生器。MyPaint 的命令持有**图层对象引用**（weakref），与栈序无关；
+/// Rust 不能持引用，用单调 id 等价替代（Clone/快照恢复保留原 id）。
+static NEXT_LAYER_ID: AtomicU64 = AtomicU64::new(1);
+fn next_layer_id() -> u64 {
+    NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed)
+}
+
 /// 单个图层（`core.py` `LayerBase` 默认值 + `data.PaintingLayer` 的表面）。
 #[derive(Clone)]
 pub struct Layer {
+    /// 稳定 id：命令按它寻址（等价 MyPaint 的 layer 对象引用）。
+    pub id: u64,
     pub surface: PigmentSurface,
     /// `core.py:85` `self._name`（默认 `None` → 显示时用 UI 兜底名）。
     pub name: Option<String>,
@@ -51,6 +63,7 @@ impl Default for Layer {
 impl Layer {
     pub fn new() -> Self {
         Self {
+            id: next_layer_id(),
             surface: PigmentSurface::new(),
             name: None,
             opacity: 1.0,
@@ -88,11 +101,27 @@ pub struct LayerStack {
     background_color: [u8; 3],
     /// `tree.py:58` `_background_visible`。
     background_visible: bool,
+    /// 合成版本号：栈结构/背景/图层属性变化时 +1（tile 内容变化由各层
+    /// `surface.clock()` 独立计数，见 [`LayerStack::composite_revision`]）。
+    rev: u64,
 }
 
 impl Default for LayerStack {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 克隆共享各层 tile 的 `Arc`（COW），id 原样保留。
+impl Clone for LayerStack {
+    fn clone(&self) -> Self {
+        Self {
+            layers: self.layers.clone(),
+            current: self.current,
+            background_color: self.background_color,
+            background_visible: self.background_visible,
+            rev: self.rev,
+        }
     }
 }
 
@@ -103,7 +132,13 @@ impl LayerStack {
             current: 0,
             background_color: [255, 255, 255],
             background_visible: true,
+            rev: 0,
         }
+    }
+
+    /// 栈/背景/图层属性变化后调用：抬高合成版本号。
+    pub fn touch(&mut self) {
+        self.rev = self.rev.wrapping_add(1);
     }
 
     // ---- 列表访问（`group.py` 的 list 语义）----
@@ -115,6 +150,12 @@ impl LayerStack {
 
     pub fn is_empty(&self) -> bool {
         self.layers.is_empty()
+    }
+
+    /// 按索引取层（0 = 最顶层）；越界返回 `None`。
+    #[inline]
+    pub fn try_layer(&self, index: usize) -> Option<&Layer> {
+        self.layers.get(index)
     }
 
     /// 按索引取层（0 = 最顶层）。
@@ -148,6 +189,17 @@ impl LayerStack {
         self.current = index.min(self.layers.len().saturating_sub(1));
     }
 
+    /// 把当前层切到 id 对应的那层；返回是否找到（找不到不动）。
+    pub fn set_current_by_id(&mut self, id: u64) -> bool {
+        match self.index_of_id(id) {
+            Some(i) => {
+                self.current = i;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn current(&self) -> &Layer {
         &self.layers[self.current]
     }
@@ -155,6 +207,57 @@ impl LayerStack {
     pub fn current_mut(&mut self) -> &mut Layer {
         let idx = self.current;
         &mut self.layers[idx]
+    }
+
+    pub fn current_id(&self) -> u64 {
+        self.layers[self.current].id
+    }
+
+    /// 当前层的 id（栈里找不到时 `None`）。
+    pub fn index_of_id(&self, id: u64) -> Option<usize> {
+        self.layers.iter().position(|l| l.id == id)
+    }
+
+    /// 按 id 取层（等价 MyPaint 的按对象引用寻址）。
+    pub fn layer_by_id(&self, id: u64) -> Option<&Layer> {
+        self.index_of_id(id).map(|i| &self.layers[i])
+    }
+
+    pub fn layer_by_id_mut(&mut self, id: u64) -> Option<&mut Layer> {
+        let idx = self.index_of_id(id)?;
+        Some(&mut self.layers[idx])
+    }
+
+    /// 按 id 取该层表面（供命令系统就地改像素）。
+    pub fn surface_by_id(&mut self, id: u64) -> Option<&mut PigmentSurface> {
+        self.layer_by_id_mut(id).map(|l| &mut l.surface)
+    }
+
+    /// 某坐标是否有**笔迹**（任一层有 tile；不含背景）。
+    ///
+    /// GPU 同步的判据：背景 tile 不上传——面板底色就是文档背景色
+    /// （`workspace` 的填充取 [`LayerStack::background_color`]），二者无缝衔接。
+    pub fn has_paint_at(&self, tx: i32, ty: i32) -> bool {
+        self.layers
+            .iter()
+            .any(|l| l.surface.tile_entry(tx, ty).is_some())
+    }
+
+    /// 某坐标是否需要 GPU 上的合成结果（背景可见，或任一层有 tile）。
+    pub fn has_content_at(&self, tx: i32, ty: i32) -> bool {
+        self.background_visible
+            || self.layers.iter().any(|l| l.surface.tile_entry(tx, ty).is_some())
+    }
+
+    /// 合成版本号：任何影响"所有 tile 合成结果"的变化（结构/背景/属性）
+    /// 都会抬高它；tile 级内容变化看各层 `surface.clock()`。GPU 同步把
+    /// 两者合起来当水位线。
+    pub fn composite_revision(&self) -> u64 {
+        let mut rev = self.rev;
+        for l in &self.layers {
+            rev = rev.wrapping_add(l.surface.clock().wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        }
+        rev
     }
 
     // ---- 结构操作（`group.py` insert/pop；撤销命令在 pigment-engine 侧做）----
@@ -166,24 +269,32 @@ impl LayerStack {
         if self.current >= index {
             self.current += 1;
         }
+        self.touch();
         index
     }
 
     /// 移除指定索引的层（`group.py:286` `pop`）。
     ///
-    /// 栈不会为空：移除最后一层时补一个新的空层（对应 `layerswindow` 强制
-    /// 「至少一层」的行为）。
+    /// 允许把栈删空：「至少一层」的约束由 RemoveLayer 命令负责（照
+    /// `lib/command.py:1040-1055` 的 `CREATE_PAINTING_LAYER_IF_EMPTY`）；
+    /// 补层逻辑在命令里，撤销才能精确恢复结构。
+    /// 按 id 移除层（返回被移除的层；id 不存在时 `None`）。
+    pub fn remove_by_id(&mut self, id: u64) -> Option<Layer> {
+        let idx = self.index_of_id(id)?;
+        Some(self.remove(idx))
+    }
+
     pub fn remove(&mut self, index: usize) -> Layer {
         let removed = self.layers.remove(index);
-        if self.layers.is_empty() {
-            self.layers.push(Layer::new());
-            self.current = 0;
-        } else {
+        if !self.layers.is_empty() {
             if self.current >= index && self.current > 0 {
                 self.current -= 1;
             }
             self.current = self.current.min(self.layers.len() - 1);
+        } else {
+            self.current = 0;
         }
+        self.touch();
         removed
     }
 
@@ -195,6 +306,7 @@ impl LayerStack {
 
     pub fn set_background_color(&mut self, rgb: [u8; 3]) {
         self.background_color = rgb;
+        self.touch();
     }
 
     pub fn background_visible(&self) -> bool {
@@ -203,6 +315,7 @@ impl LayerStack {
 
     pub fn set_background_visible(&mut self, visible: bool) {
         self.background_visible = visible;
+        self.touch();
     }
 
     /// 背景的不透明 fix15 tile（`BackgroundLayer`：mode=Normal、opacity=1）。
@@ -268,6 +381,27 @@ impl LayerStack {
             }
         }
         has_content
+    }
+
+    /// 合成 `(tx, ty)` 处的 tile 并编码为显示用 RGBA8（**不透明**，GPU 上传用）。
+    ///
+    /// 背景参与合成（`tree.py` 的背景 BLIT 语义）；背景隐藏时内容直接落在
+    /// 纸色上——与现渲染管线的"CPU 预合成、无混合"模型一致。坐标无内容时
+    /// 返回 `None`（调用方据此从显存剔除）。
+    pub fn composite_tile_rgba8(&self, tx: i32, ty: i32) -> Option<Box<[u8; TILE_RGBA8_BYTES]>> {
+        if !self.has_content_at(tx, ty) {
+            return None;
+        }
+        let mut scratch = vec![0u16; TILE_CHANNELS];
+        self.composite_tile(tx, ty, &mut scratch);
+        let bg = self.background_color;
+        let bg_lin = color::bg_to_linear(bg);
+        let mut out = Box::new([0u8; TILE_RGBA8_BYTES]);
+        for i in 0..TILE_SIZE * TILE_SIZE {
+            let px: [u16; 4] = scratch[i * 4..i * 4 + 4].try_into().unwrap();
+            out[i * 4..i * 4 + 4].copy_from_slice(&color::tile_to_rgba8_single(px, bg, bg_lin));
+        }
+        Some(out)
     }
 
     /// 合成矩形区域为 RGBA8 显示像素（导出/预览用），按 tile 整块合成。
@@ -416,10 +550,9 @@ mod tests {
         st.remove(1); // [new], current=0
         assert_eq!(st.current_index(), 0);
         assert_eq!(st.len(), 1);
-        // 移除最后一层 → 自动补空层（不会出现空栈）
+        // 照源码语义：允许删空（补层由 RemoveLayer 命令负责）
         st.remove(0);
-        assert_eq!(st.len(), 1);
-        assert_eq!(st.current_index(), 0);
+        assert_eq!(st.len(), 0);
     }
 
     #[test]

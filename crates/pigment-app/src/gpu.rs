@@ -46,20 +46,21 @@ pub struct TileUpload {
 /// revision 不同（含 GPU 根本没有该 tile、或已被 LRU 淘汰），就需要（重）上传。
 /// 纯函数 + 幂等：同一状态下重复调用结果一致，因此 UI pass 被丢弃重跑也不会丢同步。
 pub fn plan_uploads(
-    surface: &PigmentSurface,
     uploaded_rev: impl Fn((i32, i32)) -> Option<u64>,
     visible: &[(i32, i32)],
     cap: usize,
+    has_content: impl Fn((i32, i32)) -> bool,
+    composite_rev: u64,
 ) -> Vec<(i32, i32)> {
     let mut plan = Vec::new();
     for &coord in visible {
         if plan.len() >= cap {
             break;
         }
-        let Some(tile) = surface.tile_entry(coord.0, coord.1) else {
-            continue; // 空白 tile 不占用显存，由面板白底兜底
-        };
-        if uploaded_rev(coord) == Some(tile.revision()) {
+        if !has_content(coord) {
+            continue; // 空白 tile 不占用显存，由面板底色兜底
+        }
+        if uploaded_rev(coord) == Some(composite_rev) {
             continue; // 已同步到位
         }
         plan.push(coord);
@@ -77,14 +78,14 @@ pub fn plan_uploads(
 /// 与 `plan_uploads` 一样是纯函数 + 幂等：同一状态下重复调用结果一致，
 /// UI pass 被丢弃重跑也不会误删或漏删。
 pub fn plan_evictions(
-    surface: &PigmentSurface,
     resident: impl Fn((i32, i32)) -> bool,
     visible: &[(i32, i32)],
+    has_content: impl Fn((i32, i32)) -> bool,
 ) -> Vec<(i32, i32)> {
     visible
         .iter()
         .copied()
-        .filter(|c| surface.tile_entry(c.0, c.1).is_none() && resident(*c))
+        .filter(|c| !has_content(*c) && resident(*c))
         .collect()
 }
 
@@ -492,6 +493,7 @@ impl CallbackTrait for CanvasPaint {
 mod tests {
     use super::*;
     use pigment_engine::hokusai::TiledSurface;
+    use pigment_surface::LayerStack;
 
     /// 造一个含内容的 tile（写入一个像素即会 bump revision）。
     fn touch(surface: &mut PigmentSurface, tx: i32, ty: i32) {
@@ -517,37 +519,54 @@ mod tests {
 
     #[test]
     fn plans_content_tiles_not_yet_uploaded() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 1, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 1, 0);
         let visible = vec![(0, 0), (1, 0), (2, 0)]; // (2,0) 是空白 tile
-        let plan = plan_uploads(&s, |_| None, &visible, 16);
+        let rev = st.composite_revision();
+        let plan = plan_uploads(
+            |_| None,
+            &visible,
+            16,
+            |c| st.has_paint_at(c.0, c.1),
+            rev,
+        );
         assert_eq!(plan, vec![(0, 0), (1, 0)], "空白 tile 不该占用上传配额");
     }
 
     #[test]
     fn skips_tiles_already_synced() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 1, 0);
-        let uploaded = |c: (i32, i32)| s.tile_entry(c.0, c.1).map(|t| t.revision());
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 1, 0);
+        let rev = st.composite_revision();
+        let uploaded = |c: (i32, i32)| Some(rev);
         let visible = vec![(0, 0), (1, 0)];
-        assert!(plan_uploads(&s, uploaded, &visible, 16).is_empty());
+        assert!(plan_uploads(uploaded, &visible, 16, |c| st.has_paint_at(c.0, c.1), rev).is_empty());
     }
 
     #[test]
     fn replans_after_cpu_change() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 1, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 1, 0);
         let mut uploaded: HashMap<(i32, i32), u64> = HashMap::new();
         for c in [(0, 0), (1, 0)] {
-            uploaded.insert(c, s.tile_entry(c.0, c.1).unwrap().revision());
+            uploaded.insert(c, st.composite_revision());
         }
-        // 只改 (1,0)
-        touch(&mut s, 1, 0);
-        let plan = plan_uploads(&s, |c| uploaded.get(&c).copied(), &[(0, 0), (1, 0)], 16);
-        assert_eq!(plan, vec![(1, 0)]);
+        // 只改 (1,0)：全局合成版本号被抬高。
+        // 粒度权衡（记账为后续逐 tile 哈希优化）：两个 tile 都会重传，
+        // (0,0) 重传的是相同内容——正确性不受影响，代价是少量冗余带宽。
+        touch(&mut st.current_mut().surface, 1, 0);
+        let rev = st.composite_revision();
+        let plan = plan_uploads(
+            |c| uploaded.get(&c).copied(),
+            &[(0, 0), (1, 0)],
+            16,
+            |c| st.has_paint_at(c.0, c.1),
+            rev,
+        );
+        assert_eq!(plan, vec![(0, 0), (1, 0)]);
     }
 
     /// 关键回归：同步决策必须**幂等**。
@@ -559,45 +578,51 @@ mod tests {
     /// 因此某一趟 pass 被丢弃不影响最终收敛。
     #[test]
     fn planning_is_idempotent_across_discarded_passes() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 3, 2);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 3, 2);
         let visible = vec![(0, 0), (3, 2)];
+        let rev = st.composite_revision();
         // GPU 侧完全没有这些 tile（模拟第一趟 pass 被丢弃、什么都没上传）
         let uploaded: HashMap<(i32, i32), u64> = HashMap::new();
         let probe = |c: (i32, i32)| uploaded.get(&c).copied();
 
-        let pass1 = plan_uploads(&s, probe, &visible, 16);
-        let pass2 = plan_uploads(&s, probe, &visible, 16);
+        let pass1 = plan_uploads(probe, &visible, 16, |c| st.has_paint_at(c.0, c.1), rev);
+        let pass2 = plan_uploads(probe, &visible, 16, |c| st.has_paint_at(c.0, c.1), rev);
         assert_eq!(pass1, pass2, "同一状态下重复规划必须得到相同结果");
 
         // 第二趟真正上传后，第三趟无需再做任何事（收敛）
         let mut synced = HashMap::new();
         for c in &pass1 {
-            synced.insert(*c, s.tile_entry(c.0, c.1).unwrap().revision());
+            synced.insert(*c, rev);
         }
-        assert!(plan_uploads(&s, |c| synced.get(&c).copied(), &visible, 16).is_empty());
+        assert!(
+            plan_uploads(|c| synced.get(&c).copied(), &visible, 16, |c| st.has_paint_at(c.0, c.1), rev)
+                .is_empty()
+        );
     }
 
     #[test]
     fn respects_per_frame_cap_without_losing_backlog() {
-        let mut s = PigmentSurface::new();
+        let mut st = LayerStack::new();
         let mut visible = Vec::new();
         for tx in 0..10 {
-            touch(&mut s, tx, 0);
+            touch(&mut st.current_mut().surface, tx, 0);
             visible.push((tx, 0));
         }
+        let rev = st.composite_revision();
         let uploaded: HashMap<(i32, i32), u64> = HashMap::new();
         let probe = |c: (i32, i32)| uploaded.get(&c).copied();
+        let has = |c: (i32, i32)| st.has_content_at(c.0, c.1);
         // 每帧只放 4 个：本轮 4 个，欠账仍在，下轮继续（不会漏）
-        let first = plan_uploads(&s, probe, &visible, 4);
+        let first = plan_uploads(probe, &visible, 4, has, rev);
         assert_eq!(first.len(), 4);
         assert_eq!(first, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
         let mut synced: HashMap<(i32, i32), u64> = HashMap::new();
         for c in &first {
-            synced.insert(*c, s.tile_entry(c.0, c.1).unwrap().revision());
+            synced.insert(*c, rev);
         }
-        let second = plan_uploads(&s, |c| synced.get(&c).copied(), &visible, 4);
+        let second = plan_uploads(|c| synced.get(&c).copied(), &visible, 4, has, rev);
         assert_eq!(second, vec![(4, 0), (5, 0), (6, 0), (7, 0)]);
     }
 
@@ -609,18 +634,18 @@ mod tests {
     /// 但 (1,0) 的纹理还在显存里被画出来。这就是"撤销不掉"的成因。
     #[test]
     fn plans_eviction_for_tiles_removed_by_undo() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 1, 0);
-        let sshot = s.save_snapshot();
-        touch(&mut s, 2, 0);
-        let _ = s.load_snapshot(&sshot); // 撤销：CPU 侧只剩 (0,0)(1,0)
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 1, 0);
+        let sshot = st.current().surface.save_snapshot();
+        touch(&mut st.current_mut().surface, 2, 0);
+        let _ = st.current_mut().surface.load_snapshot(&sshot); // 撤销：只剩 (0,0)(1,0)
 
         let visible = vec![(0, 0), (1, 0), (2, 0)];
         // 显存里三块都在（撤销前上传过）
         let resident = |c: (i32, i32)| matches!(c, (0, 0) | (1, 0) | (2, 0));
         assert_eq!(
-            plan_evictions(&s, resident, &visible),
+            plan_evictions(resident, &visible, |c| st.has_paint_at(c.0, c.1)),
             vec![(2, 0)],
             "(2,0) 已被撤销掉但显存里还在 → 必须剔除"
         );
@@ -629,12 +654,12 @@ mod tests {
     /// CPU 有内容、显存已同步的 tile 不该被剔除（正常作画路径不受影响）。
     #[test]
     fn does_not_evict_tiles_still_present_on_cpu() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
-        touch(&mut s, 1, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface, 1, 0);
         let visible = vec![(0, 0), (1, 0)];
         assert!(
-            plan_evictions(&s, |_| true, &visible).is_empty(),
+            plan_evictions(|_| true, &visible, |c| st.has_paint_at(c.0, c.1)).is_empty(),
             "CPU 仍在的 tile 不该被剔除"
         );
     }
@@ -642,11 +667,11 @@ mod tests {
     /// 显存里本来就没有的空白 tile 不必下发删除指令。
     #[test]
     fn does_not_evict_when_not_resident() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
         let visible = vec![(0, 0), (7, 7)];
         assert!(
-            plan_evictions(&s, |_| false, &visible).is_empty(),
+            plan_evictions(|_| false, &visible, |c| st.has_paint_at(c.0, c.1)).is_empty(),
             "显存里没有的东西无需剔除"
         );
     }
@@ -654,22 +679,22 @@ mod tests {
     /// 视口外的残留 tile 不处理：它们既不显示，也会被 LRU 自然淘汰。
     #[test]
     fn eviction_is_limited_to_the_visible_set() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
         let visible = vec![(0, 0)]; // (9,9) 曾被上传但现在不在视口里
-        assert!(plan_evictions(&s, |c| c == (9, 9), &visible).is_empty());
+        assert!(plan_evictions(|c| c == (9, 9), &visible, |c| st.has_paint_at(c.0, c.1)).is_empty());
     }
 
     /// 与上传规划一样是纯函数：同一状态下重复规划结果一致
     /// （egui 多趟 pass 丢弃重跑时不会误删画布内容）。
     #[test]
     fn eviction_planning_is_idempotent() {
-        let mut s = PigmentSurface::new();
-        touch(&mut s, 0, 0);
+        let mut st = LayerStack::new();
+        touch(&mut st.current_mut().surface, 0, 0);
         let visible = vec![(0, 0), (1, 0)];
         let resident = |c: (i32, i32)| c == (1, 0);
-        let a = plan_evictions(&s, resident, &visible);
-        let b = plan_evictions(&s, resident, &visible);
+        let a = plan_evictions(resident, &visible, |c| st.has_paint_at(c.0, c.1));
+        let b = plan_evictions(resident, &visible, |c| st.has_paint_at(c.0, c.1));
         assert_eq!(a, b);
         assert_eq!(a, vec![(1, 0)]);
     }

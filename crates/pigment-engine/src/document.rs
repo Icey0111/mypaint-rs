@@ -29,16 +29,16 @@
 use std::collections::BTreeMap;
 
 use hokusai::tile::TILE_SIZE;
-use pigment_surface::PigmentSurface;
+use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
     Brushwork, Command, CommandStack, CommandUpdate, DocContext, DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
 
-/// 文档模型：一个表面 + 一条撤销栈 + 画幅/分辨率/设置。
+/// 文档模型：一个图层栈 + 一条撤销栈 + 画幅/分辨率/设置。
 pub struct Document {
-    surface: PigmentSurface,
+    layers: LayerStack,
     /// 撤销/重做栈（`lib/document.py:309`）。
     pub command_stack: CommandStack,
     /// 累计的"未保存作画时长"（秒），`.ora` 的 JSON 设置会写它
@@ -72,7 +72,7 @@ impl Document {
     /// 指定栈深新建。
     pub fn with_max_undo_stack_size(max_undo_stack_size: usize) -> Self {
         Self {
-            surface: PigmentSurface::new(),
+            layers: LayerStack::new(),
             command_stack: CommandStack::new(max_undo_stack_size),
             unsaved_painting_time: 0.0,
             frame: (0, 0, 0, 0),
@@ -83,14 +83,37 @@ impl Document {
         }
     }
 
+    // ---- 图层栈（B2-3）----
+
+    /// 图层栈（只读）。
     #[inline]
-    pub fn surface(&self) -> &PigmentSurface {
-        &self.surface
+    pub fn layers(&self) -> &LayerStack {
+        &self.layers
     }
 
+    /// 图层栈（可变；结构操作请走命令，这里供渲染/导出读）。
+    #[inline]
+    pub fn layers_mut(&mut self) -> &mut LayerStack {
+        &mut self.layers
+    }
+
+    /// **当前层**的表面。作画请走 [`Document::surface_mut`]；
+    /// 显示合成应走 [`LayerStack::composite_tile`]（含背景与各层混合模式）。
+    #[inline]
+    pub fn surface(&self) -> &PigmentSurface {
+        &self.layers.current().surface
+    }
+
+    /// 当前层表面的可变借用（照旧供作画热路径使用）。
     #[inline]
     pub fn surface_mut(&mut self) -> &mut PigmentSurface {
-        &mut self.surface
+        &mut self.layers.current_mut().surface
+    }
+
+    /// 当前层（只读）。
+    #[inline]
+    pub fn current_layer(&self) -> &Layer {
+        self.layers.current()
     }
 
     /// 命令上下文（`DocContext` 的两个字段都来自本对象）。
@@ -100,17 +123,108 @@ impl Document {
     fn split(&mut self) -> (&mut CommandStack, DocContext<'_>) {
         let Document {
             command_stack,
-            surface,
+            layers,
             unsaved_painting_time,
             ..
         } = self;
         (
             command_stack,
             DocContext {
-                surface,
+                layers,
                 unsaved_painting_time,
             },
         )
+    }
+
+    // ---- 图层操作入口（构造命令 + 入栈；B2-3）----
+
+    /// 新建图层并插入到当前层之上（`lib/document.py` 的 `add_layer`；
+    /// UI 层 `layerswindow` 的 AddLayerAction 走这里）。
+    pub fn add_layer(&mut self) -> bool {
+        let index = self.layers.current_index();
+        self.do_command(Box::new(crate::command::AddLayer::new(index, Layer::new(), false)))
+    }
+
+    /// 移除当前层（`RemoveLayer`）。
+    pub fn remove_layer(&mut self) -> bool {
+        let (stack, mut ctx) = self.split();
+        let cmd = crate::command::RemoveLayer::new(&mut ctx);
+        stack.do_command(Box::new(cmd), &mut ctx)
+    }
+
+    /// 切换当前层（`SelectLayer`，自动撤销类）。
+    pub fn select_layer(&mut self, index: usize) {
+        if index >= self.layers.len() {
+            return;
+        }
+        let prev = self.layers.current_id();
+        let new = self.layers.layer(index).id;
+        if prev == new {
+            return;
+        }
+        self.do_command(Box::new(crate::command::SelectLayer::new(prev, new)));
+    }
+
+    /// 当前层上移一格（朝栈顶；`BubbleLayerUp`）。
+    pub fn bubble_layer_up(&mut self) -> bool {
+        let id = self.layers.current_id();
+        self.do_command(Box::new(crate::command::BubbleLayer::up(id)))
+    }
+
+    /// 当前层下移一格（`BubbleLayerDown`）。
+    pub fn bubble_layer_down(&mut self) -> bool {
+        let id = self.layers.current_id();
+        self.do_command(Box::new(crate::command::BubbleLayer::down(id)))
+    }
+
+    /// 合并当前层到下层（`MergeLayerDown`；不可合并时静默不做——
+    /// UI 侧的动作可用性检查共用 [`crate::command::MergeLayerDown::new`] 的判据）。
+    pub fn merge_layer_down(&mut self) -> bool {
+        let (stack, mut ctx) = self.split();
+        let Some(cmd) = crate::command::MergeLayerDown::new(&mut ctx) else {
+            return false;
+        };
+        stack.do_command(Box::new(cmd), &mut ctx)
+    }
+
+    /// 设置图层可见性（`SetLayerVisibility`）。
+    pub fn set_layer_visible(&mut self, index: usize, visible: bool) -> bool {
+        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+            return false;
+        };
+        self.do_command(Box::new(crate::command::SetLayerVisibility::new(id, visible)))
+    }
+
+    /// 设置图层锁定（`SetLayerLocked`）。
+    pub fn set_layer_locked(&mut self, index: usize, locked: bool) -> bool {
+        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+            return false;
+        };
+        self.do_command(Box::new(crate::command::SetLayerLocked::new(id, locked)))
+    }
+
+    /// 设置图层不透明度（`SetLayerOpacity`）。
+    pub fn set_layer_opacity(&mut self, index: usize, opacity: f32) -> bool {
+        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+            return false;
+        };
+        self.do_command(Box::new(crate::command::SetLayerOpacity::new(id, opacity)))
+    }
+
+    /// 设置图层混合模式（`SetLayerMode`）。
+    pub fn set_layer_mode(&mut self, index: usize, mode: pigment_surface::combine::CombineMode) -> bool {
+        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+            return false;
+        };
+        self.do_command(Box::new(crate::command::SetLayerMode::new(id, mode)))
+    }
+
+    /// 重命名图层（`RenameLayer`）。
+    pub fn rename_layer(&mut self, index: usize, name: Option<String>) -> bool {
+        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+            return false;
+        };
+        self.do_command(Box::new(crate::command::RenameLayer::new(id, name)))
     }
 
     /// 撤销最近一次命令（`lib/document.py:1158`），返回被撤销命令的展示名。
@@ -173,12 +287,15 @@ impl Document {
     /// 与 MyPaint 一致地**按 tile 边界取整**（`lib/tiledsurface.py` 的
     /// `get_bbox()`），因为它会被 `.ora`/`.png` 导出直接当画幅用。
     pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
-        let mut it = self.surface.tiles().map(|(c, _)| c);
-        let Some(first) = it.next() else {
+        let mut coords = self
+            .layers
+            .iter_top_down()
+            .flat_map(|(_, l)| l.surface.tiles().map(|(c, _)| c));
+        let Some(first) = coords.next() else {
             return (0, 0, 0, 0);
         };
         let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
-        for (tx, ty) in it {
+        for (tx, ty) in coords {
             x0 = x0.min(tx);
             y0 = y0.min(ty);
             x1 = x1.max(tx);
@@ -190,7 +307,7 @@ impl Document {
 
     /// 清空文档（`lib/document.py:923`）：丢内容、清栈、作画时长归零。
     pub fn clear(&mut self) {
-        self.surface = PigmentSurface::new();
+        self.layers = LayerStack::new();
         self.command_stack.clear();
         self.unsaved_painting_time = 0.0;
     }
@@ -270,12 +387,12 @@ impl Document {
                     layer_name: None,
                 };
                 let bbox = self.data_bbox();
-                let saved = fileio::save_ora(&self.surface, path, &opts, bbox)?;
+                let saved = fileio::save_ora(self.surface(), path, &opts, bbox)?;
                 SaveOutcome::Ora { bbox: saved.bbox }
             }
             Some(Format::Png) => {
                 let bbox = self.get_user_bbox();
-                let saved = fileio::save_png(&self.surface, path, bbox, alpha.unwrap_or(true))?;
+                let saved = fileio::save_png(self.surface(), path, bbox, alpha.unwrap_or(true))?;
                 SaveOutcome::Png { bbox: saved.bbox }
             }
             _ => return Err(fileio::unsupported_message(path)),
@@ -296,7 +413,7 @@ impl Document {
         self.clear();
         let outcome = match fileio::format_for_path(path) {
             Some(Format::Ora) => {
-                let loaded = fileio::load_ora(&mut self.surface, path)?;
+                let loaded = fileio::load_ora(self.surface_mut(), path)?;
                 self.xres = loaded.xres;
                 self.yres = loaded.yres;
                 // 照源码：画幅设为文件里声明的尺寸，并按 `frame-active` 决定启用
@@ -313,7 +430,7 @@ impl Document {
                 }
             }
             Some(Format::Png) => {
-                let loaded = fileio::load_png(&mut self.surface, path)?;
+                let loaded = fileio::load_png(self.surface_mut(), path)?;
                 // `load_png` 末行 `self.set_frame(bbox, user_initiated=False)`（`:1736`）
                 self.set_frame(loaded.bbox.0, loaded.bbox.1, loaded.bbox.2, loaded.bbox.3);
                 LoadOutcome::Png { bbox: loaded.bbox }
