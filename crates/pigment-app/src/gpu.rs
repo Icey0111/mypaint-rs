@@ -2,7 +2,12 @@
 //!
 //! - 每 tile 一张 64×64 `Rgba8UnormSrgb` 纹理（CPU 侧已完成 fix15→sRGB 合成）
 //! - LRU 显存驻留：超出容量按 `last_frame` 淘汰最久未用者
-//! - 增量上传：UI 线程用 `changed_since` 收集脏 tile，prepare 阶段写入纹理
+//! - **自愈式增量同步**：每帧对可见 tile 比对「CPU revision vs GPU 已上传
+//!   revision」，不一致才上传。每个 GpuTile 记住自己上传过的 revision，
+//!   因此任何一帧的同步决策都是**幂等、可重算**的——egui 的多趟 UI pass
+//!   （`request_discard` 重跑布局时丢弃前一趟形状）不会造成上传丢失。
+//!   早期版本用「一次性消费的 changed_since 同步点 + 立即推进」，被丢弃的
+//!   那一趟 pass 会永久丢失上传，画布留下笔画中途的半透明残影（已修）。
 //! - 绘制：每个可见 tile 一次 draw call（6 顶点 quad，vertex_index 拉取，
 //!   无顶点缓冲）；视口内 tile 数量有限（1080p ≈ 500 块），M2 阶段足够，
 //!   instancing/atlas 合并留作 M5 优化项
@@ -16,22 +21,56 @@ use eframe::wgpu;
 
 use crate::convert::TILE_RGBA8_BYTES;
 use pigment_engine::hokusai::tile::TILE_SIZE;
+use pigment_surface::PigmentSurface;
 
 /// 显存驻留上限（1024 块 × 16KiB = 16 MiB）。
 const GPU_TILE_CAPACITY: usize = 1024;
 
-/// 一次脏 tile 上传请求（UI 线程收集，prepare 阶段消费）。
+/// 单帧上传上限（128 块 × 16KiB = 2 MiB）。超出的部分在后续帧继续补，
+/// 因为同步决策每帧重算，**只延迟、不丢**。
+pub const MAX_UPLOADS_PER_FRAME: usize = 128;
+
+/// 一次 tile 上传请求（UI 线程收集，prepare 阶段消费）。
 pub struct TileUpload {
     pub coord: (i32, i32),
-    #[allow(dead_code)] // revision 目前仅作调试/断言用途，去重以「每帧全量覆盖写」保证
+    /// 本次上传对应的 CPU 侧 revision，写入后作为该 GPU tile 的「已同步水位」。
     pub revision: u64,
     pub pixels: Box<[u8; TILE_RGBA8_BYTES]>,
+}
+
+/// 计算本帧需要上传的可见 tile 坐标。
+///
+/// 判据是**状态比较**而非事件流水：只要 GPU 记住的已同步 revision 与 CPU 当前
+/// revision 不同（含 GPU 根本没有该 tile、或已被 LRU 淘汰），就需要（重）上传。
+/// 纯函数 + 幂等：同一状态下重复调用结果一致，因此 UI pass 被丢弃重跑也不会丢同步。
+pub fn plan_uploads(
+    surface: &PigmentSurface,
+    uploaded_rev: impl Fn((i32, i32)) -> Option<u64>,
+    visible: &[(i32, i32)],
+    cap: usize,
+) -> Vec<(i32, i32)> {
+    let mut plan = Vec::new();
+    for &coord in visible {
+        if plan.len() >= cap {
+            break;
+        }
+        let Some(tile) = surface.tile_entry(coord.0, coord.1) else {
+            continue; // 空白 tile 不占用显存，由面板白底兜底
+        };
+        if uploaded_rev(coord) == Some(tile.revision()) {
+            continue; // 已同步到位
+        }
+        plan.push(coord);
+    }
+    plan
 }
 
 struct GpuTile {
     // wgpu 对象内部引用计数，bind_group 持有即保活，无需再存 texture/buffer 句柄
     bind_group: wgpu::BindGroup,
     texture: wgpu::Texture, // 保留句柄：覆盖写时 write_texture 需要
+    /// 已同步到显存的 CPU revision（自愈式同步的水位线）。
+    uploaded_rev: u64,
     last_frame: u64,
 }
 
@@ -239,6 +278,7 @@ impl TileRenderer {
                 size,
             );
             t.last_frame = frame;
+            t.uploaded_rev = up.revision;
             return;
         }
 
@@ -307,21 +347,27 @@ impl TileRenderer {
             GpuTile {
                 texture,
                 bind_group,
+                uploaded_rev: up.revision,
                 last_frame: frame,
             },
         );
     }
 
-    /// 该 tile 是否已在显存驻留。
+    /// 该 tile 已同步到显存的 CPU revision（`None` = 显存无此 tile）。
     #[inline]
-    pub fn has(&self, coord: (i32, i32)) -> bool {
-        self.cache.contains_key(&coord)
+    pub fn uploaded_rev(&self, coord: (i32, i32)) -> Option<u64> {
+        self.cache.get(&coord).map(|t| t.uploaded_rev)
     }
 
     /// 当前显存驻留的 tile 数。
     #[inline]
     pub fn resident(&self) -> usize {
         self.cache.len()
+    }
+
+    /// 清空显存缓存（下一次同步会按需重建全部可见 tile）。
+    pub fn invalidate_all(&mut self) {
+        self.cache.clear();
     }
 
     /// LRU 淘汰：超出容量时移除最久未用的 tile。
@@ -339,7 +385,7 @@ impl TileRenderer {
     }
 }
 
-/// egui PaintCallback：每帧携带脏 tile 上传包 + 可见 tile 列表 + 视图矩阵。
+/// egui PaintCallback：每帧携带待上传 tile 包 + 可见 tile 列表 + 视图矩阵。
 pub struct CanvasPaint {
     pub renderer: Arc<Mutex<TileRenderer>>,
     /// 世界像素 → 全窗口裁剪空间矩阵（窗口物理像素域）。
@@ -383,5 +429,104 @@ impl CallbackTrait for CanvasPaint {
             render_pass.set_bind_group(1, &t.bind_group, &[]);
             render_pass.draw(0..6, 0..1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pigment_engine::hokusai::TiledSurface;
+
+    /// 造一个含内容的 tile（写入一个像素即会 bump revision）。
+    fn touch(surface: &mut PigmentSurface, tx: i32, ty: i32) {
+        let t = surface.tile_request_start(tx, ty);
+        t[0][0] = [100, 200, 300, 1 << 15];
+        surface.tile_request_end(tx, ty);
+    }
+
+    #[test]
+    fn plans_content_tiles_not_yet_uploaded() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 1, 0);
+        let visible = vec![(0, 0), (1, 0), (2, 0)]; // (2,0) 是空白 tile
+        let plan = plan_uploads(&s, |_| None, &visible, 16);
+        assert_eq!(plan, vec![(0, 0), (1, 0)], "空白 tile 不该占用上传配额");
+    }
+
+    #[test]
+    fn skips_tiles_already_synced() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 1, 0);
+        let uploaded = |c: (i32, i32)| s.tile_entry(c.0, c.1).map(|t| t.revision());
+        let visible = vec![(0, 0), (1, 0)];
+        assert!(plan_uploads(&s, uploaded, &visible, 16).is_empty());
+    }
+
+    #[test]
+    fn replans_after_cpu_change() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 1, 0);
+        let mut uploaded: HashMap<(i32, i32), u64> = HashMap::new();
+        for c in [(0, 0), (1, 0)] {
+            uploaded.insert(c, s.tile_entry(c.0, c.1).unwrap().revision());
+        }
+        // 只改 (1,0)
+        touch(&mut s, 1, 0);
+        let plan = plan_uploads(&s, |c| uploaded.get(&c).copied(), &[(0, 0), (1, 0)], 16);
+        assert_eq!(plan, vec![(1, 0)]);
+    }
+
+    /// 关键回归：同步决策必须**幂等**。
+    ///
+    /// 旧实现用「changed_since + 立即推进 last_sync」做事件流水式同步，egui 多趟
+    /// UI pass 中若第一趟的 PaintCallback 被丢弃（request_discard 重跑布局），
+    /// 那批上传就永久丢失，tile 会停在笔画中途的半透明快照上——表现为画面
+    /// 「缺了一角 / 像被空白挡住」。新实现基于状态比较，重复规划结果一致，
+    /// 因此某一趟 pass 被丢弃不影响最终收敛。
+    #[test]
+    fn planning_is_idempotent_across_discarded_passes() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 3, 2);
+        let visible = vec![(0, 0), (3, 2)];
+        // GPU 侧完全没有这些 tile（模拟第一趟 pass 被丢弃、什么都没上传）
+        let uploaded: HashMap<(i32, i32), u64> = HashMap::new();
+        let probe = |c: (i32, i32)| uploaded.get(&c).copied();
+
+        let pass1 = plan_uploads(&s, probe, &visible, 16);
+        let pass2 = plan_uploads(&s, probe, &visible, 16);
+        assert_eq!(pass1, pass2, "同一状态下重复规划必须得到相同结果");
+
+        // 第二趟真正上传后，第三趟无需再做任何事（收敛）
+        let mut synced = HashMap::new();
+        for c in &pass1 {
+            synced.insert(*c, s.tile_entry(c.0, c.1).unwrap().revision());
+        }
+        assert!(plan_uploads(&s, |c| synced.get(&c).copied(), &visible, 16).is_empty());
+    }
+
+    #[test]
+    fn respects_per_frame_cap_without_losing_backlog() {
+        let mut s = PigmentSurface::new();
+        let mut visible = Vec::new();
+        for tx in 0..10 {
+            touch(&mut s, tx, 0);
+            visible.push((tx, 0));
+        }
+        let uploaded: HashMap<(i32, i32), u64> = HashMap::new();
+        let probe = |c: (i32, i32)| uploaded.get(&c).copied();
+        // 每帧只放 4 个：本轮 4 个，欠账仍在，下轮继续（不会漏）
+        let first = plan_uploads(&s, probe, &visible, 4);
+        assert_eq!(first.len(), 4);
+        assert_eq!(first, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
+        let mut synced: HashMap<(i32, i32), u64> = HashMap::new();
+        for c in &first {
+            synced.insert(*c, s.tile_entry(c.0, c.1).unwrap().revision());
+        }
+        let second = plan_uploads(&s, |c| synced.get(&c).copied(), &visible, 4);
+        assert_eq!(second, vec![(4, 0), (5, 0), (6, 0), (7, 0)]);
     }
 }

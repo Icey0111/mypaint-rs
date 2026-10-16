@@ -34,7 +34,10 @@ pub struct PigmentApp {
     stroke: Option<BrushState>,
     view: View, // 逻辑点坐标域（points）
     renderer: Arc<Mutex<TileRenderer>>,
-    last_sync: u64,
+    /// 下一帧强制清空显存缓存并全量重传（诊断键 F1）。
+    force_resync: bool,
+    /// 本帧计划上传的 tile 数（命中上限说明还有欠账，需继续重绘）。
+    pending_uploads: usize,
     // 笔刷参数
     color_idx: usize,
     radius_log: f32,
@@ -57,7 +60,8 @@ impl PigmentApp {
             stroke: None,
             view: View::default(),
             renderer: Arc::new(Mutex::new(renderer)),
-            last_sync: 0,
+            force_resync: false,
+            pending_uploads: 0,
             color_idx: 0,
             radius_log: 2.2, // ≈ 9px
             paint_mode: true,
@@ -92,7 +96,7 @@ impl PigmentApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        let (smaller, larger, eraser, paint, color_key) = ctx.input(|i| {
+        let (smaller, larger, eraser, paint, color_key, resync, dump) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::OpenBracket),
                 i.key_pressed(egui::Key::CloseBracket),
@@ -107,8 +111,21 @@ impl PigmentApp {
                 ]
                 .iter()
                 .position(|&k| i.key_pressed(k)),
+                i.key_pressed(egui::Key::F1),
+                i.key_pressed(egui::Key::F2),
             )
         });
+        if resync {
+            // 诊断：丢弃全部显存 tile 并重传。若画面恢复正常 → 属显存同步问题
+            self.force_resync = true;
+        }
+        if dump {
+            // 诊断：导出 CPU 侧画布为 PNG，与屏幕画面对照可区分「CPU 无内容」与「显存没同步」
+            match crate::dump::dump_surface_png(&self.surface) {
+                Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
+                Err(e) => eprintln!("导出失败: {e}"),
+            }
+        }
         let mut dirty = false;
         if smaller {
             self.radius_log = (self.radius_log - 0.15).max(-1.0);
@@ -172,7 +189,7 @@ impl PigmentApp {
                 let resident = self.renderer.lock().unwrap().resident();
                 ui.label(format!("显存驻留 {resident}"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("左键画 · 右键/中键/Space 平移 · 滚轮缩放 · [ ] 半径");
+                    ui.label("左键画 · 右键/中键/Space 平移 · 滚轮缩放 · [ ] 半径 · F1 重传 · F2 导快照");
                 });
             });
         });
@@ -241,36 +258,8 @@ impl PigmentApp {
             self.stroke = None;
         }
 
-        // ---- 笔刷光标预览 ----
-        if let Some(pos) = response.hover_pos() {
-            let r = self.radius_log.exp() * self.view.zoom;
-            ui.painter().circle_stroke(
-                pos,
-                r.max(1.0),
-                egui::Stroke::new(1.0, egui::Color32::from_gray(120)),
-            );
-        }
-
-        // ---- 收集脏 tile（增量上传包）----
-        let clock = self.surface.clock();
-        let mut uploads: Vec<TileUpload> = if clock > self.last_sync {
-            let mut changed = self.surface.changed_since(self.last_sync);
-            changed.sort();
-            changed
-                .into_iter()
-                .filter_map(|c| {
-                    let t = self.surface.tile_entry(c.0, c.1)?;
-                    Some(TileUpload {
-                        coord: c,
-                        revision: t.revision(),
-                        pixels: convert::tile_to_rgba8_on_white(t.pixels()),
-                    })
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
-        self.last_sync = clock;
+        // ---- 笔刷光标预览：必须在 PaintCallback 之后绘制，否则会被 tile 盖住 ----
+        // （见下方 callback 之后）
 
         // ---- 可见 tile 列表（物理像素域）----
         let vp_w = rect.width() * ppp;
@@ -303,28 +292,33 @@ impl PigmentApp {
             }
         }
 
-        // ---- 显存补传：可见但被 LRU 淘汰（或从未上传）的 tile ----
-        // 面板白底可兜底空白，但「有内容却被淘汰」必须重传，否则画布漏底。
+        // ---- 自愈式增量同步：比对 CPU revision 与显存已上传 revision ----
+        // 判据是状态而非事件流水，所以本帧的决定可被安全丢弃后重算，不会丢上传。
+        let mut uploads: Vec<TileUpload> = Vec::new();
         {
-            let renderer = self.renderer.lock().unwrap();
-            let mut refill = 0usize;
-            for &coord in &visible {
-                if refill >= 64 {
-                    break; // 每帧限量，避免淘汰风暴时卡帧
-                }
-                if renderer.has(coord) {
+            let mut renderer = self.renderer.lock().unwrap();
+            if self.force_resync {
+                renderer.invalidate_all();
+                self.force_resync = false;
+            }
+            let plan = crate::gpu::plan_uploads(
+                &self.surface,
+                |c| renderer.uploaded_rev(c),
+                &visible,
+                crate::gpu::MAX_UPLOADS_PER_FRAME,
+            );
+            for coord in plan {
+                let Some(t) = self.surface.tile_entry(coord.0, coord.1) else {
                     continue;
-                }
-                if let Some(t) = self.surface.tile_entry(coord.0, coord.1) {
-                    uploads.push(TileUpload {
-                        coord,
-                        revision: t.revision(),
-                        pixels: convert::tile_to_rgba8_on_white(t.pixels()),
-                    });
-                    refill += 1;
-                }
+                };
+                uploads.push(TileUpload {
+                    coord,
+                    revision: t.revision(),
+                    pixels: convert::tile_to_rgba8_on_white(t.pixels()),
+                });
             }
         }
+        self.pending_uploads = uploads.len();
 
         // ---- 视图矩阵：world px → 全窗口裁剪空间 ----
         let win = ui.ctx().content_rect();
@@ -349,8 +343,22 @@ impl PigmentApp {
             },
         ));
 
-        // 绘制中需要持续重绘（dab 沿笔画插值）
-        if self.stroke.is_some() || self.stroke_dirty {
+        // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----
+        if let Some(pos) = response.hover_pos() {
+            let r = self.radius_log.exp() * self.view.zoom;
+            let color = if self.eraser {
+                egui::Color32::from_rgb(200, 80, 80)
+            } else {
+                egui::Color32::from_gray(110)
+            };
+            ui.painter()
+                .circle_stroke(pos, r.max(1.0), egui::Stroke::new(1.0, color));
+        }
+
+        // 绘制中持续重绘（dab 沿笔画插值）；上传有欠账（命中每帧上限）时也要继续，
+        // 否则剩下的 tile 会一直停在旧状态
+        let backlog = self.pending_uploads >= crate::gpu::MAX_UPLOADS_PER_FRAME;
+        if self.stroke.is_some() || self.stroke_dirty || backlog {
             self.stroke_dirty = false;
             ui.ctx().request_repaint();
         }

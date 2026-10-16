@@ -11,3 +11,5 @@ pigment-engine = { path = "../pigment-engine" }
 pigment-surface = { path = "../pigment-surface" }
 # egui/wgpu 迭代快，按 P0 校对结论锁版本、里程碑间统一升级
 eframe = { version = "0.37", features = ["wgpu"] }
+# 诊断导出（F2）与后续 OpenRaster 导出复用
+image = { version = "0.25", default-features = false, features = ["png"] }

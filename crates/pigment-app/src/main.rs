@@ -4,6 +4,7 @@
 
 mod app;
 mod convert;
+mod dump;
 mod gpu;
 mod view;
 
