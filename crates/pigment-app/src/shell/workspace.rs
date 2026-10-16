@@ -238,6 +238,9 @@ impl PigmentApp {
         let ppp = ui.ctx().pixels_per_point();
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
+        // 记下画布矩形：键盘缩放要用它算锚点（`handle_keys` 在画布之前跑，
+        // 只能拿到上一帧的值 —— 与源码用"最后一次指针事件"同构）
+        self.canvas_rect = Some(rect);
 
         // ---- 平移 ----
         let pan_delta = if response.dragged_by(egui::PointerButton::Middle)

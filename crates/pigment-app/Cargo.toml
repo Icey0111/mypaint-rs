@@ -13,3 +13,7 @@ pigment-surface = { path = "../pigment-surface" }
 eframe = { version = "0.37", features = ["wgpu"] }
 # 诊断导出（F2）与后续 OpenRaster 导出复用
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+[build-dependencies]
+# 构建期解析 gui/resources.xml（219 个动作 / 105 条加速键）生成动作表。只读、纯 Rust。
+roxmltree = "0.21"

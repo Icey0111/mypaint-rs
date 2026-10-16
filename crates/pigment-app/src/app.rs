@@ -4,16 +4,26 @@
 //! 顶栏 / 工作区 / 底栏分别在 [`crate::shell`] 的 `topbar` / `workspace` / `footer`
 //! 子模块里绘制，本文件只留状态、笔画生命周期、撤销与文档 I/O。
 //!
-//! 交互（**照搬 MyPaint 键位**，此处只列已移植的）：
-//! - 左键拖拽绘制；中/右键或 Space+左键平移；滚轮以光标为中心缩放
-//! - `[` / `]` 笔刷半径；`E` 橡皮；`P` 光谱混色开关
-//! - `1..9,0` 恢复笔刷快捷键槽位；`Ctrl+数字` 存入槽位
-//!   （`gui/document.py:_init_context_actions`）
-//! - `,` / `.` 上一支 / 下一支笔刷；`Tab` 收起/展开面板；`F11` 全屏
-//! - `Ctrl+Z` 撤销、`Ctrl+Shift+Z` 重做（`gui/resources.xml:217-231` 的
-//!   动作加速键），另有 MyPaint 老式键位 `z` 撤销 / `y` 重做
-//!   （`gui/document.py:527-530`）
-//! - `F1` 强制全量重传显存 tile；`F2` 导出 CPU 侧画布 PNG（诊断）
+//! 交互（**键位全部查表，不在这里手写**）：
+//!
+//! 所有键位来自 [`crate::shell::actions`]，它由构建期解析 `gui/resources.xml`
+//! 生成（219 个动作 / 105 条加速键），再叠上源码里代码注册的 49 条
+//! （`document.py:_init_extra_keys` 的 29 条 + `_init_context_actions` 的 20 条）。
+//! 本文件只负责"动作名 → 行为"的映射（[`PigmentApp::run_action`]）。
+//!
+//! - 画布：左键拖拽绘制；中/右键或 Space+左键平移；滚轮以光标为中心缩放
+//! - 笔刷尺寸 `f` / `d`（`Bigger`/`Smaller`，`resources.xml:275,283`）
+//! - 橡皮 `e`、普通模式 `n`（`BlendModeEraser`/`BlendModeNormal`）
+//! - 缩放 `,` / `.`、平移 `←↑↓→`（`ZoomIn/Out`、`Pan{Left,Right,Up,Down}`）
+//! - 撤销 `Ctrl+Z`（老式键位 `z`）、重做 `Ctrl+Shift+Z` / `Ctrl+Y` / `y`
+//! - 笔刷槽位 `0`-`9` 恢复、`Ctrl+0`-`9` 存入
+//!   （`gui/document.py:_init_context_actions`，运行期动态注册的动作）
+//! - `Ctrl+N/O/S`、`Ctrl+Shift+S/E` 文档 I/O；`Ctrl+Q` 退出
+//! - `F11` 全屏、`F12` 重置视图、`F10` 适配视图、`Tab` 全屏自动隐藏
+//!   （后三个依赖尚未移植的能力，动作命中但**不消费**，见 `run_action`）
+//! - **应用本地扩展键**（源码里没有，用空闲键位）：`x` 光谱混色开关、
+//!   `Ctrl+,` / `Ctrl+.` 上一支 / 下一支笔刷、`Ctrl+F1` 重传显存、
+//!   `Ctrl+F2` 导出 CPU 画布（诊断）。理由逐条写在 `actions::APP_KEYS` 里。
 //!
 //! 数据流：指针事件 → hokusai 笔画引擎 → PigmentSurface（CPU fix15）
 //!   → revision 比对收集脏 tile → convert 为 sRGB8 → GPU 增量上传 → 渲染。
@@ -43,6 +53,7 @@ use crate::brushes::BrushPanel;
 use crate::color::{self, ColorHistory};
 use crate::editor::BrushEditor;
 use crate::gpu::TileRenderer;
+use crate::shell::actions;
 use crate::view::View;
 
 /// 顶栏状态文字的存活时长（秒）。
@@ -162,8 +173,14 @@ pub struct PigmentApp {
     /// 正在记录的作画命令（`gui/mode.py` 的 `__active_brushwork`）。
     pub(crate) brushwork: Option<Brushwork>,
     pub(crate) view: View,
+    /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
+    ///
+    /// 键盘缩放要有"围绕哪里缩放"的锚点，而 `handle_keys` 在画布绘制**之前**
+    /// 跑，拿不到本帧的画布矩形 —— 这与源码同构：MyPaint 用的也是
+    /// "最后一次指针事件的位置"（`document.py:1789`），本身就是上一帧的信息。
+    pub(crate) canvas_rect: Option<egui::Rect>,
     pub(crate) renderer: Arc<Mutex<TileRenderer>>,
-    /// 下一帧强制清空显存缓存并全量重传（诊断键 F1）。
+    /// 下一帧强制清空显存缓存并全量重传（诊断键 Ctrl+F1）。
     pub(crate) force_resync: bool,
     /// 本帧计划上传的 tile 数（命中上限说明还有欠账，需继续重绘）。
     pub(crate) pending_uploads: usize,
@@ -307,6 +324,7 @@ impl PigmentApp {
             stroke_state: None,
             brushwork: None,
             view: View::default(),
+            canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
             force_resync: false,
             pending_uploads: 0,
@@ -710,192 +728,240 @@ impl PigmentApp {
         self.set_status(format!("笔刷 {i} ← 已存入当前设置"), now);
     }
 
+    /// 按键分发 —— 全部键位判断都交给 [`crate::shell::actions`] 的表。
+    ///
+    /// 结构对应 MyPaint 的 `KeyboardManager._key_press_cb`（`gui/keyboard.py:93-157`）：
+    /// 1. 输入框有焦点时让位 —— 源码靠 `propagate_key_event()`（`keyboard.py:97`），
+    ///    egui 的 `key_pressed()` 不看焦点，所以这里显式早退。
+    /// 2. 按**事件流顺序**取本帧的按下事件。用事件而不是 `key_pressed()`：
+    ///    事件自带按下瞬间的修饰键快照，也不用为每个绑定再问一次输入状态。
+    /// 3. 修饰键**精确匹配**（源码是元组查表，不是"包含"）。
+    /// 4. 命中但**未实现**的动作不消费按键（返回 false），因此不会挡住后面的绑定。
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        // GTK 的 accelerator 在文本输入框获得焦点时不会触发（MyPaint 的笔刷搜索框同理），
-        // egui 的 `key_pressed` 不看焦点，所以这里自己补上等价判断。
         if ctx.text_edit_focused() {
             return;
         }
-        // MyPaint `_init_context_actions`（gui/document.py:468）：
-        //   数字键    → Context0N，accel "N"            → 恢复槽位 N
-        //   Ctrl+数字 → Context0Ns，accel "<control>N"  → 存入槽位 N
-        const DIGITS: [egui::Key; NUM_BRUSHKEYS] = [
-            egui::Key::Num0,
-            egui::Key::Num1,
-            egui::Key::Num2,
-            egui::Key::Num3,
-            egui::Key::Num4,
-            egui::Key::Num5,
-            egui::Key::Num6,
-            egui::Key::Num7,
-            egui::Key::Num8,
-            egui::Key::Num9,
-        ];
-        let (
-            restore,
-            store,
-            smaller,
-            larger,
-            eraser,
-            paint,
-            resync,
-            dump,
-            prev,
-            next,
-            tab,
-            f11,
-            undo,
-            redo,
-            file_new,
-            file_open,
-            file_save,
-            file_save_as,
-            file_export,
-            now,
-        ) = ctx.input(|i| {
-            let (mut restore, mut store) = (None, None);
-            for (digit, key) in DIGITS.iter().enumerate() {
-                if !i.key_pressed(*key) {
-                    continue;
-                }
-                if i.modifiers.ctrl {
-                    store = Some(digit);
-                } else if !i.modifiers.alt && !i.modifiers.command {
-                    restore = Some(digit);
-                }
-            }
-            let now = i.time;
-            // 撤销/重做键位（`gui/resources.xml:217-231` + `gui/document.py:527-530`）：
-            //   Ctrl+Z           → 撤销
-            //   Ctrl+Shift+Z     → 重做；Ctrl+Y → 重做
-            //   z / y（无修饰）  → MyPaint 老式键位
-            let ctrl = i.modifiers.ctrl || i.modifiers.command;
-            let shift = i.modifiers.shift;
-            let no_mod = !ctrl && !shift && !i.modifiers.alt;
-            let undo = (ctrl && !shift && i.key_pressed(egui::Key::Z))
-                || (no_mod && i.key_pressed(egui::Key::Z));
-            let redo = (ctrl && i.key_pressed(egui::Key::Y))
-                || (ctrl && shift && i.key_pressed(egui::Key::Z))
-                || (no_mod && i.key_pressed(egui::Key::Y));
-            // 文档 I/O 键位（`gui/resources.xml` 的动作加速键）：
-            //   Ctrl+N           → New（:68）
-            //   Ctrl+O           → Open（:78）
-            //   Ctrl+S           → Save（:124；没存过盘则走另存为，见 save_cb）
-            //   Ctrl+Shift+S     → SaveAs（:133）
-            //   Ctrl+Shift+E     → Export（:142）
-            let file_new = ctrl && !shift && i.key_pressed(egui::Key::N);
-            let file_open = ctrl && !shift && i.key_pressed(egui::Key::O);
-            let file_save = ctrl && !shift && i.key_pressed(egui::Key::S);
-            let file_save_as = ctrl && shift && i.key_pressed(egui::Key::S);
-            let file_export = ctrl && shift && i.key_pressed(egui::Key::E);
-            (
-                restore.map(|d| (d, now)),
-                store.map(|d| (d, now)),
-                i.key_pressed(egui::Key::OpenBracket),
-                i.key_pressed(egui::Key::CloseBracket),
-                // 裸键必须排除修饰键：否则 Ctrl+Shift+E（Export）会连带切换橡皮。
-                // MyPaint 的 accelmap 天然区分（`<accelerator key="e"/>` 不带修饰），
-                // egui 的 `key_pressed` 只看键码，所以这里自己加判据。
-                no_mod && i.key_pressed(egui::Key::E),
-                no_mod && i.key_pressed(egui::Key::P),
-                i.key_pressed(egui::Key::F1),
-                i.key_pressed(egui::Key::F2),
-                i.key_pressed(egui::Key::Comma),
-                i.key_pressed(egui::Key::Period),
-                i.key_pressed(egui::Key::Tab),
-                i.key_pressed(egui::Key::F11),
-                undo,
-                redo,
-                file_new,
-                file_open,
-                file_save,
-                file_save_as,
-                file_export,
-                now,
-            )
+        let events: Vec<(egui::Key, actions::Mods)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => Some((*key, actions::Mods::from_egui(modifiers))),
+                    _ => None,
+                })
+                .collect()
         });
+        if events.is_empty() {
+            return;
+        }
+        let now = ctx.input(|i| i.time);
+        for (key, mods) in events {
+            self.dispatch_key(ctx, key, mods, now);
+        }
+    }
 
-        if file_new {
-            self.new_document(now);
-            ctx.request_repaint();
-        }
-        if file_open {
-            self.file_prompt = Some(FilePrompt::new(FileAction::Open, None));
-        }
-        if file_save_as {
-            self.file_prompt = Some(FilePrompt::new(
-                FileAction::SaveAs,
-                self.current_file.as_deref(),
-            ));
-        }
-        if file_save {
-            self.save_command(now);
-            ctx.request_repaint();
-        }
-        if file_export {
-            // 导出建议名 = 当前文件名换 .png（照 `save_as_dialog` 的 suggested_filename）
-            let seed = self
-                .current_file
-                .as_ref()
-                .map(|p| p.with_extension("png"));
-            self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
-        }
-        if undo {
-            self.undo(now);
-            ctx.request_repaint();
-        }
-        if redo {
-            self.redo(now);
-            ctx.request_repaint();
-        }
-        if resync {
-            // 诊断：丢弃全部显存 tile 并重传。若画面恢复正常 → 属显存同步问题
-            self.force_resync = true;
-        }
-        if dump {
-            // 诊断：导出 CPU 侧画布为 PNG，与屏幕画面对照可区分「CPU 无内容」与「显存没同步」
-            match crate::dump::dump_surface_png(self.doc.surface()) {
-                Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
-                Err(e) => eprintln!("导出失败: {e}"),
+    /// 一个按键事件 → 一个动作。
+    fn dispatch_key(&mut self, ctx: &egui::Context, key: egui::Key, mods: actions::Mods, now: f64) {
+        // 应用本地扩展键优先（它们占的是源码没碰过的键位，见 `actions::APP_KEYS`）
+        if let Some(k) = actions::lookup_app(key, mods) {
+            if self.run_app_key(k.id, now) {
+                return;
             }
         }
-        if tab {
-            self.show_panels = !self.show_panels;
+        match actions::lookup(key, mods) {
+            Some(actions::Bound::Action(id)) | Some(actions::Bound::ExtraAction(id)) => {
+                self.run_action(id, ctx, now);
+            }
+            Some(actions::Bound::Behavior(b)) => {
+                self.run_behavior(b, ctx);
+            }
+            None => {}
         }
-        if f11 {
-            self.fullscreen = !self.fullscreen;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
-        }
-        if prev || next {
-            if self.brushes.step(if next { 1 } else { -1 }) {
-                self.reload_selected_brush();
+    }
+
+    /// 执行一个 MyPaint 动作（动作名来自 `resources.xml` 或源码里的额外键）。
+    ///
+    /// **没实现的动作返回 `false`** —— 这是"差异记账、不阻塞推进"的落点：
+    /// S3 菜单与 S4 工具条要按这个返回值把没实现的项置灰。
+    pub(crate) fn run_action(&mut self, id: &str, ctx: &egui::Context, now: f64) -> bool {
+        match id {
+            // ---- 文档 I/O（`gui/filehandling.py` 的 *_cb）----
+            "New" => {
+                self.new_document(now);
+                ctx.request_repaint();
+            }
+            "Open" => self.file_prompt = Some(FilePrompt::new(FileAction::Open, None)),
+            "Save" => {
+                self.save_command(now);
+                ctx.request_repaint();
+            }
+            "SaveAs" => {
+                self.file_prompt = Some(FilePrompt::new(
+                    FileAction::SaveAs,
+                    self.current_file.as_deref(),
+                ));
+            }
+            "Export" => {
+                // 建议名 = 当前文件名换 .png（照 `save_as_dialog` 的 suggested_filename）
+                let seed = self
+                    .current_file
+                    .as_ref()
+                    .map(|p| p.with_extension("png"));
+                self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
+            }
+            // ---- 撤销栈（`gui/document.py:552-558`）----
+            "Undo" => {
+                self.undo(now);
+                ctx.request_repaint();
+            }
+            "Redo" => {
+                self.redo(now);
+                ctx.request_repaint();
+            }
+            // ---- 笔刷尺寸（`brush_bigger_cb` / `brush_smaller_cb`）----
+            "Bigger" | "Smaller" => {
+                let step = if id == "Bigger" { 0.15 } else { -0.15 };
+                let cur = self.brush.get(BrushSetting::Radius).base_value;
+                self.radius_override = Some((cur + step).clamp(-1.0, 6.0));
+                self.derive_active();
+            }
+            // ---- 笔刷混色模式（`gui/brushmodifier.py`）----
+            // 源码里 Normal/Eraser/LockAlpha/Colorize 是一组互斥的 GtkToggleAction，
+            // 本应用目前只区分"普通 / 橡皮"两种。
+            "BlendModeNormal" => {
+                self.eraser = false;
+                self.derive_active();
+            }
+            "BlendModeEraser" => {
+                self.eraser = true;
+                self.derive_active();
+            }
+            // ---- 视图：缩放（`gui/document.py:1776-1816` 的 zoom()）----
+            // `ZoomIn/Out` 以**指针**为中心（CENTER_ON_POINTER），带 Centered 后缀的
+            // 那几个是工具条上的版本，以**视口中心**为中心（CENTER_ON_VIEWPORT）。
+            "ZoomIn" | "ZoomOut" | "ZoomInCentered" | "ZoomOutCentered" => {
+                let zoom_in = id.starts_with("ZoomIn");
+                let viewport_centered = id.ends_with("Centered");
+                let anchor = self
+                    .canvas_anchor(ctx, !viewport_centered)
+                    .unwrap_or([0.0, 0.0]);
+                let z = self.view.stepped_zoom(zoom_in);
+                self.view.set_zoom_at(z, anchor[0], anchor[1]);
+                ctx.request_repaint();
+            }
+            // ---- 视图：平移（`gui/document.py:1756-1774`）----
+            // 步长 = min(视口宽, 视口高) * PAN_STEP，方向与 `tdw.scroll()` 同号
+            "PanLeft" | "PanRight" | "PanUp" | "PanDown" => {
+                let step = self.pan_step();
+                match id {
+                    "PanLeft" => self.view.pan(step, 0.0),
+                    "PanRight" => self.view.pan(-step, 0.0),
+                    "PanUp" => self.view.pan(0.0, step),
+                    _ => self.view.pan(0.0, -step),
+                }
+                ctx.request_repaint();
+            }
+            // ---- 窗口 ----
+            "Fullscreen" => {
+                self.fullscreen = !self.fullscreen;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
+            }
+            "Quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // ---- 笔刷快捷键是否连颜色一起还原（`ContextRestoreColor`，按键 `）----
+            "ContextRestoreColor" => {
+                self.context_restores_color = !self.context_restores_color;
+                let state = if self.context_restores_color { "开" } else { "关" };
+                self.set_status(format!("恢复笔刷槽位时连颜色一起还原：{state}"), now);
+            }
+            // ---- 笔刷槽位（`gui/document.py:467-492` 动态注册的 Context0N/Context0Ns）----
+            _ => {
+                if let Some((slot, store)) = actions::parse_context_action(id) {
+                    if store {
+                        self.store_brushkey(slot, now);
+                    } else {
+                        self.restore_brushkey(slot, now);
+                    }
+                } else {
+                    return false;
+                }
             }
         }
-        if let Some((digit, now)) = store {
-            self.store_brushkey(digit, now);
-        }
-        if let Some((digit, now)) = restore {
-            self.restore_brushkey(digit, now);
-        }
+        true
+    }
 
-        let mut dirty = false;
-        if smaller || larger {
-            let cur = self.brush.get(BrushSetting::Radius).base_value;
-            let step = if larger { 0.15 } else { -0.15 };
-            self.radius_override = Some((cur + step).clamp(-1.0, 6.0));
-            dirty = true;
+    /// 执行源码里以 lambda 注册的硬编码行为（不是动作）。
+    fn run_behavior(&mut self, behavior: &str, ctx: &egui::Context) -> bool {
+        match behavior {
+            // `document.py:530`：`k("<control>w", lambda action: ...quit_cb())`
+            "quit" => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                true
+            }
+            // `pan-left/right/up/down`：源码里的 lambda 版光标键平移。
+            // 实际到不了这里 —— `resources.xml` 的 PanLeft/PanRight/PanUp/PanDown
+            // 占着同样的键且优先级更高（`keyboard.py:139-142`），此处保留以如实反映源码。
+            _ => false,
         }
-        if eraser {
-            self.eraser = !self.eraser;
-            dirty = true;
+    }
+
+    /// 执行一条**应用本地扩展键**（`actions::APP_KEYS`），返回是否处理了。
+    fn run_app_key(&mut self, id: &str, now: f64) -> bool {
+        match id {
+            "pigment:spectral" => {
+                self.paint_override = Some(!self.paint_active());
+                self.derive_active();
+                let state = if self.paint_active() { "开" } else { "关" };
+                self.set_status(format!("光谱混色：{state}"), now);
+            }
+            "pigment:resync-gpu" => {
+                // 丢弃全部显存 tile 并重传。若画面恢复正常 → 属显存同步问题
+                self.force_resync = true;
+            }
+            "pigment:dump-canvas" => {
+                // 导出 CPU 侧画布为 PNG，与屏幕对照可区分「CPU 无内容」与「显存没同步」
+                match crate::dump::dump_surface_png(self.doc.surface()) {
+                    Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
+                    Err(e) => eprintln!("导出失败: {e}"),
+                }
+            }
+            "pigment:prev-brush" | "pigment:next-brush" => {
+                let next = id == "pigment:next-brush";
+                if self.brushes.step(if next { 1 } else { -1 }) {
+                    self.reload_selected_brush();
+                }
+            }
+            _ => return false,
         }
-        if paint {
-            self.paint_override = Some(!self.paint_active());
-            dirty = true;
-        }
-        if dirty {
-            self.derive_active();
-        }
+        true
+    }
+
+    /// 画布内的锚点（画布局部坐标，单位 = egui 点），用于键盘缩放。
+    ///
+    /// 对应源码的 `Document.get_last_event_info(tdw)`（`document.py:1789`）：
+    /// 取"最后一次指针事件的位置"。这里用**当前**指针位置，且只认它落在画布内
+    /// 的情况 —— 落在画布外（或指针不在窗口里）就退回视口中心，避免把视点甩飞。
+    fn canvas_anchor(&self, ctx: &egui::Context, prefer_pointer: bool) -> Option<[f32; 2]> {
+        let rect = self.canvas_rect?;
+        let p = if prefer_pointer {
+            ctx.input(|i| i.pointer.latest_pos())
+                .filter(|p| rect.contains(*p))
+        } else {
+            None
+        };
+        let p = p.unwrap_or_else(|| rect.center());
+        let local = p - rect.min;
+        Some([local.x, local.y])
+    }
+
+    /// 光标键平移的步长 —— `document.py:1763`：
+    /// `step = min(视口宽, 视口高) * PAN_STEP`。
+    fn pan_step(&self) -> f32 {
+        let r = self.canvas_rect.unwrap_or(egui::Rect::NOTHING);
+        r.width().min(r.height()) * crate::view::PAN_STEP
     }
 }
 

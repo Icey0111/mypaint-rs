@@ -2823,6 +2823,7 @@ dependencies = [
  "image",
  "pigment-engine",
  "pigment-surface",
+ "roxmltree",
 ]
 
 [[package]]
