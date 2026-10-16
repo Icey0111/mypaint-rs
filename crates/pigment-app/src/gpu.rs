@@ -539,7 +539,7 @@ mod tests {
         touch(&mut st.current_mut().surface, 0, 0);
         touch(&mut st.current_mut().surface, 1, 0);
         let rev = st.composite_revision();
-        let uploaded = |c: (i32, i32)| Some(rev);
+        let uploaded = |_c: (i32, i32)| Some(rev);
         let visible = vec![(0, 0), (1, 0)];
         assert!(plan_uploads(uploaded, &visible, 16, |c| st.has_paint_at(c.0, c.1), rev).is_empty());
     }

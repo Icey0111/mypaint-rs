@@ -90,6 +90,22 @@ pub enum CommandUpdate<'a> {
     LayerLocked(bool),
     /// `SetLayerOpacity.update(opacity)`（不透明度滑条拖动）。
     LayerOpacity(f32),
+    /// `RenameLayer.update(name)`（重命名连续提交时合并）。
+    Rename(&'a str),
+}
+
+/// 图层属性的种类（源码 `isinstance(cmd, command.SetLayerVisibility)` 一类
+/// 判据的等价物；见 [`CommandStack::top_is_layer_update`]）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LayerProp {
+    /// `SetLayerVisibility`
+    Visibility,
+    /// `SetLayerLocked`
+    Locked,
+    /// `SetLayerOpacity`
+    Opacity,
+    /// `RenameLayer`
+    Name,
 }
 
 /// 一次可撤销的改动（`lib/command.py:152` 的 `Command`）。
@@ -116,6 +132,15 @@ pub trait Command {
     /// `Command.update(**kwargs)`（`lib/command.py:216`）。默认不支持。
     fn update(&mut self, _ctx: &mut DocContext<'_>, _update: &CommandUpdate<'_>) -> bool {
         false
+    }
+
+    /// 合并判据（`lib/document.py:1312/1374/1386/1404`）：
+    /// 「本命令是否是**作用于某图层的某属性**的更新命令」——是则返回
+    /// `(属性种类, 图层 id)`，栈顶据此判 `isinstance(cmd, cmd_class) and
+    /// cmd.layer is layer` 并调 [`Command::update`] 合并，而不是入栈
+    /// （滑条连续拖动不刷爆撤销栈）。默认 `None`（非图层属性命令）。
+    fn layer_prop(&self) -> Option<(LayerProp, u64)> {
+        None
     }
 }
 
@@ -249,6 +274,19 @@ impl CommandStack {
         let new_name = command.display_name();
         let _ = old_name != new_name; // 源码据此触发 stack_updated 事件（我们按帧轮询）
         Some(new_name)
+    }
+
+    /// 栈顶命令是否是作用于 `layer_id` 的 `prop` 属性更新命令
+    /// （`get_last_command()` + `isinstance(cmd, cmd_class) and cmd.layer is
+    /// layer` 判据的合一）。
+    ///
+    /// **两类都必须匹配**：只比图层 id 会把「刚拖完不透明度，再点眼睛」误
+    /// 判成可合并，`update` 因种类不符而拒绝 → 该次改动被静默丢弃。
+    pub fn top_is_layer_update(&self, prop: LayerProp, layer_id: u64) -> bool {
+        self.undo_stack
+            .back()
+            .and_then(|c| c.layer_prop())
+            .is_some_and(|(p, id)| p == prop && id == layer_id)
     }
 
     /// 撤销栈深度。
@@ -656,6 +694,55 @@ impl Command for SelectLayer {
     }
 }
 
+/// `DuplicateLayer`（`lib/command.py:1202`）：原位复制当前层。
+///
+/// `deepinsert(self._path, layer_copy)` —— 副本落在原层的位置上，
+/// 原层被推到其下；当前层切到副本。像素是 COW 共享（MyPaint 用
+/// deepcopy 急拷贝；可观察行为一致，首笔作画才真正分离）。
+pub struct DuplicateLayer {
+    /// 原层位置（`_path`）：插入/移除都用它。
+    path: usize,
+    /// 被复制的原层 id —— undo 后当前层要回到它（源码靠「路径不变 → 路径上
+    /// 的层又变回原层」实现，我们按 id 寻址，须显式设回）。
+    orig_id: u64,
+    /// 本次 redo 造出的副本 id（undo 用它移除）。
+    copy_id: u64,
+}
+
+impl DuplicateLayer {
+    pub fn new(ctx: &mut DocContext<'_>) -> Self {
+        Self {
+            path: ctx.layers.current_index(),
+            orig_id: ctx.layers.current_id(),
+            copy_id: 0,
+        }
+    }
+}
+
+impl Command for DuplicateLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        // 源码每次 redo 都重新 `deepcopy(layers.current)`：撤销后又在原层上
+        // 画了东西，再 redo 得到的副本**包含**那些新笔迹（缓存旧副本会丢）。
+        let mut copy = ctx.layers.current().clone();
+        copy.id = pigment_surface::layer::allocate_layer_id();
+        self.copy_id = copy.id;
+        ctx.layers.insert(self.path, copy);
+        // `set_current_path(self._path)`：当前层 = 副本
+        ctx.layers.set_current_index(self.path);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        ctx.layers.remove_by_id(self.copy_id);
+        // 源码路径不变 → 当前层落回原层
+        ctx.layers.set_current_by_id(self.orig_id);
+    }
+
+    fn display_name(&self) -> String {
+        "Duplicate Layer".to_string()
+    }
+}
+
 /// `BubbleLayerUp` / `BubbleLayerDown`（`lib/command.py:1226/1240`）。
 ///
 /// "Up" = 朝栈顶（index 0 方向）。
@@ -760,6 +847,9 @@ impl RenameLayer {
 }
 
 impl Command for RenameLayer {
+    fn layer_prop(&self) -> Option<(LayerProp, u64)> {
+        Some((LayerProp::Name, self.id))
+    }
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         let Some(layer) = ctx.layers.layer_by_id_mut(self.id) else {
             return false;
@@ -774,6 +864,19 @@ impl Command for RenameLayer {
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
             layer.name = self.old_name.clone().flatten();
         }
+    }
+    /// `RenameLayer.update(name)`（`lib/command.py:1410-1412`）：只改新名，
+    /// **不动 `_old_name`**（撤销仍回到最初的名字）。
+    fn update(&mut self, ctx: &mut DocContext<'_>, update: &CommandUpdate<'_>) -> bool {
+        let CommandUpdate::Rename(name) = update else {
+            return false;
+        };
+        let name = if name.is_empty() { None } else { Some((*name).to_string()) };
+        if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
+            layer.name = name.clone();
+        }
+        self.new_name = name;
+        true
     }
     fn display_name(&self) -> String {
         "Rename Layer".to_string()
@@ -794,6 +897,9 @@ impl SetLayerVisibility {
 }
 
 impl Command for SetLayerVisibility {
+    fn layer_prop(&self) -> Option<(LayerProp, u64)> {
+        Some((LayerProp::Visibility, self.id))
+    }
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         let Some(layer) = ctx.layers.layer_by_id_mut(self.id) else {
             return false;
@@ -802,12 +908,16 @@ impl Command for SetLayerVisibility {
             self.old = Some(layer.visible);
         }
         layer.visible = self.new_visible;
+        // 可见性影响合成 → 必须抬高合成版本号，否则 GPU 侧不会重传
+        // （`LayerStack::composite_revision` 是显存水位线）。
+        ctx.layers.touch();
         true
     }
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
             layer.visible = self.old.unwrap_or(true);
         }
+        ctx.layers.touch();
     }
     fn update(&mut self, ctx: &mut DocContext<'_>, update: &CommandUpdate<'_>) -> bool {
         let CommandUpdate::LayerVisibility(visible) = update else {
@@ -817,6 +927,7 @@ impl Command for SetLayerVisibility {
             layer.visible = *visible;
         }
         self.new_visible = *visible;
+        ctx.layers.touch();
         true
     }
     fn display_name(&self) -> String {
@@ -842,6 +953,9 @@ impl SetLayerLocked {
 }
 
 impl Command for SetLayerLocked {
+    fn layer_prop(&self) -> Option<(LayerProp, u64)> {
+        Some((LayerProp::Locked, self.id))
+    }
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         let Some(layer) = ctx.layers.layer_by_id_mut(self.id) else {
             return false;
@@ -890,6 +1004,9 @@ impl SetLayerOpacity {
 }
 
 impl Command for SetLayerOpacity {
+    fn layer_prop(&self) -> Option<(LayerProp, u64)> {
+        Some((LayerProp::Opacity, self.id))
+    }
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         let Some(layer) = ctx.layers.layer_by_id_mut(self.id) else {
             return false;
@@ -898,12 +1015,14 @@ impl Command for SetLayerOpacity {
             self.old = Some(layer.opacity);
         }
         layer.opacity = self.new_opacity;
+        ctx.layers.touch();
         true
     }
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
             layer.opacity = self.old.unwrap_or(1.0);
         }
+        ctx.layers.touch();
     }
     fn update(&mut self, ctx: &mut DocContext<'_>, update: &CommandUpdate<'_>) -> bool {
         let CommandUpdate::LayerOpacity(opacity) = update else {
@@ -915,6 +1034,7 @@ impl Command for SetLayerOpacity {
             }
         }
         self.new_opacity = *opacity;
+        ctx.layers.touch();
         true
     }
     fn display_name(&self) -> String {
@@ -945,6 +1065,7 @@ impl Command for SetLayerMode {
             self.old = Some((layer.mode, layer.opacity));
         }
         layer.mode = self.new_mode;
+        ctx.layers.touch();
         true
     }
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
@@ -954,6 +1075,7 @@ impl Command for SetLayerMode {
                 layer.opacity = opacity;
             }
         }
+        ctx.layers.touch();
     }
     fn display_name(&self) -> String {
         format!("Set Layer Mode: {}", self.new_mode.label())

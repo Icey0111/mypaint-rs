@@ -25,6 +25,7 @@
 
 pub(crate) mod actions;
 pub(crate) mod dock;
+pub(crate) mod layers_panel;
 pub(crate) mod footer;
 pub(crate) mod menubar;
 pub(crate) mod toolbars;

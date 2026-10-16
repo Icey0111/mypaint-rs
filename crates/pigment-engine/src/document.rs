@@ -28,11 +28,11 @@
 
 use std::collections::BTreeMap;
 
-use hokusai::tile::TILE_SIZE;
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
-    Brushwork, Command, CommandStack, CommandUpdate, DocContext, DEFAULT_UNDO_STACK_SIZE,
+    Brushwork, Command, CommandStack, CommandUpdate, DocContext, LayerProp,
+    DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
 
@@ -187,11 +187,26 @@ impl Document {
         stack.do_command(Box::new(cmd), &mut ctx)
     }
 
+    /// 原位复制当前层（`lib/document.py:1009` 的 `DuplicateLayer`）。
+    pub fn duplicate_layer(&mut self) -> bool {
+        let (stack, mut ctx) = self.split();
+        let cmd = crate::command::DuplicateLayer::new(&mut ctx);
+        stack.do_command(Box::new(cmd), &mut ctx)
+    }
+
     /// 设置图层可见性（`SetLayerVisibility`）。
     pub fn set_layer_visible(&mut self, index: usize, visible: bool) -> bool {
         let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
             return false;
         };
+        // 合并语义（document.py:1368-1378）：栈顶已是**同层同类**命令 → update
+        if self
+            .command_stack
+            .top_is_layer_update(LayerProp::Visibility, id)
+        {
+            self.update_last_command(&crate::command::CommandUpdate::LayerVisibility(visible));
+            return true;
+        }
         self.do_command(Box::new(crate::command::SetLayerVisibility::new(id, visible)))
     }
 
@@ -200,6 +215,11 @@ impl Document {
         let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
             return false;
         };
+        // 合并语义（document.py:1380-1390）
+        if self.command_stack.top_is_layer_update(LayerProp::Locked, id) {
+            self.update_last_command(&crate::command::CommandUpdate::LayerLocked(locked));
+            return true;
+        }
         self.do_command(Box::new(crate::command::SetLayerLocked::new(id, locked)))
     }
 
@@ -208,6 +228,11 @@ impl Document {
         let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
             return false;
         };
+        // 合并语义（document.py:1392-1410）：滑条连续拖动只在栈顶更新
+        if self.command_stack.top_is_layer_update(LayerProp::Opacity, id) {
+            self.update_last_command(&crate::command::CommandUpdate::LayerOpacity(opacity));
+            return true;
+        }
         self.do_command(Box::new(crate::command::SetLayerOpacity::new(id, opacity)))
     }
 
@@ -224,6 +249,13 @@ impl Document {
         let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
             return false;
         };
+        // 合并语义（document.py:1305-1317）：连续重命名只留栈顶一条
+        if self.command_stack.top_is_layer_update(LayerProp::Name, id) {
+            let update =
+                crate::command::CommandUpdate::Rename(name.as_deref().unwrap_or(""));
+            self.update_last_command(&update);
+            return true;
+        }
         self.do_command(Box::new(crate::command::RenameLayer::new(id, name)))
     }
 
@@ -286,23 +318,26 @@ impl Document {
     ///
     /// 与 MyPaint 一致地**按 tile 边界取整**（`lib/tiledsurface.py` 的
     /// `get_bbox()`），因为它会被 `.ora`/`.png` 导出直接当画幅用。
+    /// 逐层取 [`Layer::data_bbox`] 再并（照 `helpers.coordinate_bounds`）。
     pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
-        let mut coords = self
-            .layers
-            .iter_top_down()
-            .flat_map(|(_, l)| l.surface.tiles().map(|(c, _)| c));
-        let Some(first) = coords.next() else {
-            return (0, 0, 0, 0);
-        };
-        let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
-        for (tx, ty) in coords {
-            x0 = x0.min(tx);
-            y0 = y0.min(ty);
-            x1 = x1.max(tx);
-            y1 = y1.max(ty);
+        let mut acc: Option<(i32, i32, i32, i32)> = None;
+        for (_, layer) in self.layers.iter_top_down() {
+            let b = layer.data_bbox();
+            if b.2 == 0 || b.3 == 0 {
+                continue; // 空层不参与并集（否则 (0,0,0,0) 会把外接框拉到原点）
+            }
+            acc = Some(match acc {
+                None => b,
+                Some((x0, y0, w, h)) => {
+                    let nx = x0.min(b.0);
+                    let ny = y0.min(b.1);
+                    let nx1 = (x0 + w).max(b.0 + b.2);
+                    let ny1 = (y0 + h).max(b.1 + b.3);
+                    (nx, ny, nx1 - nx, ny1 - ny)
+                }
+            });
         }
-        let ts = TILE_SIZE as i32;
-        (x0 * ts, y0 * ts, (x1 - x0 + 1) * ts, (y1 - y0 + 1) * ts)
+        acc.unwrap_or((0, 0, 0, 0))
     }
 
     /// 清空文档（`lib/document.py:923`）：丢内容、清栈、作画时长归零。
@@ -605,7 +640,7 @@ mod tests {
         assert_eq!(doc.data_bbox(), (0, 0, 0, 0), "空画布无内容");
         paint_and_commit(&mut doc, 2.0);
         let (x, y, w, h) = doc.data_bbox();
-        let ts = TILE_SIZE as i32;
+        let ts = crate::hokusai::tile::TILE_SIZE as i32;
         assert_eq!(x % ts, 0);
         assert_eq!(y % ts, 0);
         assert_eq!(w % ts, 0);
@@ -637,5 +672,135 @@ mod tests {
         assert!(name.is_some());
         assert!(doc.surface().tile_count() >= tile_before);
         assert!(doc.get_last_command().unwrap().display_name().ends_with("with Fatter"));
+    }
+
+    // ---- B2-5：DuplicateLayer 与图层属性命令的合并 ----
+
+    #[test]
+    fn duplicate_layer_lands_in_place_and_undo_restores_selection() {
+        let mut doc = Document::new();
+        let orig_id = doc.layers().current_id();
+        assert!(doc.duplicate_layer());
+
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(doc.layers().current_index(), 0, "副本落在原层位置（原位）");
+        let copy_id = doc.layers().current_id();
+        assert_ne!(copy_id, orig_id, "副本必须是新 id（照 deepcopy）");
+        assert_eq!(doc.layers().layer(1).id, orig_id, "原层被推到其下");
+
+        doc.undo();
+        assert_eq!(doc.layers().len(), 1);
+        assert_eq!(doc.layers().current_id(), orig_id, "撤销后当前层回到原层");
+
+        doc.redo();
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(doc.layers().current_index(), 0);
+        assert_eq!(doc.layers().layer(1).id, orig_id);
+    }
+
+    #[test]
+    fn duplicate_layer_redo_copies_the_current_layer_again() {
+        let mut doc = Document::new();
+        doc.duplicate_layer();
+        doc.undo();
+        // 撤销后又在原层上改名（等价于"撤销后继续改内容"），再 redo
+        doc.rename_layer(0, Some("After Undo".to_string()));
+        doc.redo();
+
+        // 源码每次 redo 都重新 deepcopy(layers.current)，副本要含新改动
+        assert_eq!(doc.layers().layer(0).name.as_deref(), Some("After Undo"));
+    }
+
+    #[test]
+    fn opacity_drag_merges_into_one_undo_entry() {
+        let mut doc = Document::new();
+        let idx = doc.layers().current_index();
+        for pct in [90, 80, 70, 60] {
+            doc.set_layer_opacity(idx, pct as f32 / 100.0);
+        }
+        assert_eq!(doc.layers().layer(idx).opacity, 0.6);
+        assert_eq!(doc.command_stack.undo_len(), 1, "滑条连续拖动只入栈一条");
+        doc.undo();
+        assert_eq!(doc.layers().layer(idx).opacity, 1.0, "撤销回到拖动前的值");
+    }
+
+    #[test]
+    fn property_change_of_another_kind_is_not_swallowed() {
+        let mut doc = Document::new();
+        let idx = doc.layers().current_index();
+        doc.set_layer_opacity(idx, 0.5);
+        // 只比图层 id 的判据会误判成"可合并"，这句改动会被 update 拒绝后丢弃
+        doc.set_layer_visible(idx, false);
+
+        assert!(!doc.layers().layer(idx).visible, "可见性改动不能被吃掉");
+        assert_eq!(doc.command_stack.undo_len(), 2);
+    }
+
+    #[test]
+    fn repeated_visibility_toggles_merge_but_keep_the_first_old_value() {
+        let mut doc = Document::new();
+        let idx = doc.layers().current_index();
+        doc.set_layer_visible(idx, false);
+        doc.set_layer_visible(idx, true);
+        assert_eq!(doc.command_stack.undo_len(), 1);
+        assert!(doc.layers().layer(idx).visible);
+        doc.undo();
+        assert!(doc.layers().layer(idx).visible, "撤销回到最初（可见）");
+    }
+
+    #[test]
+    fn renames_merge_and_undo_returns_to_the_original_name() {
+        let mut doc = Document::new();
+        let idx = doc.layers().current_index();
+        doc.rename_layer(idx, Some("A".to_string()));
+        doc.rename_layer(idx, Some("B".to_string()));
+        assert_eq!(doc.command_stack.undo_len(), 1, "连续重命名只留栈顶一条");
+        assert_eq!(doc.layers().layer(idx).name.as_deref(), Some("B"));
+
+        doc.undo();
+        assert_eq!(doc.layers().layer(idx).name, None, "回到最初的无自定义名");
+    }
+
+    /// 图层属性命令必须抬高**合成版本号**（GPU 上传水位线），否则
+    /// 「隐藏图层」后画布还是旧内容 —— B2-5 GUI 实测抓到的真 bug。
+    #[test]
+    fn layer_property_commands_bump_the_composite_revision() {
+        let mut doc = Document::new();
+        paint_and_commit(&mut doc, 2.0);
+        let idx = doc.layers().current_index();
+
+        let r0 = doc.layers().composite_revision();
+        doc.set_layer_visible(idx, false);
+        let r1 = doc.layers().composite_revision();
+        assert_ne!(r0, r1, "可见性变化要抬高水位线");
+        doc.set_layer_opacity(idx, 0.5);
+        let r2 = doc.layers().composite_revision();
+        assert_ne!(r1, r2, "不透明度变化要抬高水位线");
+        doc.set_layer_mode(idx, pigment_surface::combine::CombineMode::Multiply);
+        let r3 = doc.layers().composite_revision();
+        assert_ne!(r2, r3, "混合模式变化要抬高水位线");
+
+        doc.undo();
+        assert_ne!(r3, doc.layers().composite_revision(), "撤销同样要抬高");
+    }
+
+    /// 隐藏图层后**合成结果**也要变（CPU 侧），与水位线一致。
+    #[test]
+    fn hiding_a_layer_removes_it_from_the_composite() {
+        let mut doc = Document::new();
+        paint_and_commit(&mut doc, 2.0);
+        let idx = doc.layers().current_index();
+        assert!(doc.layers().has_paint_at(0, 0), "先确认有笔迹");
+        let before = doc.layers().composite_tile_rgba8(0, 0).unwrap();
+
+        doc.set_layer_visible(idx, false);
+        let after = doc.layers().composite_tile_rgba8(0, 0);
+        // 背景仍可见 → tile 还在，但内容应是纯背景色（白）
+        let after = after.expect("背景可见时 tile 仍有内容");
+        assert_ne!(&before[..], &after[..], "隐藏后合成像素应变化");
+        assert!(
+            after.chunks_exact(4).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255),
+            "画布只剩背景层 → 全白"
+        );
     }
 }

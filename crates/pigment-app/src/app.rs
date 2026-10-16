@@ -196,6 +196,19 @@ pub struct PigmentApp {
     /// toolbar1 的 8 个片段开关（偏好 `ui.toolbar_items`，出厂默认见
     /// `userconfig.py:76-85`）。持久化属 B6。
     pub(crate) toolbar_fragments: [bool; 8],
+    // ---- 图层面板（B2-5）----
+    /// 缩略图缓存：layer id → (失效键, 纹理)。键变了才重渲染
+    /// （键含表面 clock + 本层模式/不透明度，见
+    /// [`crate::shell::layers_panel::ThumbKey`]）。
+    pub(crate) layer_thumbs:
+        std::collections::HashMap<u64, (crate::shell::layers_panel::ThumbKey, egui::TextureHandle)>,
+    /// 正在行内重命名的层 id（双击名称进入；LayerProperties 对话框的
+    /// 技术栈适配）。`rename_buf` 是编辑缓冲。
+    pub(crate) layer_rename: Option<u64>,
+    pub(crate) rename_buf: String,
+    /// 行内重命名编辑框是否**已经拿到过焦点**（焦点要下一帧才到手，
+    /// 首帧的 `has_focus() == false` 不是"失焦"）。
+    pub(crate) rename_focused: bool,
 }
 
 // ---- 文档 I/O ----
@@ -341,6 +354,10 @@ impl PigmentApp {
             fullscreen: false,
             icon_cache: Default::default(),
             toolbar_fragments: crate::shell::toolbars::DEFAULT_FRAGMENTS,
+            layer_thumbs: std::collections::HashMap::new(),
+            layer_rename: None,
+            rename_buf: String::new(),
+            rename_focused: false,
             dock: crate::shell::dock::DockState {
                 left: vec![crate::shell::dock::Group {
                     panels: vec![crate::shell::dock::PanelId::BrushGroups],
@@ -854,6 +871,25 @@ impl PigmentApp {
             // ---- 停靠面板（S6）----
             "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
             | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
+            // ---- 图层（B2-5；动态 sensitivity 照源码 enable 语义）----
+            "NewPaintingLayerAbove" | "DuplicateLayer" | "RemoveLayer" => true,
+            // 组嵌套未移植（layerswindow 的 NewLayerGroupAbove）
+            "NewLayerGroupAbove" => false,
+            "RaiseLayerInStack" => self.doc.layers().current_index() > 0,
+            "LowerLayerInStack" => {
+                let ls = self.doc.layers();
+                ls.current_index() + 1 < ls.len()
+            }
+            "MergeLayerDown" => {
+                // `get_merge_down_target` 的平栈判据（tree.py:2003）
+                let ls = self.doc.layers();
+                let i = ls.current_index();
+                match (ls.try_layer(i), ls.try_layer(i + 1)) {
+                    (Some(up), Some(lo)) => up.visible && lo.visible && !lo.locked,
+                    _ => false,
+                }
+            }
+            "ShowBackgroundToggle" | "BackgroundWindow" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -869,6 +905,7 @@ impl PigmentApp {
     /// "普通 / 橡皮"两种（差异记账在 B2）。
     pub(crate) fn toggle_state(&self, id: &str) -> Option<bool> {
         match id {
+            "ShowBackgroundToggle" => Some(self.doc.layers().background_visible()),
             "Fullscreen" => Some(self.fullscreen),
             "BlendModeNormal" => Some(!self.eraser),
             "BlendModeEraser" => Some(self.eraser),
@@ -957,6 +994,44 @@ impl PigmentApp {
                     _ => self.view.pan(0.0, -step),
                 }
                 ctx.request_repaint();
+            }
+            // ---- 图层（`layerswindow` 的动作回调；B2-5）----
+            "NewPaintingLayerAbove" => {
+                self.doc.add_layer();
+                ctx.request_repaint();
+            }
+            // "NewLayerGroupAbove"：组嵌套未移植（action_available 恒 false），到不了这里
+            "RemoveLayer" => {
+                self.doc.remove_layer();
+                ctx.request_repaint();
+            }
+            "RaiseLayerInStack" => {
+                self.doc.bubble_layer_up();
+                ctx.request_repaint();
+            }
+            "LowerLayerInStack" => {
+                self.doc.bubble_layer_down();
+                ctx.request_repaint();
+            }
+            "DuplicateLayer" => {
+                self.doc.duplicate_layer();
+                ctx.request_repaint();
+            }
+            "MergeLayerDown" => {
+                if !self.doc.merge_layer_down() {
+                    // 源码 `_merge_layer_down_cb` 失败时弹 info bar（document.py）
+                    self.set_status("无法向下合并：两层都须可见、下层须未锁".to_string(), now);
+                }
+                ctx.request_repaint();
+            }
+            "ShowBackgroundToggle" => {
+                let v = !self.doc.layers().background_visible();
+                self.doc.layers_mut().set_background_visible(v);
+                ctx.request_repaint();
+            }
+            "BackgroundWindow" => {
+                // 技术栈适配：背景色对话框未移植，指向面板里的取色钮
+                self.set_status("背景色请用图层面板底部的取色钮（技术栈适配）".to_string(), now);
             }
             // ---- 停靠面板（`toggle_dockpanel_cb`，drawwindow.py:352-367）----
             // Toggle*Tool → MyPaint<GType 名>（去 Toggle 前缀）；BrushGroups 是

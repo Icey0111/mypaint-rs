@@ -36,6 +36,12 @@ fn next_layer_id() -> u64 {
     NEXT_LAYER_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 分配一个新图层 id（`DuplicateLayer` 克隆层用；公开因为引擎层
+/// 需要给 COW 克隆出的副本换 id）。
+pub fn allocate_layer_id() -> u64 {
+    next_layer_id()
+}
+
 /// 单个图层（`core.py` `LayerBase` 默认值 + `data.PaintingLayer` 的表面）。
 #[derive(Clone)]
 pub struct Layer {
@@ -87,6 +93,93 @@ impl Layer {
         self.name
             .clone()
             .unwrap_or_else(|| format!("Layer {}", index + 1))
+    }
+
+    /// 图层数据外接框（`lib/layer/data.py:314 get_bbox`）：
+    /// 已分配 tile 的最小外接矩形，**tile 对齐**；空层返回全 0。
+    pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
+        let mut coords = self.surface.tiles().map(|(c, _)| c);
+        let Some(first) = coords.next() else {
+            return (0, 0, 0, 0);
+        };
+        let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
+        for (tx, ty) in coords {
+            x0 = x0.min(tx);
+            y0 = y0.min(ty);
+            x1 = x1.max(tx);
+            y1 = y1.max(ty);
+        }
+        let ts = TILE_SIZE as i32;
+        (x0 * ts, y0 * ts, (x1 - x0 + 1) * ts, (y1 - y0 + 1) * ts)
+    }
+
+    /// **图层**缩略图（`lib/layer/core.py:922 render_thumbnail` →
+    /// `tree.py:564 render_layer_preview(layer, bbox, alpha=True)`）。
+    ///
+    /// 渲染的是本层**自己的 op**（`data.py:376-383`：
+    /// `COMPOSITE(surface, mode, opacity)` 落在全透明底上）——所以混合模式与
+    /// 不透明度都会体现在缩略图里；solo 只把「不可见」强制成可见
+    /// （`data.py:353-358`），**不**重置 mode/opacity。
+    ///
+    /// `rect` 传 level 0 的模型坐标；减半规则见 [`crate::thumb::render_halved`]。
+    pub fn render_thumbnail_rgba8(
+        &self,
+        rect: (i32, i32, i32, i32),
+        level: u32,
+    ) -> (Vec<u8>, u32, u32) {
+        let mode = self.mode;
+        let opacity = self.opacity;
+        let surface = &self.surface;
+        let mut scratch = vec![0u16; TILE_CHANNELS];
+        let src = tile_source(move |(tx, ty), buf| {
+            let Some(tile) = surface.tile(tx, ty) else {
+                return false;
+            };
+            scratch.fill(0);
+            tile_combine(
+                mode,
+                tile.as_flattened().as_flattened(),
+                &mut scratch,
+                true,
+                opacity,
+            );
+            buf.copy_from_slice(&scratch);
+            true
+        });
+        crate::thumb::render_halved(rect, level, crate::thumb::encode_alpha, src)
+    }
+}
+
+/// 惰性「逐 tile 取源像素」访问器：按需调 `compose` 生成整块 tile 并缓存 4 槽
+/// （减半块边长 ≤ 2^4 = 16，最多跨 2×2 个 tile），块内行进方向连续、命中率高。
+fn tile_source<'a, F>(mut compose: F) -> impl FnMut(i32, i32) -> [u16; 4] + 'a
+where
+    F: FnMut((i32, i32), &mut [u16]) -> bool + 'a,
+{
+    let ts = TILE_SIZE as i32;
+    let mut slots: Vec<((i32, i32), bool, Vec<u16>)> = Vec::with_capacity(4);
+    move |x: i32, y: i32| {
+        let key = (x.div_euclid(ts), y.div_euclid(ts));
+        let idx = match slots.iter().position(|(k, _, _)| *k == key) {
+            Some(i) => i,
+            None => {
+                if slots.len() == 4 {
+                    slots.remove(0);
+                }
+                let mut buf = vec![0u16; TILE_CHANNELS];
+                let composed = compose(key, &mut buf);
+                slots.push((key, composed, buf));
+                slots.len() - 1
+            }
+        };
+        let (_, composed, buf) = &slots[idx];
+        if !composed {
+            return [0, 0, 0, 0];
+        }
+        let ix = x.rem_euclid(ts) as usize;
+        let iy = y.rem_euclid(ts) as usize;
+        let o = (iy * TILE_SIZE + ix) * 4;
+        buf[o..o + 4].try_into().unwrap()
     }
 }
 
@@ -463,11 +556,28 @@ impl LayerStack {
             }
         }
     }
+
+    /// **栈**缩略图渲染（`root_stack.render_thumbnail` 的 fix15 版）：
+    /// 合成（含背景）后按 `level` 级固定点减半，输出不透明 RGBA8。
+    ///
+    /// 与 [`LayerStack::render_rect_rgba8`] 同一套合成语义（背景 + 各层模式），
+    /// 差别只在于**在 fix15 预乘域做 mipmap 平均**（MyPaint 的 mipmap 就在
+    /// 15 位域），最后一步才转 8 位。
+    pub fn render_thumbnail_rgba8(
+        &self,
+        rect: (i32, i32, i32, i32),
+        level: u32,
+    ) -> (Vec<u8>, u32, u32) {
+        let bg = self.background_color;
+        let src = tile_source(|(tx, ty), buf| self.composite_tile(tx, ty, buf));
+        crate::thumb::render_halved(rect, level, |p| crate::thumb::encode_opaque(p, bg), src)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hokusai::TiledSurface;
 
     /// 造一块纯色 tile（8 位 → fix15，同载入路径）。
     fn solid_surface(rgb: [u8; 3], a: u8) -> PigmentSurface {
@@ -494,6 +604,77 @@ mod tests {
         let mut l2 = Layer::new();
         l2.visible = false;
         assert_eq!(l2.effective_opacity(), 0.0);
+    }
+
+    /// 图层缩略图：减半在 fix15 预乘域做，且**每级每通道各自整除再相加**
+    /// （`pixops.cpp:39` 的 `v0/4 + v1/4 + v2/4 + v3/4`）。
+    #[test]
+    fn layer_thumbnail_halves_in_fix15_space() {
+        let mut l = Layer::new();
+        l.mode = CombineMode::Normal; // 直接透传，便于逐位比对
+        // 2×2 全不透明，R 通道取 1/2/3/4（fix15 直接写，跳过 8 位量化）
+        let vals: [[u16; 4]; 4] = [
+            [1, 0, 0, 1 << 15],
+            [2, 0, 0, 1 << 15],
+            [3, 0, 0, 1 << 15],
+            [4, 0, 0, 1 << 15],
+        ];
+        {
+            let t = l.surface.tile_request_start(0, 0);
+            t[0][0] = vals[0];
+            t[0][1] = vals[1];
+            t[1][0] = vals[2];
+            t[1][1] = vals[3];
+            l.surface.tile_request_end(0, 0);
+        }
+        // 64×64 的 bbox 取 level 1 → 32×32
+        let (px, w, h) = l.render_thumbnail_rgba8((0, 0, 64, 64), 1);
+        assert_eq!((w, h), (32, 32));
+
+        // 逐位期望：各自 /4 后相加（1/4 + 2/4 + 3/4 + 4/4 = 0+0+0+1 = 1），
+        // 不是 (1+2+3+4)/4 = 2
+        let mut avg = [0u16; 4];
+        for c in 0..4 {
+            avg[c] = vals[0][c] / 4 + vals[1][c] / 4 + vals[2][c] / 4 + vals[3][c] / 4;
+        }
+        let expected = color::tile_to_rgba8_alpha_single(avg);
+        assert_eq!(avg[0], 1, "先各自整除再相加");
+        assert_eq!(&px[0..4], &expected[..]);
+        // 块外（1,1 那个 2×2 只占左上角）应为全透明
+        assert_eq!(&px[4..8], &[0, 0, 0, 0]);
+    }
+
+    /// 块边界按 **mipmap 网格**对齐（源码先 `x //= 2` 再交给 mipmap 层）。
+    #[test]
+    fn layer_thumbnail_blocks_align_to_the_mipmap_grid() {
+        let mut l = Layer::new();
+        l.mode = CombineMode::Normal;
+        {
+            let t = l.surface.tile_request_start(0, 0);
+            t[0][0] = [1 << 15, 1 << 15, 1 << 15, 1 << 15];
+            l.surface.tile_request_end(0, 0);
+        }
+        let (px, w, h) = l.render_thumbnail_rgba8((0, 0, 64, 64), 1);
+        assert_eq!((w, h), (32, 32));
+        // (0,0) 的 2×2 块含 1 个不透明像素 → 平均 alpha = 32768/4 = 8192
+        assert_eq!(px[3], (8192.0f32 / 32768.0 * 255.0).round() as u8);
+        assert_eq!(px[0], 255, "去预乘后仍是满强度白");
+        assert_eq!(&px[4..8], &[0, 0, 0, 0], "相邻块全空");
+    }
+
+    /// 缩略图走**本层自己的 op**：不透明度会体现在缩略图里
+    /// （`data.py:376-383` 的 `COMPOSITE(surface, mode, opacity)`）。
+    #[test]
+    fn layer_thumbnail_applies_own_opacity() {
+        let mut l = Layer::new();
+        l.mode = CombineMode::Normal;
+        l.surface = solid_surface([255, 0, 0], 255);
+        let (full, _, _) = l.render_thumbnail_rgba8((0, 0, 64, 64), 0);
+        assert_eq!(&full[0..4], &[255, 0, 0, 255]);
+
+        l.opacity = 0.5;
+        let (half, _, _) = l.render_thumbnail_rgba8((0, 0, 64, 64), 0);
+        assert!(half[3] < 250 && half[3] > 100, "alpha 落到约一半：{}", half[3]);
     }
 
     #[test]

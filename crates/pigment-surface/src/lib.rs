@@ -49,6 +49,7 @@ pub mod color;
 pub mod combine;
 pub mod layer;
 pub mod png;
+pub mod thumb;
 
 pub use layer::{Layer, LayerStack};
 
@@ -366,8 +367,7 @@ impl PigmentSurface {
         out
     }
 
-    /// 把 `rect` 写成 PNG（`lib/surface.py:220` 的 `save_as_png`）。
-    ///
+    /// 把 `rect` 写成 PNG（`lib/surface.py:220` 的 `save_as_png`）。    ///
     /// 返回实际写出的矩形 `(x, y, w, h)` —— 空表面会被退化成 1×1，
     /// 调用方需要知道真正落盘的尺寸（ORA 的 stack.xml 要用）。
     pub fn save_as_png(

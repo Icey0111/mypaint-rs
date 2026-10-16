@@ -55,7 +55,7 @@ use std::path::Path;
 use hokusai::tile::TILE_SIZE;
 use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::color::{self, CANVAS_BG};
-use pigment_surface::{LayerStack, PigmentSurface};
+use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::zip::{ZipArchive, ZipWriter};
 
@@ -413,7 +413,7 @@ fn build_stack_xml(
 
 // ---- 缩略图（照搬 lib/layer/tree.py:564 render_layer_preview）----
 
-/// 生成 256×256 上限的缩略图，返回 `(pixels_rgba8, w, h)`。
+/// 生成 256×256 上限的**栈**缩略图，返回 `(pixels_rgba8, w, h)`。
 ///
 /// 算法照搬 `render_layer_preview`：
 /// 1. mipmap 逐级减半，直到 `max(w,h) <= size`（每级 `x/=2; y/=2; w/=2; h/=2`）
@@ -426,63 +426,46 @@ fn build_stack_xml(
 /// 正是 4 次减半的结果，第 3 步没有生效 —— 与本实现一致。
 ///
 /// B2-4 起作用于整个图层栈（源码 `root_stack.render_thumbnail(bbox)`），
-/// 合成含背景层。
+/// 合成含背景层；B2-5 起减半改在 **fix15 预乘域**逐级做
+/// （[`LayerStack::render_thumbnail_rgba8`]），与 MyPaint 的 mipmap 同域。
 pub fn render_thumbnail(layers: &LayerStack, bbox: (i32, i32, i32, i32)) -> (Vec<u8>, u32, u32) {
-    let (mut x, mut y, mut w, mut h) = bbox;
+    let (x, y, w, h) = bbox;
     // 空画布：照 `_validate_layer_bbox_arg` 的下限「至少一个 tile」
     if w <= 0 || h <= 0 {
         return (vec![0u8; 4], 1, 1);
     }
+    let level = mipmap_level(w, h);
+    layers.render_thumbnail_rgba8((x, y, w, h), level)
+}
 
+/// 生成 256×256 上限的**单图层**缩略图（`layer.render_thumbnail(layer.get_bbox())`
+/// → `render_layer_preview(layer, bbox, alpha=True)`），返回 `(pixels_rgba8, w, h)`。
+///
+/// 与 [`render_thumbnail`] 同一套减半规则，区别是只渲染这一层的 op
+/// （`data.py:376-383`：本层 surface 用**自身**模式与不透明度落在透明底上），
+/// 所以模式/不透明度都会体现在缩略图里；不可见层照旧显示内容
+/// （solo 强制 `visible=True`，`data.py:353-358`）。
+///
+/// bbox 取图层数据外接框（tile 对齐，最小一个 tile）；空层得到
+/// 64×64 全透明（照 `_validate_layer_bbox_arg` 的 `max(TILE_SIZE, ·)`）。
+pub fn render_layer_thumbnail(layer: &Layer, bbox: (i32, i32, i32, i32)) -> (Vec<u8>, u32, u32) {
+    let (x, y, w, h) = bbox;
+    let w = w.max(TILE_SIZE as i32);
+    let h = h.max(TILE_SIZE as i32);
+    let level = mipmap_level(w, h);
+    layer.render_thumbnail_rgba8((x, y, w, h), level)
+}
+
+/// `max(w, h) <= 256` 所需的 mipmap 层数（`render_layer_preview` 的 while 循环）。
+fn mipmap_level(w: i32, h: i32) -> u32 {
     let mut level = 0;
+    let (mut w, mut h) = (w, h);
     while level < MAX_MIPMAP_LEVEL && w.max(h) > THUMBNAIL_SIZE as i32 {
         level += 1;
-        x /= 2;
-        y /= 2;
         w /= 2;
         h /= 2;
     }
-    let w = w.max(1);
-    let h = h.max(1);
-
-    // 按减半后的尺寸做区域平均（mipmap 本身就是逐级 box filter，
-    // 对 2 的幂次减半而言等价）
-    let factor = 1i32 << level;
-    let mut full =
-        vec![0u8; ((w * factor) * (h * factor) * 4) as usize];
-    layers.render_rect_rgba8(
-        (x * factor, y * factor, (w * factor) as u32, (h * factor) as u32),
-        false,
-        &mut full,
-    );
-    let src_w = (w * factor) as usize;
-    let (tw, th) = (w as usize, h as usize);
-    let mut out = vec![0u8; tw * th * 4];
-    for ty in 0..th {
-        for tx in 0..tw {
-            let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
-            for dy in 0..factor as usize {
-                for dx in 0..factor as usize {
-                    let sx = tx * factor as usize + dx;
-                    let sy = ty * factor as usize + dy;
-                    let o = (sy * src_w + sx) * 4;
-                    if o + 3 < full.len() {
-                        r += full[o] as u32;
-                        g += full[o + 1] as u32;
-                        b += full[o + 2] as u32;
-                        n += 1;
-                    }
-                }
-            }
-            let n = n.max(1);
-            let o = (ty * tw + tx) * 4;
-            out[o] = (r / n) as u8;
-            out[o + 1] = (g / n) as u8;
-            out[o + 2] = (b / n) as u8;
-            out[o + 3] = 255;
-        }
-    }
-    (out, tw as u32, th as u32)
+    level
 }
 
 // ---- 保存 ----
@@ -1490,7 +1473,6 @@ mod tests {
     /// 空表面的缩略图退化成 1×1，不 panic。
     #[test]
     fn thumbnail_of_empty_surface_is_one_pixel() {
-        let s = PigmentSurface::new();
         let st = LayerStack::new();
         let (px, w, h) = render_thumbnail(&st, (0, 0, 0, 0));
         assert_eq!((w, h), (1, 1));
@@ -1501,7 +1483,6 @@ mod tests {
     /// （与 `fill_outlines.ora` 实测一致）。
     #[test]
     fn thumbnail_halves_like_mypaint() {
-        let s = PigmentSurface::new();
         let st = LayerStack::new();
         let (_, w, h) = render_thumbnail(&st, (0, 0, 3456, 3008));
         assert_eq!((w, h), (216, 188), "应与 fill_outlines.ora 的缩略图尺寸一致");
@@ -1510,9 +1491,43 @@ mod tests {
     /// 小画幅不缩放：64×64 → 64×64（`scale_proportionally` 是 shrink_only）。
     #[test]
     fn small_thumbnail_is_not_upscaled() {
-        let s = PigmentSurface::new();
         let st = LayerStack::new();
         let (_, w, h) = render_thumbnail(&st, (0, 0, 64, 64));
         assert_eq!((w, h), (64, 64), "只缩不放");
+    }
+
+    /// 单图层缩略图的下限是**一个 tile**（`_validate_layer_bbox_arg` 的
+    /// `max(TILE_SIZE, ·)`）：空层的 bbox 是 (0,0,0,0) → 64×64 全透明。
+    #[test]
+    fn layer_thumbnail_min_size_is_one_tile() {
+        let layer = Layer::new();
+        let (px, w, h) = render_layer_thumbnail(&layer, (0, 0, 0, 0));
+        assert_eq!((w, h), (64, 64));
+        assert!(px.iter().all(|b| *b == 0), "空层全透明（不是全黑）");
+    }
+
+    /// 单图层缩略图只含本层内容：块内不透明红、块外透明。
+    #[test]
+    fn layer_thumbnail_shows_only_this_layer() {
+        let mut layer = Layer::new();
+        let mut block = vec![0u8; 8 * 8 * 4];
+        for p in block.chunks_exact_mut(4) {
+            p.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        layer.surface.load_from_rgba8(&block, 0, 0, 8, 8);
+
+        let (out, w, h) = render_layer_thumbnail(&layer, (0, 0, 64, 64));
+        assert_eq!((w, h), (64, 64));
+        assert_eq!(&out[0..4], &[255, 0, 0, 255], "红块保留");
+        let o = (32 * 4) as usize; // (32, 0)
+        assert_eq!(&out[o..o + 4], &[0, 0, 0, 0], "块外透明（不含底色）");
+    }
+
+    /// 大画幅的图层缩略图同样按 2 的幂次减半，且尺寸与栈缩略图一致。
+    #[test]
+    fn layer_thumbnail_halves_like_the_stack_one() {
+        let layer = Layer::new();
+        let (_, w, h) = render_layer_thumbnail(&layer, (0, 0, 3456, 3008));
+        assert_eq!((w, h), (216, 188));
     }
 }

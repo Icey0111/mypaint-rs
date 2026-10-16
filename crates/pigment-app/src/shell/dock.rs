@@ -454,6 +454,7 @@ impl PigmentApp {
                     }
                     PanelId::BrushEditor => self.brush_editor_content(ui),
                     PanelId::HistoryPanel => self.history_panel_content(ui),
+                    PanelId::LayersTool => self.layers_panel_content(ui),
                     other => placeholder_panel(ui, *other),
                 });
         }
