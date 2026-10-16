@@ -1,10 +1,29 @@
-//! 笔刷库面板 —— MyPaint 式的扁平笔刷列表。
+//! 笔刷面板 —— 照搬 MyPaint 的笔刷列表。
 //!
-//! - 官方包 196 支（CC0，编译期内嵌）+ 用户笔刷目录扫描结果
-//! - 分组过滤条（顺序与展示名取自官方 `order.conf`）+ 名称搜索
-//! - `ScrollArea::show_rows` 虚拟滚动：**只为可见行渲染缩略图**，
-//!   196 支也不可能一次性付渲染代价
-//! - 缩略图缓存按「颜色」失效：换色后重绘，但永远只重绘可见的那屏
+//! 源码对照：
+//!
+//! | 本文件 | MyPaint |
+//! |---|---|
+//! | [`ICON_SIZE`] / [`cell`] | `BrushList.ICON_SIZE = 48`（`brushselectionwindow.py:66`） |
+//! | [`total_border`] | `PixbufList.update`（`pixbuflist.py:243`） |
+//! | [`grid_geometry`] | 同上（`tiles_w = width // total_w`，`tiles_h = ceil(n / tiles_w)`） |
+//! | [`index_at`] | `PixbufList.index`（`pixbuflist.py:308`） |
+//! | [`stroke_selection`] | `PixbufList.draw_cb`（`pixbuflist.py:373`） |
+//! | [`thumb_for`] | `managedbrush_pixbuffunc` + `helpers.pixbuf_thumbnail`（`lib/helpers.py:454`） |
+//! | `tooltips` | `managedbrush_namefunc`（`brushselectionwindow.py:46`） |
+//!
+//! MyPaint 的形态是 **48px 流式图标网格**：`BrushList` 是 `PixbufList` 的子类，
+//! 每个分组一个 `BrushGroupTool` 停靠面板，面板里是这个网格。
+//!
+//! 两处**技术栈适配**（视觉结果一致，只是实现手段不同）：
+//!
+//! 1. **按需建纹理**：`PixbufList.update()` 会为列表里**每一项**立刻取 pixbuf
+//!    （196 张 128×128 常驻 RAM）。我们改成只给滚动视口内的项建 GPU 纹理，
+//!    否则 egui 里会一次性炸出 196 个纹理绑定。
+//! 2. **搜索框与「全部」过滤**：MyPaint 没有（它靠分组面板 + `Brush Groups` 菜单）。
+//!    这是本项目的**新增**入口，不是替换。
+//!
+//! 权限：官方包图标为 CC0，见 `assets/brushes/COPYING`。
 
 use std::collections::HashMap;
 
@@ -14,10 +33,16 @@ use pigment_engine::hokusai::Brush;
 
 use crate::thumb;
 
-/// 列表行高（含间距）。
-const ROW_H: f32 = 21.0;
-/// 缩略图显示宽度（像素）。
-const THUMB_W: f32 = 40.0;
+/// 图标边长 —— `BrushList.ICON_SIZE`（`gui/brushselectionwindow.py:66`）。
+pub const ICON_SIZE: f32 = 48.0;
+/// 选中框线宽 —— `PixbufList.border_visible`（`gui/pixbuflist.py:69`）。
+const BORDER_VISIBLE: f32 = 2.0;
+/// 格内留白 —— `PixbufList.spacing_inside`。
+const SPACING_INSIDE: f32 = 0.0;
+/// 格外留白 —— `PixbufList.spacing_outside`。
+const SPACING_OUTSIDE: f32 = 0.0;
+/// 选中框外扩 —— `PixbufList.border_visible_outside_cell`。
+const BORDER_VISIBLE_OUTSIDE_CELL: f32 = 1.0;
 
 /// MyPaint 的启动默认笔刷 —— 对齐 `gui/brushmanager.py` 的 `_DEFAULT_BRUSH`。
 pub const DEFAULT_BRUSH: &str = "Dieterle/Fan#1";
@@ -29,20 +54,61 @@ pub const DEFAULT_ERASER: &str = "deevad/kneaded_eraser_large";
 /// `DEFAULT_BRUSH` 缺失时的兜底（官方包被裁剪等情况）。
 const FALLBACK_BRUSH: &str = "classic/dry_brush";
 
+/// `PixbufList.update()` 的 `total_border`（`gui/pixbuflist.py:243`）。
+fn total_border() -> f32 {
+    BORDER_VISIBLE + SPACING_INSIDE + SPACING_OUTSIDE
+}
+
+/// 一个格子的边长 —— 同函数的 `total_w` / `total_h`。
+fn cell() -> f32 {
+    ICON_SIZE + 2.0 * total_border()
+}
+
+/// 网格几何 —— `PixbufList.update()` 的 `tiles_w` / `tiles_h`。
+///
+/// 返回 `(每行格数, 总行数)`。
+fn grid_geometry(width: f32, count: usize) -> (usize, usize) {
+    let c = cell();
+    let tiles_w = ((width / c) as usize).max(1);
+    let tiles_h = count.div_ceil(tiles_w).max(1);
+    (tiles_w, tiles_h)
+}
+
+/// 命中测试 —— `PixbufList.index`（`gui/pixbuflist.py:308`）。
+///
+/// 坐标为**内容坐标**（相对网格左上角）。超出右边界时夹到最后一列，
+/// 与 MyPaint 一致（点空白区域落在最近的格子上）。
+fn index_at(x: f32, y: f32, tiles_w: usize, count: usize) -> usize {
+    if count == 0 || tiles_w == 0 {
+        return 0;
+    }
+    let c = cell();
+    let mut col = (x / c).floor() as i64;
+    col = col.clamp(0, tiles_w as i64 - 1);
+    let row = (y / c).floor() as i64;
+    let i = (col + tiles_w as i64 * row).max(0) as usize;
+    i.min(count - 1)
+}
+
 pub struct BrushPanel {
     pub library: BrushLibrary,
     /// 当前选中项在 `library.entries` 中的下标。
     pub selected: usize,
-    /// 名称搜索关键字。
+    /// 名称搜索关键字（本项目的**新增**入口，MyPaint 无此控件）。
     pub search: String,
     /// 分组过滤（`None` = 全部）。
     pub group: Option<String>,
-    /// 缩略图缓存：library 下标 → 纹理。
+    /// 缩略图缓存：library 下标 → 纹理（扮演 `PixbufList.thumbnails` 的角色）。
     thumbnails: HashMap<usize, egui::TextureHandle>,
-    /// 缩略图当前渲染所用的颜色（变化即整屏失效重绘）。
-    thumb_color: Option<[f32; 3]>,
     /// 过滤后的 library 下标列表。
     visible: Vec<usize>,
+    /// 与 [`Self::visible`] 一一对应的 tooltip 文本（`managedbrush_namefunc` 的结果）。
+    ///
+    /// 在 [`Self::rebuild_visible`] 里一并算好：tooltip 需要闭包读它，
+    /// 提前算好就不必在绘制闭包里再借 `&self`。
+    tooltips: Vec<String>,
+    /// 与 [`Self::visible`] 一一对应的 `(笔刷名, description)`。
+    labels: Vec<(String, String)>,
 }
 
 impl BrushPanel {
@@ -59,8 +125,9 @@ impl BrushPanel {
             search: String::new(),
             group: None,
             thumbnails: HashMap::new(),
-            thumb_color: None,
             visible: Vec::new(),
+            tooltips: Vec::new(),
+            labels: Vec::new(),
         };
         p.rebuild_visible();
         p
@@ -70,7 +137,14 @@ impl BrushPanel {
         self.library.entries.get(self.selected)
     }
 
-    /// 解析当前选中笔刷（列表里解析失败极少见，此处以 `Brush::new()` 兜底）。
+    /// 某支笔刷的 48×48 图标（与我方笔刷列表用的是同一张，含缓存）。
+    ///
+    /// 供笔刷编辑器顶部复用 —— MyPaint 那里也是直接取 `ManagedBrush.preview`。
+    pub fn icon(&mut self, ctx: &egui::Context, idx: usize) -> egui::TextureHandle {
+        thumb_for(ctx, &self.library, &mut self.thumbnails, idx)
+    }
+
+    /// 解析当前选中笔刷（解析失败极少见，调用方以兜底笔刷处理）。
     pub fn load_selected(&self) -> Result<Brush, String> {
         self.library
             .entries
@@ -118,18 +192,42 @@ impl BrushPanel {
         if !self.visible.is_empty() && !self.visible.contains(&self.selected) {
             self.selected = self.visible[0];
         }
+        self.rebuild_labels();
+    }
+
+    /// 预生成列表标签与 tooltip —— `managedbrush_namefunc`（`brushselectionwindow.py:46`）。
+    ///
+    /// tooltip 模板：`"{name}\n{description}"`（description 为空时只有 name）。
+    /// 我们额外补一行路径与来源（MyPaint 的 tooltip 只有两行，这是新增信息）。
+    fn rebuild_labels(&mut self) {
+        self.labels.clear();
+        self.tooltips.clear();
+        for &i in &self.visible {
+            let Some(e) = self.library.entries.get(i) else {
+                continue;
+            };
+            let name = e.mypaint_name();
+            let mut tip = name.clone();
+            if !e.display.is_empty() {
+                tip.push('\n');
+                tip.push_str(&e.display);
+            }
+            tip.push_str(&format!(
+                "\n{}\n{}",
+                e.key,
+                if e.is_embedded() {
+                    "内嵌官方包 (CC0)"
+                } else {
+                    "用户目录"
+                }
+            ));
+            self.labels.push((name, e.display.clone()));
+            self.tooltips.push(tip);
+        }
     }
 
     /// 绘制面板。返回 `true` 表示**选中笔刷发生变化**（调用方需重载笔刷）。
-    pub fn show(&mut self, ui: &mut egui::Ui, color: [f32; 3]) -> bool {
-        let mut changed = false;
-
-        // 颜色变化 → 缩略图整屏失效（下次渲染时按需重绘）
-        if self.thumb_color != Some(color) {
-            self.thumbnails.clear();
-            self.thumb_color = Some(color);
-        }
-
+    pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
         ui.horizontal(|ui| {
             ui.heading("笔刷");
             ui.label(
@@ -161,7 +259,7 @@ impl BrushPanel {
             need_rebuild = true;
         }
 
-        // ---- 分组过滤 ----
+        // ---- 分组过滤（本项目入口；MyPaint 用独立的 BrushGroupTool 面板）----
         let groups = self.library.groups();
         ui.horizontal_wrapped(|ui| {
             if ui
@@ -188,163 +286,116 @@ impl BrushPanel {
         }
 
         ui.separator();
-        let total = self.visible.len();
         ui.label(
-            egui::RichText::new(format!("{total} 支匹配"))
+            egui::RichText::new(format!("{} 支", self.visible.len()))
                 .weak()
                 .small(),
         );
 
-        // ---- 虚拟滚动列表（只为可见行渲染缩略图）----
-        let row_h = ROW_H;
-        let show_group_tag = self.group.is_none();
+        self.grid(ui)
+    }
+
+    /// 48px 流式图标网格 —— `PixbufList`。
+    fn grid(&mut self, ui: &mut egui::Ui) -> bool {
+        let mut changed = false;
+        let count = self.visible.len();
+        if count == 0 {
+            ui.label(egui::RichText::new("没有匹配的笔刷").weak());
+            return false;
+        }
+        let (tiles_w, tiles_h) = grid_geometry(ui.available_width(), count);
+        let c = cell();
+        let total_size = egui::vec2(tiles_w as f32 * c, tiles_h as f32 * c);
+
+        let visuals = ui.visuals().clone();
+        let bg = visuals.extreme_bg_color;
+        let selected_fill = visuals.selection.bg_fill;
+        let hover_fill = visuals.widgets.hovered.bg_fill;
+
+        let mut clicked_idx: Option<usize> = None;
+
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
-            .show_rows(ui, row_h, total, |ui, range| {
-                for pos in range {
-                    let idx = self.visible[pos];
-                    // 先把展示所需数据拷出来，避免与缩略图渲染的可变借用冲突
-                    let Some((label, desc, group_display, key, notes, embedded)) =
-                        self.library.entries.get(idx).map(|e| {
-                            (
-                                // MyPaint 主标签 = 笔刷名（下划线换空格），不是 description
-                                e.mypaint_name(),
-                                e.display.clone(),
-                                e.group_display.clone(),
-                                e.key.clone(),
-                                e.notes.clone(),
-                                e.is_embedded(),
-                            )
-                        })
-                    else {
-                        continue;
-                    };
-                    let tex = self.thumbnail(ui.ctx(), idx, color);
-                    let (rect, resp) = ui.allocate_exact_size(
-                        egui::vec2(ui.available_width(), row_h),
-                        egui::Sense::click(),
-                    );
-                    let selected = idx == self.selected;
+            .show_viewport(ui, |ui, viewport| {
+                let (rect, response) =
+                    ui.allocate_exact_size(total_size, egui::Sense::click_and_drag());
+                let painter = ui.painter_at(rect);
+                // `PixbufList.draw_cb` 先铺主题背景
+                painter.rect_filled(rect, egui::CornerRadius::ZERO, bg);
 
-                    // 行底色
-                    let bg = if selected {
-                        ui.visuals().selection.bg_fill
-                    } else if resp.hovered() {
-                        ui.visuals().widgets.hovered.bg_fill
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
-                    if bg != egui::Color32::TRANSPARENT {
-                        ui.painter()
-                            .rect_filled(rect.shrink2(egui::vec2(0.0, 1.0)), 3.0, bg);
-                    }
+                // 只画滚动视口覆盖到的行（技术栈适配：避免一次性建 196 个纹理）
+                let first_row = (viewport.min.y / c).floor().max(0.0) as usize;
+                let last_row = (((viewport.max.y / c).ceil() as usize) + 1).min(tiles_h);
 
-                    // 缩略图（保持 PREVIEW 宽高比）
-                    let th = THUMB_W / thumb::ASPECT;
-                    let img_rect = egui::Rect::from_min_size(
-                        egui::pos2(rect.min.x + 2.0, rect.center().y - th * 0.5),
-                        egui::vec2(THUMB_W, th),
-                    );
-                    ui.painter().image(
-                        tex.id(),
-                        img_rect,
-                        egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                        egui::Color32::WHITE,
-                    );
+                let hover_pos = response.hover_pos().filter(|p| rect.contains(*p));
+                let mut hovered: Option<usize> = None;
 
-                    let text_color = if selected {
-                        ui.visuals().strong_text_color()
-                    } else if show_group_tag {
-                        ui.visuals().weak_text_color()
-                    } else {
-                        ui.visuals().text_color()
-                    };
-                    ui.painter().text(
-                        egui::pos2(img_rect.max.x + 6.0, rect.center().y),
-                        egui::Align2::LEFT_CENTER,
-                        label.clone(),
-                        egui::FontId::proportional(12.0),
-                        text_color,
-                    );
-                    // 右侧弱化显示分组（仅"全部"视图下有意义）
-                    if show_group_tag {
-                        ui.painter().text(
-                            egui::pos2(rect.max.x - 4.0, rect.center().y),
-                            egui::Align2::RIGHT_CENTER,
-                            group_display,
-                            egui::FontId::proportional(10.0),
-                            ui.visuals().weak_text_color(),
+                for row in first_row..last_row {
+                    for col in 0..tiles_w {
+                        let slot = row * tiles_w + col;
+                        if slot >= count {
+                            break;
+                        }
+                        let idx = self.visible[slot];
+                        let origin = rect.min + egui::vec2(col as f32 * c, row as f32 * c);
+                        let cell_rect = egui::Rect::from_min_size(origin, egui::vec2(c, c));
+                        let icon_rect = egui::Rect::from_min_size(
+                            origin + egui::vec2(total_border(), total_border()),
+                            egui::vec2(ICON_SIZE, ICON_SIZE),
+                        );
+
+                        let is_hovered = hover_pos.is_some_and(|p| cell_rect.contains(p));
+                        if is_hovered {
+                            hovered = Some(slot);
+                        }
+
+                        if idx == self.selected {
+                            stroke_selection(&painter, cell_rect, selected_fill);
+                        } else if is_hovered {
+                            stroke_selection(&painter, cell_rect, hover_fill);
+                        }
+
+                        let tex = thumb_for(ui.ctx(), &self.library, &mut self.thumbnails, idx);
+                        painter.image(
+                            tex.id(),
+                            icon_rect,
+                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
                         );
                     }
+                }
 
-                    // tooltip：对齐 `managedbrush_namefunc`（brushselectionwindow.py:46）
-                    // —— 第一行笔刷名、第二行 description，再补来源与 notes（我们的扩展）
-                    let resp = resp.on_hover_text(format!(
-                        "{label}{desc}{key}\n{origin}{notes}",
-                        desc = if desc.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n{desc}")
-                        },
-                        key = key,
-                        origin = if embedded {
-                            "内嵌官方包 (CC0)"
-                        } else {
-                            "用户目录"
-                        },
-                        notes = if notes.is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n\n{notes}")
-                        }
-                    ));
-                    if resp.clicked() && idx != self.selected {
-                        self.selected = idx;
-                        changed = true;
+                // ---- tooltip（`managedbrush_namefunc`）----
+                let response = match hovered.and_then(|slot| self.tooltips.get(slot)) {
+                    Some(tip) => response.on_hover_text(tip.clone()),
+                    None => response,
+                };
+                let _ = &self.labels;
+
+                // ---- 点击选中：照搬 `button_press_cb`（左键选中；右键菜单留待后续）----
+                if response.clicked() {
+                    if let Some(pos) = response.interact_pointer_pos() {
+                        let local = pos - rect.min;
+                        let slot = index_at(local.x, local.y, tiles_w, count);
+                        clicked_idx = self.visible.get(slot).copied();
                     }
                 }
             });
 
-        changed
-    }
-
-    /// 取得（必要时渲染并缓存）某支笔刷的缩略图。
-    fn thumbnail(
-        &mut self,
-        ctx: &egui::Context,
-        idx: usize,
-        color: [f32; 3],
-    ) -> egui::TextureHandle {
-        if let Some(t) = self.thumbnails.get(&idx) {
-            return t.clone();
+        if let Some(idx) = clicked_idx {
+            if idx != self.selected {
+                self.selected = idx;
+                changed = true;
+            }
         }
-        let (w, h) = (thumb::PREVIEW_W, thumb::PREVIEW_H);
-        let Some(entry) = self.library.entries.get(idx) else {
-            return empty_texture(ctx, w, h);
-        };
-        let (key, rgba) = match entry.load() {
-            Ok(b) => (entry.key.clone(), thumb::render(&b, color, w, h)),
-            Err(_) => (entry.key.clone(), vec![0u8; w * h * 4]),
-        };
-        let image = egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba);
-        let tex = ctx.load_texture(
-            format!("thumb:{key}"),
-            image,
-            egui::TextureOptions::LINEAR,
-        );
-        self.thumbnails.insert(idx, tex.clone());
-        tex
+        changed
     }
 
     /// 重新扫描用户笔刷目录（丢弃缓存，回到内嵌官方包 + 用户目录的合并结果）。
     fn rescan(&mut self) {
-        let color = self.thumb_color;
         let selected_key = self.selected_entry().map(|e| e.key.clone());
         self.library = BrushLibrary::load();
         self.thumbnails.clear();
-        // 置为不可能相等的值，强制下一帧按新库重绘缩略图
-        self.thumb_color = Some([f32::NAN, f32::NAN, f32::NAN]);
-        let _ = color;
         if let Some(k) = selected_key {
             if let Some(i) = self.library.find(&k) {
                 self.selected = i;
@@ -354,11 +405,255 @@ impl BrushPanel {
     }
 }
 
-/// 一张全透明纹理（笔刷解析失败时的占位）。
-fn empty_texture(ctx: &egui::Context, w: usize, h: usize) -> egui::TextureHandle {
-    ctx.load_texture(
-        "thumb-empty",
-        egui::ColorImage::from_rgba_unmultiplied([w, h], &vec![0u8; w * h * 4]),
+/// 取（必要时解码并缓存）某支笔刷的 48×48 图标。
+///
+/// 照搬 `BrushList` 的取图链：`managedbrush_pixbuffunc` → `ManagedBrush.preview`
+/// → 优先随附 `_prev.png`、否则实时渲染（[`thumb::render`]）；
+/// 再经 `helpers.pixbuf_thumbnail(pixbuf, 48, 48)` 等比缩小并居中到白底。
+fn thumb_for(
+    ctx: &egui::Context,
+    library: &BrushLibrary,
+    cache: &mut HashMap<usize, egui::TextureHandle>,
+    idx: usize,
+) -> egui::TextureHandle {
+    if let Some(t) = cache.get(&idx) {
+        return t.clone();
+    }
+    let Some(entry) = library.entries.get(idx) else {
+        return ctx.load_texture(
+            "thumb-missing",
+            icon_image(&white_icon()),
+            egui::TextureOptions::LINEAR,
+        );
+    };
+    let rgba = match entry.preview_png() {
+        // `ManagedBrush._load_preview()`：读随附的 128×128 预览图
+        Some(bytes) => decode_png(&bytes),
+        // 回退：`drawutils.render_brush_preview_pixbuf`
+        None => entry.load().ok().map(|b| thumb::render(&b)),
+    };
+    let (key, rgba) = match rgba {
+        Some(src) => (
+            entry.key.clone(),
+            thumbnail_on_white(&src, thumb::PREVIEW_W, thumb::PREVIEW_H, ICON_SIZE as usize, ICON_SIZE as usize),
+        ),
+        None => (format!("{}-broken", entry.key), white_icon()),
+    };
+    let tex = ctx.load_texture(
+        format!("thumb:{key}"),
+        icon_image(&rgba),
         egui::TextureOptions::LINEAR,
-    )
+    );
+    cache.insert(idx, tex.clone());
+    tex
+}
+
+fn icon_image(rgba: &[u8]) -> egui::ColorImage {
+    egui::ColorImage::from_rgba_unmultiplied([ICON_SIZE as usize, ICON_SIZE as usize], rgba)
+}
+
+/// 选中/悬停描边 —— `PixbufList.draw_cb`（`gui/pixbuflist.py:373`）。
+///
+/// 原算法：先把格子按 `spacing_outside` 内缩，再按
+/// `border_visible_outside_cell` 外扩一格，然后描
+/// `border_visible + border_visible_outside_cell` 层、逐层内缩 1px 的边框。
+fn stroke_selection(painter: &egui::Painter, cell_rect: egui::Rect, color: egui::Color32) {
+    let shrink = |r: egui::Rect, p: f32| -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(r.min.x + p, r.min.y + p),
+            egui::pos2(r.max.x - p, r.max.y - p),
+        )
+    };
+    let mut r = shrink(cell_rect, SPACING_OUTSIDE);
+    for _ in 0..BORDER_VISIBLE_OUTSIDE_CELL as usize {
+        r = shrink(r, -1.0);
+    }
+    let layers = (BORDER_VISIBLE + BORDER_VISIBLE_OUTSIDE_CELL) as usize;
+    for _ in 0..layers {
+        painter.rect_stroke(
+            egui::Rect::from_min_max(r.min, egui::pos2(r.max.x - 1.0, r.max.y - 1.0)),
+            egui::CornerRadius::ZERO,
+            egui::Stroke::new(1.0, color),
+            egui::StrokeKind::Middle,
+        );
+        r = shrink(r, 1.0);
+    }
+}
+
+/// 解码 `_prev.png` → 128×128 的 RGBA8，失败返回 `None`。
+fn decode_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    // MyPaint 的 `_prev.png` 有 indexed / gray / RGB / RGBA 四种色型，
+    // 统一归到 RGBA8（`get_preview()` 拿到的是带 alpha 的 pixbuf）。
+    let img = image::load_from_memory(bytes).ok()?;
+    Some(img.to_rgba8().into_raw())
+}
+
+/// `helpers.pixbuf_thumbnail(src, w, h)`（`lib/helpers.py:454`）：
+/// `scale_proportionally`（只缩不放）后**居中合成到白底**。
+fn thumbnail_on_white(src: &[u8], sw: usize, sh: usize, w: usize, h: usize) -> Vec<u8> {
+    let mut dst = vec![255u8; w * h * 4];
+    if sw == 0 || sh == 0 || src.len() < sw * sh * 4 {
+        return dst;
+    }
+    let scale = (w as f32 / sw as f32).min(h as f32 / sh as f32);
+    // `shrink_only=True`：scale >= 1 时原样使用
+    let (nw, nh) = if scale >= 1.0 {
+        (sw, sh)
+    } else {
+        (
+            ((sw as f32 * scale) as usize).max(1),
+            ((sh as f32 * scale) as usize).max(1),
+        )
+    };
+    let scaled: Vec<u8> = if (nw, nh) == (sw, sh) {
+        src[..sw * sh * 4].to_vec()
+    } else {
+        let buf = image::RgbaImage::from_raw(sw as u32, sh as u32, src.to_vec())
+            .expect("源图尺寸与缓冲不符");
+        image::imageops::resize(
+            &buf,
+            nw as u32,
+            nh as u32,
+            image::imageops::FilterType::Triangle,
+        )
+        .into_raw()
+    };
+    let ox = (w - nw) / 2;
+    let oy = (h - nh) / 2;
+    for y in 0..nh {
+        for x in 0..nw {
+            let si = (y * nw + x) * 4;
+            let a = scaled[si + 3] as u32;
+            let di = ((y + oy) * w + (x + ox)) * 4;
+            // 源图带 alpha → 与白底合成（`src2.composite(dst, ...)`）
+            for ch in 0..3 {
+                dst[di + ch] = ((scaled[si + ch] as u32 * a + 255 * (255 - a)) / 255) as u8;
+            }
+            dst[di + 3] = 255;
+        }
+    }
+    dst
+}
+
+/// 全白图标（解析失败时的占位）。
+fn white_icon() -> Vec<u8> {
+    vec![255u8; ICON_SIZE as usize * ICON_SIZE as usize * 4]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `grid_geometry` 照搬 `PixbufList.update`：240px 宽 / 52px 格 → 4 列。
+    #[test]
+    fn grid_geometry_matches_pixbuflist() {
+        assert_eq!(grid_geometry(240.0, 196), (4, 49));
+        assert_eq!(grid_geometry(52.0, 10), (1, 10));
+        // 宽度不足一格时至少 1 列
+        assert_eq!(grid_geometry(10.0, 3), (1, 3));
+        // ceil 的边界
+        assert_eq!(grid_geometry(208.0, 8), (4, 2));
+        assert_eq!(grid_geometry(208.0, 9), (4, 3));
+    }
+
+    /// `index_at` 照搬 `PixbufList.index`：超出右边界夹到最后一列。
+    #[test]
+    fn index_at_clamps_to_last_column() {
+        let (tw, c) = (4usize, cell());
+        assert_eq!(index_at(0.0, 0.0, tw, 10), 0);
+        assert_eq!(index_at(c * 3.5, 0.0, tw, 10), 3);
+        assert_eq!(index_at(5.0, c * 1.5, tw, 10), 4);
+        // 负坐标夹到 0
+        assert_eq!(index_at(-30.0, -30.0, tw, 10), 0);
+        // 末尾越界夹到 count-1
+        assert_eq!(index_at(c * 3.5, c * 9.5, tw, 7), 6);
+    }
+
+    #[test]
+    fn cell_is_52px_like_mypaint() {
+        assert_eq!(cell(), 52.0);
+        assert_eq!(ICON_SIZE, 48.0);
+    }
+
+    /// `pixbuf_thumbnail` 的等比缩小：128×128 → 48×48 铺满整格。
+    #[test]
+    fn thumbnail_fills_square_cell() {
+        let mut src = vec![0u8; 128 * 128 * 4];
+        for px in src.chunks_mut(4) {
+            px[0] = 10;
+            px[1] = 10;
+            px[2] = 10;
+            px[3] = 255;
+        }
+        let out = thumbnail_on_white(&src, 128, 128, 48, 48);
+        assert_eq!(out.len(), 48 * 48 * 4);
+        assert_eq!(&out[0..3], &[10, 10, 10]);
+        assert_eq!(out[3], 255);
+    }
+
+    /// 半透明源图与白底合成（`src2.composite(dst, ...)`）。
+    #[test]
+    fn thumbnail_composites_alpha_on_white() {
+        // 全透明 → 输出应全是白底
+        let src = vec![0u8; 128 * 128 * 4];
+        let out = thumbnail_on_white(&src, 128, 128, 48, 48);
+        assert!(out.iter().all(|&b| b == 255), "全透明源图应为纯白");
+    }
+
+    /// 非正方形源图：等比缩放后居中，上下留白为白底。
+    #[test]
+    fn thumbnail_centers_non_square() {
+        let mut src = vec![0u8; 128 * 64 * 4];
+        for px in src.chunks_mut(4) {
+            px[0] = 200;
+            px[3] = 255;
+        }
+        let out = thumbnail_on_white(&src, 128, 64, 48, 48);
+        assert_eq!(&out[0..3], &[255, 255, 255], "首行应为白底留白");
+        let mid = (24 * 48 + 24) * 4;
+        assert_eq!(out[mid], 200);
+    }
+
+    /// 「只缩不放」：源图比目标小则原样居中。
+    #[test]
+    fn thumbnail_never_upscales() {
+        let mut src = vec![0u8; 16 * 16 * 4];
+        for px in src.chunks_mut(4) {
+            px[0] = 77;
+            px[3] = 255;
+        }
+        let out = thumbnail_on_white(&src, 16, 16, 48, 48);
+        assert_eq!(out.len(), 48 * 48 * 4);
+        let mid = (24 * 48 + 24) * 4;
+        assert_eq!(out[mid], 77);
+        assert_eq!(&out[0..3], &[255, 255, 255]);
+    }
+
+    /// 官方包 196 支全部自带 `_prev.png`，且都能解码成 128×128。
+    #[test]
+    fn every_embedded_brush_has_decodable_preview() {
+        let lib = BrushLibrary::embedded();
+        assert_eq!(lib.len(), 196);
+        let mut bad = Vec::new();
+        for e in &lib.entries {
+            match e.preview_png().and_then(|b| decode_png(&b)) {
+                Some(px) => assert_eq!(px.len(), 128 * 128 * 4, "{} 尺寸不对", e.key),
+                None => bad.push(e.key.clone()),
+            }
+        }
+        assert!(bad.is_empty(), "缺少/无法解码预览图: {bad:?}");
+    }
+
+    /// 每个条目都有 tooltip，且首行是笔刷名（`managedbrush_namefunc` 的模板）。
+    #[test]
+    fn tooltips_follow_mypaint_template() {
+        let p = BrushPanel::new();
+        assert_eq!(p.tooltips.len(), p.visible.len());
+        assert_eq!(p.labels.len(), p.visible.len());
+        for (slot, &idx) in p.visible.iter().enumerate() {
+            let e = &p.library.entries[idx];
+            let first_line = p.tooltips[slot].lines().next().unwrap_or_default();
+            assert_eq!(first_line, e.mypaint_name());
+        }
+    }
 }

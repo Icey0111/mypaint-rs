@@ -192,7 +192,6 @@ impl PigmentApp {
             b.get_mut(BrushSetting::Radius).base_value = r;
         }
         self.brush = b;
-        self.editor.mark_dirty();
     }
 
     /// 从笔刷库重新载入当前选中笔刷（清空半径/光谱覆盖，恢复笔刷自带性格）。
@@ -580,12 +579,11 @@ impl PigmentApp {
                             .id_salt("editor")
                             .default_open(true)
                             .show(ui, |ui| {
-                                let edited = self.editor.show(
-                                    ui,
-                                    &mut self.base_brush,
-                                    &self.brush,
-                                    self.color,
-                                );
+                                // 编辑器顶部图标 = 当前笔刷的预览图（MyPaint `brusheditor.py:786`）
+                                let sel = self.brushes.selected;
+                                let icon = self.brushes.icon(ui.ctx(), sel);
+                                let edited =
+                                    self.editor.show(ui, &mut self.base_brush, Some(&icon));
                                 if edited {
                                     self.derive_active();
                                 }
@@ -792,14 +790,13 @@ impl eframe::App for PigmentApp {
 
         if self.show_panels {
             // 左：笔刷库
-            let color = self.color;
             let mut pick = false;
             egui::Panel::left("brushes")
                 .resizable(true)
                 .default_size(240.0)
                 .size_range(170.0..=420.0)
                 .show(ui, |ui| {
-                    pick = self.brushes.show(ui, color);
+                    pick = self.brushes.show(ui);
                 });
             if pick {
                 self.reload_selected_brush();

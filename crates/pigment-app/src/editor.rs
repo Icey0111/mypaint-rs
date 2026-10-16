@@ -17,8 +17,6 @@
 use eframe::egui;
 use pigment_engine::hokusai::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 
-use crate::thumb;
-
 /// 曲线编辑区高度。
 const CURVE_H: f32 = 170.0;
 /// 控制点命中半径（像素）。
@@ -166,9 +164,6 @@ pub struct BrushEditor {
     curve: usize,
     /// 正在拖动的控制点下标。
     drag: Option<usize>,
-    preview: Option<egui::TextureHandle>,
-    preview_dirty: bool,
-    preview_color: [f32; 3],
 }
 
 impl Default for BrushEditor {
@@ -184,28 +179,16 @@ impl BrushEditor {
             only_nondefault: true,
             curve: 0,
             drag: None,
-            preview: None,
-            preview_dirty: true,
-            preview_color: [f32::NAN; 3],
         }
     }
 
-    /// 外部导致笔刷变化（换笔刷 / 改颜色 / 改覆盖项）时调用，下一帧重绘预览。
-    pub fn mark_dirty(&mut self) {
-        self.preview_dirty = true;
-    }
-
-    /// 绘制编辑器。`edit` 为被编辑的笔刷（改它），`preview` 为实际作画用的笔刷
-    /// （只读，用于预览 —— 两者在应用了颜色/橡皮等覆盖后可能不同）。
-    /// 返回 `true` 表示笔刷被修改。
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        edit: &mut Brush,
-        preview: &Brush,
-        color: [f32; 3],
-    ) -> bool {
-        self.preview_section(ui, preview, color);
+    /// 绘制编辑器。`edit` 为被编辑的笔刷（改它）。返回 `true` 表示笔刷被修改。
+    ///
+    /// `icon` 是当前笔刷的预览图（与我方笔刷列表同一张），由调用方给出 ——
+    /// 对齐 MyPaint `brusheditor.py:786`：编辑器顶部的图标就是
+    /// `ManagedBrush.preview`（随附的 `_prev.png`），**不随设置改动实时重画**。
+    pub fn show(&mut self, ui: &mut egui::Ui, edit: &mut Brush, icon: Option<&egui::TextureHandle>) -> bool {
+        self.icon_section(ui, icon);
         ui.separator();
 
         // ---- 设置列表（按 MyPaint 的命名分组组织）----
@@ -372,30 +355,29 @@ impl BrushEditor {
             changed |= self.curve_canvas(ui, edit);
         }
 
-        if changed {
-            self.preview_dirty = true;
-        }
         changed
     }
 
-    fn preview_section(&mut self, ui: &mut egui::Ui, preview: &Brush, color: [f32; 3]) {
-        if self.preview.is_none() || self.preview_dirty || self.preview_color != color {
-            let (w, h) = (thumb::PREVIEW_W, thumb::PREVIEW_H);
-            let rgba = thumb::render(preview, color, w, h);
-            self.preview = Some(ui.ctx().load_texture(
-                "brush-preview",
-                egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba),
-                egui::TextureOptions::LINEAR,
-            ));
-            self.preview_dirty = false;
-            self.preview_color = color;
-        }
-        if let Some(t) = &self.preview {
-            let w = ui.available_width().max(64.0);
-            ui.image((t.id(), egui::vec2(w, w / thumb::ASPECT)));
+    /// 编辑器顶部的笔刷图标 —— 照搬 `brusheditor.py:786`。
+    ///
+    /// MyPaint 在这里取 `ManagedBrush.preview` 并按控件尺寸
+    /// `scale_simple(w, h, BILINEAR)` 缩放；它是随附的 `_prev.png`，
+    /// **不随设置改动重画**。取不到就留空（MyPaint 则显示一张透明 pixbuf）。
+    fn icon_section(&mut self, ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>) {
+        let w = ui.available_width().max(64.0);
+        match icon {
+            Some(t) => {
+                ui.image((t.id(), egui::vec2(w, w)));
+            }
+            None => {
+                let (rect, _) =
+                    ui.allocate_exact_size(egui::vec2(w, w), egui::Sense::hover());
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::ZERO, ui.visuals().extreme_bg_color);
+            }
         }
         ui.label(
-            egui::RichText::new("预览：半径已归一化，一条压感 0.35→1.0 的笔画")
+            egui::RichText::new("笔刷图标：随附的 128×128 预览图（MyPaint 同上，不随设置改动重画）")
                 .weak()
                 .small(),
         );

@@ -4,6 +4,10 @@
 //!
 //! - 笔刷 JSON 原文用 `include_str!` 内联到二进制，运行时不读盘、不解析即可列出列表；
 //! - `description` / `notes` 等展示元数据在构建期解析好（运行期列表零解析成本）；
+//! - **预览图 `{name}_prev.png` 也一并内嵌**：MyPaint 的 `ManagedBrush.get_preview()`
+//!   （`gui/brushmanager.py:1242`）优先读盘上这份 128×128 的官方缩略图，
+//!   只有取不到时才实时渲染。内嵌模式没有"盘上"，所以把 PNG 原文内联进来，
+//!   语义与 MyPaint 的「优先用随附预览图」完全一致；
 //! - 排序与分组名沿用官方 `order.conf`（与 MyPaint 笔刷列表顺序一致）。
 //!
 //! 生成物：`$OUT_DIR/brush_index.rs`，由 `src/brushlib.rs` 用 `include!` 引入。
@@ -26,6 +30,18 @@ fn main() {
         let name = file.strip_suffix(".myb").unwrap_or(&file).to_string();
         let key = format!("{group_dir}/{name}");
         found.insert(key, (group_dir, name));
+    }
+
+    // 逐文件声明依赖：`include_bytes!` 的 PNG 与 `include_str!` 的 JSON 改动都要重新生成
+    for (group, name) in found.values() {
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join(group).join(format!("{name}.myb")).display()
+        );
+        println!(
+            "cargo:rerun-if-changed={}",
+            root.join(group).join(format!("{name}_prev.png")).display()
+        );
     }
 
     // ---- 2. 官方 order.conf 决定顺序与分组展示名 ----
@@ -59,10 +75,14 @@ fn main() {
     out.push_str("    /// 展示名（优先取 .myb 的 description，缺省为文件名）\n    pub display: &'static str,\n");
     out.push_str("    /// .myb 的 notes 字段（作者/授权/说明，用于工具提示）\n    pub notes: &'static str,\n");
     out.push_str("    /// 相对 assets/brushes 的路径，形如 `classic/brush`\n    pub path: &'static str,\n");
-    out.push_str("    pub json: &'static str,\n}\n\n");
+    out.push_str("    pub json: &'static str,\n");
+    out.push_str("    /// 随附的 `{name}_prev.png` 原文（MyPaint `ManagedBrush.get_preview()` 的首选来源；\n");
+    out.push_str("    /// 官方包 196 支全部具备，缺失时为 `None` 并回退到实时渲染）\n");
+    out.push_str("    pub prev: Option<&'static [u8]>,\n}\n\n");
 
     let _ = writeln!(out, "pub static INDEXED: &[IndexedBrush] = &[");
     let mut meta_errors = 0usize;
+    let mut missing_prev: Vec<String> = Vec::new();
     for key in &ordered_keys {
         let (group, name) = &found[key];
         let rel = format!("{group}/{name}.myb");
@@ -81,9 +101,20 @@ fn main() {
             display.trim().to_string()
         };
         let gd = group_display.get(group).cloned().unwrap_or_else(|| group.clone());
+        // 预览图：MyPaint 的 `_get_fileprefix()` + "_prev.png"（brushmanager.py:1446）
+        let prev_rel = format!("{group}/{name}_prev.png");
+        let prev = if root.join(&prev_rel).is_file() {
+            format!(
+                "Some(include_bytes!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/brushes/{}\")).as_slice())",
+                esc(&prev_rel)
+            )
+        } else {
+            missing_prev.push(key.clone());
+            "None".to_string()
+        };
         let _ = writeln!(
             out,
-            "    IndexedBrush {{ group: \"{}\", group_display: \"{}\", name: \"{}\", display: \"{}\", notes: \"{}\", path: \"{}\", json: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/brushes/{}\")) }},",
+            "    IndexedBrush {{ group: \"{}\", group_display: \"{}\", name: \"{}\", display: \"{}\", notes: \"{}\", path: \"{}\", json: include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), \"/assets/brushes/{}\")), prev: {} }},",
             esc(group),
             esc(&gd),
             esc(name),
@@ -91,6 +122,7 @@ fn main() {
             esc(notes.trim()),
             esc(key),
             esc(&rel),
+            prev,
         );
     }
     out.push_str("];\n");
@@ -98,9 +130,13 @@ fn main() {
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("brush_index.rs");
     std::fs::write(&dest, out).expect("写入 brush_index.rs 失败");
     println!(
-        "cargo:warning=官方笔刷索引已生成：{} 支（元数据解析失败 {meta_errors} 支）",
-        ordered_keys.len()
+        "cargo:warning=官方笔刷索引已生成：{} 支（元数据解析失败 {meta_errors} 支，缺 _prev.png {} 支）",
+        ordered_keys.len(),
+        missing_prev.len()
     );
+    for k in missing_prev.iter().take(10) {
+        println!("cargo:warning=缺少预览图：{k}_prev.png（将回退到实时渲染）");
+    }
 }
 
 /// 递归收集 `*.myb`，返回 `(子目录名, 文件名)`。

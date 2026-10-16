@@ -98,6 +98,11 @@ pub struct BrushEntry {
     pub key: String,
     /// 来源。
     pub origin: Origin,
+    /// 编译期内嵌的 `{name}_prev.png` 原文（官方包随附的 128×128 预览图）。
+    ///
+    /// MyPaint 的 `ManagedBrush.get_preview()`（`gui/brushmanager.py:1242`）首选
+    /// 读盘上这份图；内嵌模式没有盘可读，因此在构建期内联。`None` = 需回退实时渲染。
+    pub embedded_preview: Option<&'static [u8]>,
 }
 
 impl BrushEntry {
@@ -120,6 +125,29 @@ impl BrushEntry {
     /// 是否来自内嵌官方包。
     pub fn is_embedded(&self) -> bool {
         matches!(self.origin, Origin::Embedded(_))
+    }
+
+    /// 笔刷的 128×128 预览图 PNG 原文。
+    ///
+    /// 对齐 MyPaint `ManagedBrush.get_preview()`（`gui/brushmanager.py:1242`）：
+    /// **优先取随附的 `{name}_prev.png`**，只有取不到时才回退到
+    /// [`crate`] 之外的实时渲染（`drawutils.render_brush_preview_pixbuf`）。
+    ///
+    /// - 内嵌笔刷：编译期内联的字节。
+    /// - 磁盘笔刷：与 `.myb` 同目录同名的 `{stem}_prev.png`（MyPaint 的
+    ///   `_get_fileprefix()`，`brushmanager.py:1397`）。
+    pub fn preview_png(&self) -> Option<Cow<'_, [u8]>> {
+        if let Some(bytes) = self.embedded_preview {
+            return Some(Cow::Borrowed(bytes));
+        }
+        if let Origin::File(p) = &self.origin {
+            let stem = p.file_stem()?.to_str()?;
+            let sibling = p.with_file_name(format!("{stem}_prev.png"));
+            if let Ok(bytes) = fs::read(&sibling) {
+                return Some(Cow::Owned(bytes));
+            }
+        }
+        None
     }
 
     /// MyPaint 的笔刷展示名 —— 对齐 `ManagedBrush.get_display_name()`
@@ -187,6 +215,7 @@ impl BrushLibrary {
                 notes: b.notes.to_string(),
                 key: b.path.to_string(),
                 origin: Origin::Embedded(b.json),
+                embedded_preview: b.prev,
             })
             .collect();
         Self {
@@ -241,6 +270,7 @@ impl BrushLibrary {
                 name,
                 key,
                 origin: Origin::File(path),
+                embedded_preview: None,
             });
         }
     }
