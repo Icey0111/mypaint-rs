@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pigment-engine",
+    "crates/pigment-surface",
+    "crates/pigment-app",
+]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.88"
+version = "0.1.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1

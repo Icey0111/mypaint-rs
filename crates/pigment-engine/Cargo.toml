@@ -1,0 +1,15 @@
+[package]
+name = "pigment-engine"
+description = "Brush engine / spectral mixing / tile surface layer (built on hokusai)"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+# 钉死精确版本：上游发布节奏未知，升级须显式进行（P0 决策）
+hokusai = "=0.3.0"
+pigment-surface = { path = "../pigment-surface" }
+
+[dev-dependencies]
+image = "0.25"

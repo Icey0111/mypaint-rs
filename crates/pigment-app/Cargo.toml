@@ -1,0 +1,10 @@
+[package]
+name = "pigment-app"
+description = "Application layer (egui + wgpu), GPL-3.0-or-later"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license = "GPL-3.0-or-later"
+
+[dependencies]
+pigment-engine = { path = "../pigment-engine" }

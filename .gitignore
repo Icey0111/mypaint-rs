@@ -1,0 +1,4 @@
+/target
+
+# 冒烟测试产物（可再生，不入库）
+/spectral_smoke_*.png
