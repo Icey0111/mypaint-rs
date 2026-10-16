@@ -71,6 +71,16 @@ pub enum Origin {
     File(PathBuf),
 }
 
+/// MyPaint 的笔刷快捷键数量（`gui/brushmanager.py:_NUM_BRUSHKEYS`）。
+pub const NUM_BRUSHKEYS: usize = 10;
+
+/// MyPaint 的默认启动分组（`gui/brushmanager.py:_DEFAULT_STARTUP_GROUP`）。
+///
+/// 源码自己都标注了 `# Suggestion only (FIXME: no effect?)`：现代官方笔刷包里
+/// 并不存在名为 `set#2` 的分组，于是 `_init_default_brushkeys_and_history`
+/// 会回退到**成员最多的分组**（并列时取名字靠前者）。
+pub const DEFAULT_STARTUP_GROUP: &str = "set#2";
+
 /// 笔刷库中的一条记录（元数据 + 来源，不含解析后的 `Brush`）。
 #[derive(Debug, Clone)]
 pub struct BrushEntry {
@@ -110,6 +120,16 @@ impl BrushEntry {
     /// 是否来自内嵌官方包。
     pub fn is_embedded(&self) -> bool {
         matches!(self.origin, Origin::Embedded(_))
+    }
+
+    /// MyPaint 的笔刷展示名 —— 对齐 `ManagedBrush.get_display_name()`
+    /// （`gui/brushmanager.py:1349`）：**笔刷名**（而非 `.myb` 的 `description`），
+    /// 下划线替换成空格。
+    ///
+    /// MyPaint 的列表是图标网格 + tooltip 显示此名；`description` 只作为
+    /// tooltip 的第二行（`brushselectionwindow.py:46` 的 `managedbrush_namefunc`）。
+    pub fn mypaint_name(&self) -> String {
+        self.name.replace('_', " ")
     }
 }
 
@@ -252,6 +272,47 @@ impl BrushLibrary {
     pub fn find(&self, key: &str) -> Option<usize> {
         self.entries.iter().position(|e| e.key == key)
     }
+
+    /// 启动分组：`DEFAULT_STARTUP_GROUP` 若存在则用它，否则取**成员最多**的分组
+    /// （并列时分组名靠后者胜出）—— 对齐 `_init_default_brushkeys_and_history`。
+    pub fn startup_group(&self) -> Option<String> {
+        if self.entries.iter().any(|e| e.group == DEFAULT_STARTUP_GROUP) {
+            return Some(DEFAULT_STARTUP_GROUP.to_string());
+        }
+        self.groups()
+            .into_iter()
+            .map(|g| (g.count, g.id))
+            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
+            .map(|(_, id)| id)
+    }
+
+    /// 笔刷快捷键槽位的默认内容（返回 `entries` 下标）。
+    ///
+    /// 对齐 `gui/brushmanager.py:_init_default_brushkeys_and_history`：
+    ///
+    /// ```python
+    /// idx = (i + 9) % 10  # keyboard order
+    /// group_idx = idx % len(default_group)
+    /// ```
+    ///
+    /// 即**槽位 i（数字键 i）取启动分组第 `(i+9)%10` 支**——这解释了为什么
+    /// MyPaint 里按 `1` 拿到的不是分组第一支，而是第 10 支。
+    pub fn brushkey_seed(&self) -> [Option<usize>; NUM_BRUSHKEYS] {
+        let Some(group) = self.startup_group() else {
+            return [None; NUM_BRUSHKEYS];
+        };
+        let members: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.group == group)
+            .map(|(i, _)| i)
+            .collect();
+        if members.is_empty() {
+            return [None; NUM_BRUSHKEYS];
+        }
+        std::array::from_fn(|i| Some(members[((i + 9) % NUM_BRUSHKEYS) % members.len()]))
+    }
 }
 
 /// 用户笔刷目录（跨平台，按 MyPaint 惯例）。
@@ -319,4 +380,57 @@ fn read_disk_meta(path: &Path) -> Option<(String, String)> {
             .to_string()
     };
     Some((get("description"), get("notes")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mypaint_name_replaces_underscores() {
+        // 对齐 ManagedBrush.get_display_name()：笔刷名 + 下划线换空格
+        let lib = BrushLibrary::embedded();
+        let i = lib
+            .find("Dieterle/Pencil-_Left_Handed")
+            .expect("内嵌官方包应含此笔刷");
+        assert_eq!(lib.entries[i].name, "Pencil-_Left_Handed");
+        assert_eq!(lib.entries[i].mypaint_name(), "Pencil- Left Handed");
+    }
+
+    #[test]
+    fn startup_group_falls_back_to_largest_group() {
+        // `set#2` 在现代官方包里不存在 → 回退成员最多的分组（实测 deevad 36 支）
+        let lib = BrushLibrary::embedded();
+        assert_eq!(lib.startup_group().as_deref(), Some("deevad"));
+        let n = lib.entries.iter().filter(|e| e.group == "deevad").count();
+        assert_eq!(n, 36, "deevad 应为最大分组，否则播种顺序的断言要跟着改");
+    }
+
+    #[test]
+    fn brushkey_seed_uses_mypaint_keyboard_order() {
+        let lib = BrushLibrary::embedded();
+        let group: Vec<&str> = lib
+            .entries
+            .iter()
+            .filter(|e| e.group == "deevad")
+            .map(|e| e.key.as_str())
+            .collect();
+        let seed = lib.brushkey_seed();
+
+        // 槽位 i ← 分组第 (i+9)%10 支
+        for (i, s) in seed.iter().enumerate() {
+            let idx = (i + 9) % NUM_BRUSHKEYS;
+            let got = s.map(|e| lib.entries[e].key.as_str());
+            assert_eq!(got, Some(group[idx]), "槽位 {i} 应为分组第 {idx} 支");
+        }
+        // 键盘序的直接体现：数字键 1 → 第 1 支；数字键 0 → 第 10 支
+        assert_eq!(
+            seed[1].map(|e| lib.entries[e].key.as_str()),
+            Some(group[0])
+        );
+        assert_eq!(
+            seed[0].map(|e| lib.entries[e].key.as_str()),
+            Some(group[9])
+        );
+    }
 }

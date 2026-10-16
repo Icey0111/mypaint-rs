@@ -5,6 +5,7 @@
 
 mod app;
 mod brushes;
+mod color;
 mod convert;
 mod dump;
 mod editor;

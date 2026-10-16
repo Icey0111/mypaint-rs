@@ -204,9 +204,11 @@ impl BrushPanel {
                 for pos in range {
                     let idx = self.visible[pos];
                     // 先把展示所需数据拷出来，避免与缩略图渲染的可变借用冲突
-                    let Some((display, group_display, key, notes, embedded)) =
+                    let Some((label, desc, group_display, key, notes, embedded)) =
                         self.library.entries.get(idx).map(|e| {
                             (
+                                // MyPaint 主标签 = 笔刷名（下划线换空格），不是 description
+                                e.mypaint_name(),
                                 e.display.clone(),
                                 e.group_display.clone(),
                                 e.key.clone(),
@@ -260,7 +262,7 @@ impl BrushPanel {
                     ui.painter().text(
                         egui::pos2(img_rect.max.x + 6.0, rect.center().y),
                         egui::Align2::LEFT_CENTER,
-                        display,
+                        label.clone(),
                         egui::FontId::proportional(12.0),
                         text_color,
                     );
@@ -275,8 +277,16 @@ impl BrushPanel {
                         );
                     }
 
+                    // tooltip：对齐 `managedbrush_namefunc`（brushselectionwindow.py:46）
+                    // —— 第一行笔刷名、第二行 description，再补来源与 notes（我们的扩展）
                     let resp = resp.on_hover_text(format!(
-                        "{key}\n{origin}{notes}",
+                        "{label}{desc}{key}\n{origin}{notes}",
+                        desc = if desc.is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{desc}")
+                        },
+                        key = key,
                         origin = if embedded {
                             "内嵌官方包 (CC0)"
                         } else {

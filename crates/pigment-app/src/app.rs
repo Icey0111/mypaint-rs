@@ -1,8 +1,10 @@
 //! pigment 应用主体：MyPaint「画布优先」布局 —— 全窗口画布 + 左右可折叠面板。
 //!
-//! 交互（对齐 MyPaint 键盘流）：
+//! 交互（**照搬 MyPaint 键位**，此处只列已移植的）：
 //! - 左键拖拽绘制；中/右键或 Space+左键平移；滚轮以光标为中心缩放
-//! - `[` / `]` 笔刷半径；`1..=5` 颜料色预设；`E` 橡皮；`P` 光谱混色开关
+//! - `[` / `]` 笔刷半径；`E` 橡皮；`P` 光谱混色开关
+//! - `1..9,0` 恢复笔刷快捷键槽位；`Ctrl+数字` 存入槽位
+//!   （`gui/document.py:_init_context_actions`）
 //! - `,` / `.` 上一支 / 下一支笔刷；`Tab` 收起/展开面板；`F11` 全屏
 //! - `F1` 强制全量重传显存 tile；`F2` 导出 CPU 侧画布 PNG（诊断）
 //!
@@ -11,30 +13,82 @@
 //!
 //! 笔刷模型：`base_brush` 是从笔刷库解析出的原始笔刷（编辑器改它），
 //! `brush` = base + 颜色/橡皮/光谱/半径覆盖，是真正作画的那支。
-//! 这样「改调色板颜色」不会抹掉你在编辑器里做的曲线调整。
+//! 对齐 MyPaint：颜色由应用持有并推给笔刷的 `color_h/s/v`
+//! （`gui/brushcolor.py:44`），所以改调色不会抹掉编辑器里做的曲线调整。
 
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
 
+use pigment_engine::brushlib::NUM_BRUSHKEYS;
 use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::{Brush, BrushSetting, BrushState};
 use pigment_surface::PigmentSurface;
 
 use crate::brushes::BrushPanel;
+use crate::color::{self, ColorHistory};
 use crate::convert;
 use crate::editor::BrushEditor;
 use crate::gpu::{CanvasPaint, TileRenderer, TileUpload};
 use crate::view::View;
 
-/// 颜色预设（真实颜料取向：光谱模式下表现正确）。
-const COLORS: &[(&str, [f32; 3])] = &[
-    ("焦茶", [0.07, 0.75, 0.25]),
-    ("镉黄", [0.144, 0.90, 1.00]),
-    ("群青", [0.647, 0.73, 0.75]),
-    ("钛白", [0.0, 0.0, 1.0]),
-    ("镉红", [0.0, 0.85, 0.70]),
-];
+/// 顶栏状态文字的存活时长（秒）。
+const STATUS_TTL: f64 = 2.5;
+
+/// 笔刷快捷键槽位（对齐 MyPaint `BrushManager.contexts[i]`，即一只 `context%02d` 笔刷）。
+///
+/// MyPaint 的槽位存的是**整份笔刷设置快照**（`document.py:1714`：
+/// `context.brushinfo = self.app.brush.clone()`），并随颜色一起还原
+/// （`misc.context_restores_color` 默认 True，`userconfig.py:93`），
+/// 所以这里也存 `Brush` + 颜色快照，而不是库里某个下标的引用。
+#[derive(Clone)]
+struct BrushKeySlot {
+    brush: Brush,
+    color: [f32; 3],
+    /// 来源名（提示用；MyPaint 里是 `context%02d` + `parent_brush_name`）。
+    name: String,
+}
+
+/// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
+fn seed_brushkeys(panel: &BrushPanel) -> [Option<BrushKeySlot>; NUM_BRUSHKEYS] {
+    let seed = panel.library.brushkey_seed();
+    std::array::from_fn(|i| {
+        let entry = panel.library.entries.get(seed[i]?)?;
+        let brush = entry.load().ok()?;
+        // 槽位建立时复制的是笔刷文件里的 brushinfo，颜色自然来自文件
+        let color = [
+            brush.get(BrushSetting::ColorH).base_value,
+            brush.get(BrushSetting::ColorS).base_value,
+            brush.get(BrushSetting::ColorV).base_value,
+        ];
+        Some(BrushKeySlot {
+            brush,
+            color,
+            name: format!("{} ({})", entry.mypaint_name(), entry.group_display),
+        })
+    })
+}
+
+/// 画一个颜色方块按钮（MyPaint `ColorHistoryView` 的 `ColorPreview` 的极简版）。
+fn color_swatch(ui: &mut egui::Ui, hsv: [f32; 3], selected: bool, tip: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::click());
+    let [r, g, b] = color::hsv_to_rgb(hsv);
+    ui.painter()
+        .rect_filled(rect, 3.0, egui::Color32::from_rgb(
+            (r * 255.0).round() as u8,
+            (g * 255.0).round() as u8,
+            (b * 255.0).round() as u8,
+        ));
+    if selected {
+        ui.painter().rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(2.0, ui.visuals().selection.bg_fill),
+            egui::StrokeKind::Inside,
+        );
+    }
+    resp.on_hover_text(format!("{tip}\n{}", color::hex_from_hsv(hsv)))
+}
 
 pub struct PigmentApp {
     surface: PigmentSurface,
@@ -53,6 +107,15 @@ pub struct PigmentApp {
     paint_override: Option<bool>,
     /// 当前颜色 `[h, s, v]`。
     color: [f32; 3],
+    /// 颜色历史（`gui/colors/adjbases.py:ColorManager._hist`）。
+    color_history: ColorHistory,
+    // ---- 笔刷快捷键 ----
+    /// 10 个槽位（`BrushManager.contexts`）。
+    brushkeys: [Option<BrushKeySlot>; NUM_BRUSHKEYS],
+    /// 恢复槽位时是否连颜色一起还原（MyPaint 偏好 `misc.context_restores_color`，默认开）。
+    context_restores_color: bool,
+    /// 顶栏临时状态文字（带时间戳，2.5 秒后消失）。
+    status: Option<(String, f64)>,
     // ---- 交互与渲染 ----
     stroke: Option<BrushState>,
     view: View,
@@ -80,6 +143,8 @@ impl PigmentApp {
             pigment_engine::brushlib::default_brush()
         });
 
+        let color_history = ColorHistory::new();
+        let brushkeys = seed_brushkeys(&brushes);
         let mut app = Self {
             surface: PigmentSurface::new(),
             brushes,
@@ -89,7 +154,11 @@ impl PigmentApp {
             radius_override: None,
             eraser: false,
             paint_override: None,
-            color: COLORS[0].1,
+            color: color_history.current(),
+            color_history,
+            brushkeys,
+            context_restores_color: true,
+            status: None,
             stroke: None,
             view: View::default(),
             renderer: Arc::new(Mutex::new(renderer)),
@@ -146,23 +215,88 @@ impl PigmentApp {
             .unwrap_or_else(|| self.base_brush.get(BrushSetting::Paint).base_value >= 0.5)
     }
 
+    /// 设置当前颜色并推给笔刷 —— 对齐 `BrushColorManager.set_color()`
+    /// （`gui/brushcolor.py:44`：颜色由应用持有，再写给笔刷的 `color_h/s/v`）。
+    fn set_color(&mut self, color: [f32; 3]) {
+        self.color = color;
+        self.derive_active();
+    }
+
+    fn set_status(&mut self, msg: String, now: f64) {
+        self.status = Some((msg, now + STATUS_TTL));
+    }
+
+    /// 恢复笔刷快捷键槽位 —— 对齐 `document.context_cb` 的非 store 分支：
+    /// `bm.select_brush(context)`，若 `misc.context_restores_color` 再还原颜色。
+    fn restore_brushkey(&mut self, i: usize, now: f64) {
+        let Some(slot) = self.brushkeys[i].clone() else {
+            self.set_status(format!("槽位 {i} 为空"), now);
+            return;
+        };
+        self.base_brush = slot.brush;
+        self.radius_override = None;
+        self.eraser = false;
+        self.paint_override = None;
+        if self.context_restores_color {
+            self.color = slot.color;
+        }
+        self.derive_active();
+        self.set_status(format!("笔刷 {i} ← {}", slot.name), now);
+    }
+
+    /// 存入笔刷快捷键槽位 —— 对齐 `document.context_cb` 的 store 分支：
+    /// `context.brushinfo = app.brush.clone()`（整份快照，不是库引用）。
+    fn store_brushkey(&mut self, i: usize, now: f64) {
+        let name = self
+            .brushes
+            .selected_entry()
+            .map(|e| e.mypaint_name())
+            .unwrap_or_else(|| "当前笔刷".to_string());
+        self.brushkeys[i] = Some(BrushKeySlot {
+            brush: self.base_brush.clone(),
+            color: self.color,
+            name,
+        });
+        self.set_status(format!("笔刷 {i} ← 已存入当前设置"), now);
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
-        let (smaller, larger, eraser, paint, color_key, resync, dump, prev, next, tab, f11) =
+        // MyPaint `_init_context_actions`（gui/document.py:468）：
+        //   数字键    → Context0N，accel "N"            → 恢复槽位 N
+        //   Ctrl+数字 → Context0Ns，accel "<control>N"  → 存入槽位 N
+        const DIGITS: [egui::Key; NUM_BRUSHKEYS] = [
+            egui::Key::Num0,
+            egui::Key::Num1,
+            egui::Key::Num2,
+            egui::Key::Num3,
+            egui::Key::Num4,
+            egui::Key::Num5,
+            egui::Key::Num6,
+            egui::Key::Num7,
+            egui::Key::Num8,
+            egui::Key::Num9,
+        ];
+        let (restore, store, smaller, larger, eraser, paint, resync, dump, prev, next, tab, f11) =
             ctx.input(|i| {
+                let (mut restore, mut store) = (None, None);
+                for (digit, key) in DIGITS.iter().enumerate() {
+                    if !i.key_pressed(*key) {
+                        continue;
+                    }
+                    if i.modifiers.ctrl {
+                        store = Some(digit);
+                    } else if !i.modifiers.alt && !i.modifiers.command {
+                        restore = Some(digit);
+                    }
+                }
+                let now = i.time;
                 (
+                    restore.map(|d| (d, now)),
+                    store.map(|d| (d, now)),
                     i.key_pressed(egui::Key::OpenBracket),
                     i.key_pressed(egui::Key::CloseBracket),
                     i.key_pressed(egui::Key::E),
                     i.key_pressed(egui::Key::P),
-                    [
-                        egui::Key::Num1,
-                        egui::Key::Num2,
-                        egui::Key::Num3,
-                        egui::Key::Num4,
-                        egui::Key::Num5,
-                    ]
-                    .iter()
-                    .position(|&k| i.key_pressed(k)),
                     i.key_pressed(egui::Key::F1),
                     i.key_pressed(egui::Key::F2),
                     i.key_pressed(egui::Key::Comma),
@@ -195,6 +329,12 @@ impl PigmentApp {
                 self.reload_selected_brush();
             }
         }
+        if let Some((digit, now)) = store {
+            self.store_brushkey(digit, now);
+        }
+        if let Some((digit, now)) = restore {
+            self.restore_brushkey(digit, now);
+        }
 
         let mut dirty = false;
         if smaller || larger {
@@ -209,10 +349,6 @@ impl PigmentApp {
         }
         if paint {
             self.paint_override = Some(!self.paint_active());
-            dirty = true;
-        }
-        if let Some(idx) = color_key {
-            self.color = COLORS[idx.min(COLORS.len() - 1)].1;
             dirty = true;
         }
         if dirty {
@@ -231,15 +367,22 @@ impl PigmentApp {
                     self.show_panels = !self.show_panels;
                 }
                 ui.separator();
-                for (i, (name, hsv)) in COLORS.iter().enumerate() {
-                    let selected = self.color == *hsv && !self.eraser;
-                    if ui
-                        .selectable_label(selected, format!("{} {name}", i + 1))
-                        .clicked()
-                    {
-                        self.color = *hsv;
+                // ---- 颜色历史（`ColorManager._hist`：最旧 → 最新）----
+                let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
+                let n = history.len();
+                let cur_rgb = color::hsv_to_rgb(self.color);
+                for (i, hsv) in history.into_iter().enumerate() {
+                    let rgb = color::hsv_to_rgb(hsv);
+                    let selected = (0..3).all(|k| (rgb[k] - cur_rgb[k]).abs() < 1e-3);
+                    let tip = format!(
+                        "颜色历史 {}/{}{}\n点击设为当前色（每笔结束后自动记录）",
+                        i + 1,
+                        n,
+                        if i + 1 == n { "（最近）" } else { "" }
+                    );
+                    if color_swatch(ui, hsv, selected, &tip).clicked() {
+                        self.set_color(hsv);
                         self.eraser = false;
-                        self.derive_active();
                     }
                 }
                 ui.separator();
@@ -266,13 +409,28 @@ impl PigmentApp {
                     self.surface.tile_count(),
                     self.surface.memory_bytes() as f64 / 1048576.0
                 ));
+                // MyPaint 的底栏有 128px 笔刷指示按钮；我们先把「笔刷名 + 描述」
+                // 与快捷键槽位反馈放在同一处（GTK 底栏未移植前的权宜位置）
+                let now = ui.input(|i| i.time);
+                let status = self
+                    .status
+                    .as_ref()
+                    .filter(|(_, until)| now < *until)
+                    .map(|(msg, _)| msg.clone());
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let name = self
-                        .brushes
-                        .selected_entry()
-                        .map(|e| e.display.clone())
-                        .unwrap_or_default();
-                    ui.label(egui::RichText::new(name).strong());
+                    let entry = self.brushes.selected_entry().cloned();
+                    if let Some(e) = entry {
+                        ui.label(egui::RichText::new(e.mypaint_name()).strong())
+                            .on_hover_text(if e.display.is_empty() {
+                                e.key.clone()
+                            } else {
+                                format!("{}\n{}", e.mypaint_name(), e.display)
+                            });
+                    }
+                    if let Some(msg) = status {
+                        ui.separator();
+                        ui.label(egui::RichText::new(msg).weak().small());
+                    }
                 });
             });
         });
@@ -292,7 +450,13 @@ impl PigmentApp {
                         // ---- 笔刷信息 ----
                         if let Some(e) = self.brushes.selected_entry() {
                             ui.horizontal(|ui| {
-                                ui.label(egui::RichText::new(&e.display).heading());
+                                // 主标题用 MyPaint 的展示名（笔刷名），description 退居 tooltip
+                                ui.label(egui::RichText::new(e.mypaint_name()).heading())
+                                    .on_hover_text(if e.display.is_empty() {
+                                        e.key.clone()
+                                    } else {
+                                        format!("{}\n{}", e.mypaint_name(), e.display)
+                                    });
                                 ui.label(egui::RichText::new(&e.group_display).weak().small());
                             });
                             ui.label(
@@ -311,21 +475,25 @@ impl PigmentApp {
                         }
                         ui.separator();
 
-                        // ---- 颜色 ----
+                        // ---- 颜色历史 + HSV 调整 ----
                         egui::CollapsingHeader::new("颜色")
                             .id_salt("color")
                             .default_open(true)
                             .show(ui, |ui| {
+                                let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
+                                let n = history.len();
                                 ui.horizontal_wrapped(|ui| {
-                                    for (name, hsv) in COLORS {
-                                        if ui
-                                            .selectable_label(self.color == *hsv, *name)
-                                            .clicked()
-                                        {
-                                            self.color = *hsv;
-                                            self.derive_active();
+                                    for (i, hsv) in history.into_iter().enumerate() {
+                                        let tip = format!("颜色历史 {}/{}", i + 1, n);
+                                        if color_swatch(ui, hsv, false, &tip).clicked() {
+                                            self.set_color(hsv);
                                         }
                                     }
+                                    ui.label(
+                                        egui::RichText::new("最近用的在最后")
+                                            .weak()
+                                            .small(),
+                                    );
                                 });
                                 let mut color = self.color;
                                 let mut changed = false;
@@ -348,9 +516,58 @@ impl PigmentApp {
                                         .changed();
                                 });
                                 if changed {
-                                    self.color = color;
-                                    self.derive_active();
+                                    self.set_color(color);
                                 }
+                            });
+
+                        // ---- 笔刷快捷键（MyPaint `BrushManager.contexts`）----
+                        egui::CollapsingHeader::new("笔刷快捷键 1–0")
+                            .id_salt("brushkeys")
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(
+                                        "数字键恢复槽位；Ctrl+数字把当前设置存进槽位。\n\
+                                         槽位内容 = 整份笔刷设置（含颜色），与 MyPaint 一致。",
+                                    )
+                                    .weak()
+                                    .small(),
+                                );
+                                let now = ui.input(|i| i.time);
+                                ui.horizontal_wrapped(|ui| {
+                                    for i in 0..NUM_BRUSHKEYS {
+                                        let label = i.to_string();
+                                        let slot = self.brushkeys[i].as_ref();
+                                        let tip = match slot {
+                                            Some(s) => {
+                                                format!("{} ← {}", i, s.name)
+                                            }
+                                            None => format!("{i} ← 空槽位"),
+                                        };
+                                        let resp = ui
+                                            .add(egui::Button::new(label).min_size(egui::vec2(
+                                                22.0, 22.0,
+                                            )))
+                                            .on_hover_text(format!(
+                                                "{tip}\n左键恢复 / Ctrl+左键存入"
+                                            ));
+                                        if !resp.clicked() {
+                                            continue;
+                                        }
+                                        if ui.input(|i| i.modifiers.ctrl) {
+                                            self.store_brushkey(i, now);
+                                        } else {
+                                            self.restore_brushkey(i, now);
+                                        }
+                                    }
+                                });
+                                ui.checkbox(
+                                    &mut self.context_restores_color,
+                                    "恢复槽位时连颜色一起还原",
+                                )
+                                .on_hover_text(
+                                    "MyPaint 偏好 misc.context_restores_color（默认开）\n\
+                                     userconfig.py:93",
+                                );
                             });
 
                         // ---- 笔刷编辑器 ----
@@ -444,6 +661,11 @@ impl PigmentApp {
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
             self.stroke = None;
+            // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
+            // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
+            if !self.eraser {
+                self.color_history.push(self.color);
+            }
         }
 
         // ---- 可见 tile 列表（物理像素域）----
