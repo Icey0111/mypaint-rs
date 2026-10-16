@@ -113,6 +113,12 @@ fn lookup_png(name: &str) -> Option<&'static [u8]> {
     ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
 }
 
+/// 图标文件是否存在（精确名；单测用）。
+#[cfg(test)]
+pub fn icon_png_exists(name: &str) -> bool {
+    ICONS.iter().any(|(n, _)| *n == name)
+}
+
 /// 解码 PNG 并按 symbolic 语义着色：RGB 一律重写为前景色（亮灰 215，
 /// 与 egui 暗色的可交互文本一致），保留原 alpha —— 复现 GTK 主题对
 /// symbolic 图标的着色。

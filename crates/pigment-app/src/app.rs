@@ -185,8 +185,11 @@ pub struct PigmentApp {
     /// 本帧计划上传的 tile 数（命中上限说明还有欠账，需继续重绘）。
     pub(crate) pending_uploads: usize,
     pub(crate) stroke_dirty: bool,
-    pub(crate) show_panels: bool,
     pub(crate) fullscreen: bool,
+    // ---- 停靠面板系统（S6）----
+    /// 工作区停靠状态（左/右/浮动组）。默认布局 = 左 BrushGroupTool、
+    /// 右 BrushEditor（差异记账见 shell/dock.rs 模块文档）。
+    pub(crate) dock: crate::shell::dock::DockState,
     // ---- 工具条（S4）----
     /// 图标纹理缓存（`shell::toolbars::IconCache`）。
     pub(crate) icon_cache: crate::shell::toolbars::IconCache,
@@ -335,10 +338,20 @@ impl PigmentApp {
             force_resync: false,
             pending_uploads: 0,
             stroke_dirty: false,
-            show_panels: true,
             fullscreen: false,
             icon_cache: Default::default(),
             toolbar_fragments: crate::shell::toolbars::DEFAULT_FRAGMENTS,
+            dock: crate::shell::dock::DockState {
+                left: vec![crate::shell::dock::Group {
+                    panels: vec![crate::shell::dock::PanelId::BrushGroups],
+                    active: 0,
+                }],
+                right: vec![crate::shell::dock::Group {
+                    panels: vec![crate::shell::dock::PanelId::BrushEditor],
+                    active: 0,
+                }],
+                ..Default::default()
+            },
         };
         app.derive_active();
         app
@@ -797,6 +810,19 @@ impl PigmentApp {
         match id {
             "BlendModeEraser" => self.eraser,
             "Fullscreen" => self.fullscreen,
+            // 面板开关（toggle_dockpanel_cb 的动作 active 状态 = 已添加）
+            "ToggleModeOptionsTool" => {
+                self.dock.is_added(crate::shell::dock::PanelId::ModeOptionsTool)
+            }
+            "ToggleLayersTool" => self.dock.is_added(crate::shell::dock::PanelId::LayersTool),
+            "ToggleScratchpadTool" => {
+                self.dock.is_added(crate::shell::dock::PanelId::ScratchpadTool)
+            }
+            "TogglePreviewTool" => self.dock.is_added(crate::shell::dock::PanelId::PreviewTool),
+            "ToggleHistoryPanel" => {
+                self.dock.is_added(crate::shell::dock::PanelId::HistoryPanel)
+            }
+            "BrushGroups" => self.dock.is_added(crate::shell::dock::PanelId::BrushGroups),
             _ => false,
         }
     }
@@ -819,6 +845,9 @@ impl PigmentApp {
             // ---- 视图 ----
             "ZoomIn" | "ZoomOut" | "ZoomInCentered" | "ZoomOutCentered" => true,
             "PanLeft" | "PanRight" | "PanUp" | "PanDown" => true,
+            // ---- 停靠面板（S6）----
+            "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
+            | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -923,6 +952,15 @@ impl PigmentApp {
                 }
                 ctx.request_repaint();
             }
+            // ---- 停靠面板（`toggle_dockpanel_cb`，drawwindow.py:352-367）----
+            // Toggle*Tool → MyPaint<GType 名>（去 Toggle 前缀）；BrushGroups 是
+            // 工厂动作（MyPaintFactoryAction，reveal BrushGroupTool，drawwindow.py:340-353）
+            "ToggleModeOptionsTool" => self.dock.toggle(crate::shell::dock::PanelId::ModeOptionsTool),
+            "ToggleLayersTool" => self.dock.toggle(crate::shell::dock::PanelId::LayersTool),
+            "ToggleScratchpadTool" => self.dock.toggle(crate::shell::dock::PanelId::ScratchpadTool),
+            "TogglePreviewTool" => self.dock.toggle(crate::shell::dock::PanelId::PreviewTool),
+            "ToggleHistoryPanel" => self.dock.toggle(crate::shell::dock::PanelId::HistoryPanel),
+            "BrushGroups" => self.dock.toggle(crate::shell::dock::PanelId::BrushGroups),
             // ---- 窗口 ----
             "Fullscreen" => {
                 self.fullscreen = !self.fullscreen;

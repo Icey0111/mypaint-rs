@@ -24,6 +24,7 @@
 //! 数值一律不在此文件出现。
 
 pub(crate) mod actions;
+pub(crate) mod dock;
 pub(crate) mod footer;
 pub(crate) mod menubar;
 pub(crate) mod toolbars;

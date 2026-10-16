@@ -26,7 +26,15 @@ use super::TOPBAR_MIN_HEIGHT;
 
 impl PigmentApp {
     /// 顶栏整体 —— 菜单栏行 + 工具条行。
+    ///
+    /// 全屏态按偏好隐藏（`ui.hide_menubar_in_fullscreen` /
+    /// `ui.hide_toolbar_in_fullscreen` 出厂均为 True，`userconfig.py:70-72`）。
+    /// 源码的全屏形态还有 FakeMenuButton（菜单项塞进 toolbar1 首位）与
+    /// workspace 的边缘碰撞自动隐藏 —— **记账未移植**，这里直接整条隐藏。
     pub(crate) fn topbar(&mut self, ui: &mut egui::Ui) {
+        if self.fullscreen {
+            return;
+        }
         egui::Panel::top("topbar")
             // 顶栏高度按内容走（源码里 `height_request=24` 只是下界）
             .resizable(false)
@@ -189,50 +197,49 @@ impl PigmentApp {
     /// 源码内容（`toolbar.xml:47-58`）：`ColorAdjusters` `BrushGroups` │
     /// `ToggleModeOptionsTool` `ToggleLayersTool` `ToggleScratchpadTool`
     /// `TogglePreviewTool` `ToggleHistoryPanel` │ `Fullscreen`。
-    /// 面板类动作要等 S6 的停靠面板系统才有作用对象，在那之前置灰。
+    /// 外层容器是 right_to_left 布局（toolbar2 贴右），所以**逆序**迭代
+    /// 得到与 toolbar.xml 相同的从左到右顺序；本项目新增的诊断读数
+    /// （MyPaint 无此控件）画在最左。
     fn toolbar2_row(&mut self, ui: &mut egui::Ui) {
         use crate::shell::toolbars::{TbNode, TOOLBAR2};
-        // 外层是 right_to_left（toolbar2 贴右），内层显式转回 left_to_right，
-        // 否则条目顺序整体镜像（与 toolbar.xml 相反）
-        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-            for node in TOOLBAR2 {
-                match node {
-                    TbNode::Separator => ui.add_space(6.0),
-                    TbNode::Item(id) => self.tool_item(ui, id),
-                    TbNode::Placeholder { items, .. } => {
-                        for n in items.iter() {
-                            match n {
-                                TbNode::Item(id) => self.tool_item(ui, id),
-                                TbNode::Separator => ui.add_space(6.0),
-                                TbNode::Placeholder { .. } => unreachable!("toolbar2 无嵌套占位符"),
-                            }
-                        }
-                    }
-                }
-            }
-            // ---- 本项目新增：诊断读数（MyPaint 无此控件；S6 后迁往状态栏）----
+        // 诊断读数（最先画 = RTL 里最靠右？不——RTL 首个在最右；
+        // 诊断放最左 = 最后画）
+        let draw_diag = |ui: &mut egui::Ui, self_: &mut Self| {
             ui.separator();
             ui.label(format!(
                 "半径 {:.0}px",
-                self.brush
+                self_
+                    .brush
                     .get(pigment_engine::hokusai::BrushSetting::Radius)
                     .base_value
                     .exp()
             ));
-            let resident = self.renderer.lock().unwrap().resident();
+            let resident = self_.renderer.lock().unwrap().resident();
             ui.label(format!(
                 "tiles {} · {:.1} MiB · 显存 {resident}",
-                self.doc.surface().tile_count(),
-                self.doc.surface().memory_bytes() as f64 / 1048576.0
+                self_.doc.surface().tile_count(),
+                self_.doc.surface().memory_bytes() as f64 / 1048576.0
             ));
-            // ⚠️ 本项目新增：面板整块开关（S6 的停靠面板系统落地后删除）
-            if ui
-                .selectable_label(self.show_panels, "☰")
-                .on_hover_text("显示/隐藏面板")
-                .clicked()
-            {
-                self.show_panels = !self.show_panels;
+        };
+        // RTL：先画的在最右。诊断最左 → 最后画；工具条条目逆序迭代。
+        fn node_rev(ui: &mut egui::Ui, app: &mut PigmentApp, node: &TbNode) {
+            match node {
+                TbNode::Separator => ui.add_space(6.0),
+                TbNode::Item(id) => app.tool_item(ui, id),
+                TbNode::Placeholder { items, .. } => {
+                    for n in items.iter().rev() {
+                        match n {
+                            TbNode::Item(id) => app.tool_item(ui, id),
+                            TbNode::Separator => ui.add_space(6.0),
+                            TbNode::Placeholder { .. } => unreachable!("toolbar2 无嵌套占位符"),
+                        }
+                    }
+                }
             }
-        });
+        }
+        for node in TOOLBAR2.iter().rev() {
+            node_rev(ui, self, node);
+        }
+        draw_diag(ui, self);
     }
 }

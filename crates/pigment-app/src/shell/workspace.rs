@@ -6,13 +6,15 @@
 //! 可以拖到另一侧、也可以拖出来变成独立窗口，布局本身可序列化
 //! （`get_layout()` / `build_from_layout()`）。
 //!
-//! **技术栈适配**：egui 没有可停靠面板容器，S6 用 `egui_dock` 承接。
-//! 在此之前左右侧栏用 `Panel::left/right` 直接压边 —— 视觉与交互结果等价
-//! （面板贴在画布左右、可拖宽、可用 Tab 整块收起），缺的是"拖出成浮动窗口"
-//! 与"布局持久化"。
+//! S6 的停靠语义（添加/移除/浮动/标签切换）由 [`crate::shell::dock`]
+//! 承接（技术栈适配：egui_dock 0.21 只支持 egui ^0.36，与本项目锁定的
+//! egui 0.37 不兼容，改为 egui 原生实现同样的模型）。本文件保留：
+//! 中央画布（M2 以来的渲染关键路径）与笔刷编辑器面板的内容。
 //!
-//! 面板顺序仍照源码：左侧是笔刷组工具（`BrushGroupTool`），右侧是笔刷编辑器
-//! 与颜色（MyPaint 里它们都是可停靠工具，初始停靠位置由默认布局决定）。
+//! 默认停靠（差异记账）：MyPaint 出厂布局里侧栏是空的
+//! （`userconfig.py:104`，`workspace.layout` 只有 position/autohide），
+//! 面板靠动作按需 reveal；本项目此前一直默认显示笔刷面板与编辑器，
+//! 保留该初始状态：左 = BrushGroupTool，右 = BrushEditor。
 
 use eframe::egui;
 
@@ -25,46 +27,28 @@ use crate::gpu::TileUpload;
 use crate::view::View;
 
 impl PigmentApp {
-    /// 工作区：左侧栏 + 中央画布 + 右侧栏。
+    /// 工作区：左右停靠侧栏 + 中央画布 + 浮动面板窗口。
     pub(crate) fn workspace(&mut self, ui: &mut egui::Ui) {
-        if self.show_panels {
-            // 左：笔刷分组面板（MyPaint 的 `BrushGroupTool`）
-            let mut pick = false;
-            egui::Panel::left("brushes")
-                .resizable(true)
-                .default_size(240.0)
-                // 下界 = `TOOL_WIDGET_MIN_WIDTH`（`gui/toolstack.py:40`）
-                .size_range(crate::brushes::TOOL_WIDGET_MIN_WIDTH..=520.0)
-                .show(ui, |ui| {
-                    pick = self.brushes.show(ui);
-                });
-            if pick {
-                self.reload_selected_brush();
-            }
-            // 右：笔刷编辑器
-            self.side_panel(ui);
-        }
+        // 左右侧栏（栈空自动收起；宽度由 egui 记忆，可拖）
+        self.dock_sidebars(ui);
 
         egui::CentralPanel::default()
             // 画布底色 = MyPaint 默认背景（米白纸色），不是纯白
             .frame(egui::Frame::NONE.fill(convert::canvas_bg_color()))
             .show(ui, |ui| self.canvas(ui));
+
+        // 浮动面板窗口（ToolStackWindow 的承接）
+        self.dock_floatings(ui);
     }
 
-    /// 右侧面板：笔刷信息 + 颜色 + 笔刷编辑器。
+    /// 笔刷编辑器面板内容（[`crate::shell::dock::PanelId::BrushEditor`]）。
     ///
     /// 源码里这三块都是可停靠工具（颜色器在 `gui/colortools.py`，
     /// 笔刷编辑器是独立窗口 `gui/brusheditor.py`），此处先按侧栏堆叠。
-    fn side_panel(&mut self, ui: &mut egui::Ui) {
-        let ctx = ui.ctx().clone();
-        egui::Panel::right("editor")
-            .resizable(true)
-            .default_size(310.0)
-            .size_range(250.0..=520.0)
+    pub(crate) fn brush_editor_content(&mut self, ui: &mut egui::Ui) {
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
                         // ---- 笔刷信息 ----
                         if let Some(e) = self.brushes.selected_entry() {
                             ui.horizontal(|ui| {
@@ -224,8 +208,35 @@ impl PigmentApp {
                             .small(),
                         );
                     });
-            });
-        let _ = ctx;
+    }
+
+    /// 「最近笔刷与颜色」面板内容
+    /// （[`crate::shell::dock::PanelId::HistoryPanel`]，`gui/history.py:220`）。
+    ///
+    /// 源码面板上半是最近用过的笔刷（BrushHistoryView），下半是颜色历史
+    /// （ColorHistoryView）。本应用目前只跟踪颜色历史，笔刷历史记账 B3。
+    pub(crate) fn history_panel_content(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Recent Brushes & Colors");
+        ui.separator();
+        ui.label("Colors");
+        let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
+        let n = history.len();
+        ui.horizontal_wrapped(|ui| {
+            for (i, hsv) in history.into_iter().enumerate() {
+                let tip = format!("颜色历史 {}/{}", i + 1, n);
+                if crate::app::color_swatch(ui, hsv, false, &tip).clicked() {
+                    self.set_color(hsv);
+                }
+            }
+            if n == 0 {
+                ui.label(egui::RichText::new("（画一笔后出现）").weak().small());
+            }
+        });
+        ui.label(egui::RichText::new("最近用的在最后").weak().small());
+        ui.separator();
+        ui.label(
+            egui::RichText::new("最近用过的笔刷属 B3（笔刷历史跟踪）。").weak().small(),
+        );
     }
 
     /// 画布（`TiledDrawWidget`）—— 工作区的中央，`expand=True`。
