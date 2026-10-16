@@ -22,7 +22,6 @@ use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::BrushSetting;
 
 use crate::app::PigmentApp;
-use crate::convert;
 use crate::gpu::TileUpload;
 use crate::view::View;
 

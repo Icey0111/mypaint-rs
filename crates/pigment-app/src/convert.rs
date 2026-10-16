@@ -15,9 +15,3 @@ pub use pigment_surface::color::{
     eotf_encode, tile_to_rgba8, CANVAS_BG, TILE_RGBA8_BYTES,
 };
 
-/// [`CANVAS_BG`] 的 egui 形式。
-///
-/// 放在应用层是因为它依赖 egui（引擎层不该依赖 UI 库）。
-pub fn canvas_bg_color() -> eframe::egui::Color32 {
-    eframe::egui::Color32::from_rgb(CANVAS_BG[0], CANVAS_BG[1], CANVAS_BG[2])
-}

@@ -23,7 +23,6 @@ use eframe::wgpu;
 
 use crate::convert::TILE_RGBA8_BYTES;
 use pigment_engine::hokusai::tile::TILE_SIZE;
-use pigment_surface::PigmentSurface;
 
 /// 显存驻留上限（1024 块 × 16KiB = 16 MiB）。
 const GPU_TILE_CAPACITY: usize = 1024;
@@ -493,7 +492,7 @@ impl CallbackTrait for CanvasPaint {
 mod tests {
     use super::*;
     use pigment_engine::hokusai::TiledSurface;
-    use pigment_surface::LayerStack;
+    use pigment_surface::{LayerStack, PigmentSurface};
 
     /// 造一个含内容的 tile（写入一个像素即会 bump revision）。
     fn touch(surface: &mut PigmentSurface, tx: i32, ty: i32) {
