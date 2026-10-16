@@ -12,6 +12,17 @@ hokusai = "=0.3.0"
 pigment-surface = { path = "../pigment-surface" }
 # 仅用于扫描用户笔刷目录时读 description/notes（已在依赖图内，无新增下载）
 serde_json = "1"
+# 文档 I/O：PNG（照搬 lib/document.py 的 save_png/load_png）
+image = { version = "0.25", default-features = false, features = ["png"] }
+# 文档 I/O：OpenRaster 是 zip 容器。**不依赖 `zip` crate** —— 该 crate 在
+# 当前 registry 里全版本都被 yank 了；而 MyPaint 写 .ora 只用 ZIP_STORED
+# （`zipfile.ZipFile(..., compression=ZIP_STORED)`，`zipfile_writestr` 也不覆盖压
+# 缩方式），读则需兼容 deflate。自家 `zip.rs` 只需这两个能力，且已有依赖：
+# crc32fast（CRC-32 校验）+ flate2（raw DEFLATE 解压）。
+crc32fast = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# ORA 的 stack.xml 解析（写侧手写，属性顺序与缩进可精确对齐 ElementTree）
+quick-xml = "0.37"
 
 [build-dependencies]
 # 构建期解析 196 支 .myb 的展示元数据

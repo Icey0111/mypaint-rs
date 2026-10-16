@@ -25,7 +25,13 @@ pub fn dump_surface_png(surface: &PigmentSurface) -> Result<PathBuf, String> {
 
     let w = ((max_tx - min_tx + 1) * ts) as u32;
     let h = ((max_ty - min_ty + 1) * ts) as u32;
-    let mut img = image::RgbaImage::from_pixel(w, h, image::Rgba([255, 255, 255, 255]));
+    // 底噪用画布纸色而不是纯白：本诊断的用途是与**屏幕画面**对照，
+    // 而屏幕上空 tile 显示的是 `CANVAS_BG`（M2 时还是纯白，这里已同步）。
+    let mut img = image::RgbaImage::from_pixel(
+        w,
+        h,
+        image::Rgba([convert::CANVAS_BG[0], convert::CANVAS_BG[1], convert::CANVAS_BG[2], 255]),
+    );
 
     for (coord, tile) in surface.tiles() {
         let px = convert::tile_to_rgba8(tile.pixels(), convert::CANVAS_BG);

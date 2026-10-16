@@ -1,8 +1,9 @@
-//! 文档模型 —— 照搬 MyPaint `lib/document.py` 中与撤销/重做有关的部分。
+//! 文档模型 —— 照搬 MyPaint `lib/document.py` 中与撤销/重做、文档 I/O
+//! 有关的部分。
 //!
 //! 完整移植 `lib/document.py`（2200 行，含图层栈、缓存目录、自动保存、
-//! 帧/画框、分辨率、图层视图…）不在本轮范围；这里先建立**命令栈的宿主**，
-//! 让后续的 `.ora`/`.png` 读写、图层栈、自动保存都挂到同一个对象上。
+//! 帧/画框、分辨率、图层视图…）不在本轮范围；这里建立**命令栈的宿主**
+//! 与**画幅/分辨率/设置**这些文档 I/O 必需的属性。
 //!
 //! | MyPaint | 本文件 |
 //! |---|---|
@@ -13,12 +14,19 @@
 //! | `:1174` `do(cmd)` | [`Document::do_command`] |
 //! | `:1179`/`:1184` `update_last_command`/`get_last_command` | 同名方法 |
 //! | `:1191` `get_bbox()` | [`Document::data_bbox`] |
+//! | `:1229` `get_user_bbox()` | [`Document::get_user_bbox`] |
+//! | `:835` `update_frame()` / `:864` `get_frame_enabled()` / `:867` `set_frame_enabled()` | [`Document::set_frame`] 等 |
 //! | `:923` `clear()` | [`Document::clear`] |
 //! | `:1046` `unsaved_painting_time` | [`Document::unsaved_painting_time`] |
+//! | `:1432` `save()` / `:1488` `load()`（按扩展名分派） | [`Document::save`] / [`Document::load`] |
+//! | `:1770`/`:1804` `save_ora`/`load_ora`、`:1646`/`:1732` `save_png`/`load_png` | [`Document::save_ora`] 等（实现在 `fileio`） |
+//! | `:452` `settings`（随 ORA 往返的 JSON 字典） | [`Document::settings`] |
 //!
 //! 尚未移植（属后续里程碑）：`layer_stack`（P1 图层）、`sync_pending_changes`
-//! （我们的作画是同步落盘到表面的，没有待刷队列）、帧/画框、分辨率、
-//! 自动保存与缓存目录、`.ora`/`.png` 读写（下一轮的文档 I/O）。
+//! 的异步收尾（我们的作画是同步落盘的，见同名方法）、自动保存与缓存目录、
+//! `.jpg`、`strokemap`。
+
+use std::collections::BTreeMap;
 
 use hokusai::tile::TILE_SIZE;
 use pigment_surface::PigmentSurface;
@@ -26,8 +34,9 @@ use pigment_surface::PigmentSurface;
 use crate::command::{
     Brushwork, Command, CommandStack, CommandUpdate, DocContext, DEFAULT_UNDO_STACK_SIZE,
 };
+use crate::fileio::{self, FileError, Format, OraSaveOptions};
 
-/// 文档模型：一个表面 + 一条撤销栈。
+/// 文档模型：一个表面 + 一条撤销栈 + 画幅/分辨率/设置。
 pub struct Document {
     surface: PigmentSurface,
     /// 撤销/重做栈（`lib/document.py:309`）。
@@ -35,6 +44,16 @@ pub struct Document {
     /// 累计的"未保存作画时长"（秒），`.ora` 的 JSON 设置会写它
     /// （`lib/document.py:1046`；`Brushwork` 的 redo/undo 会改写）。
     pub unsaved_painting_time: f64,
+    /// 画框 `(x, y, w, h)`（`lib/document.py:338` 的 `self._frame`）。
+    frame: (i32, i32, i32, i32),
+    /// 画框是否启用（`:339` 的 `self._frame_enabled`）。
+    frame_enabled: bool,
+    /// 标称分辨率（`:1780` 的 `self._xres` / `self._yres`，未指定为 `None`）。
+    pub xres: Option<u32>,
+    pub yres: Option<u32>,
+    /// 文档级设置字典（`:452` 的 `settings`）：随 `.ora` 往返，可放任意
+    /// JSON 值。MyPaint 用它给扩展留位（默认空）。
+    pub settings: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for Document {
@@ -56,6 +75,11 @@ impl Document {
             surface: PigmentSurface::new(),
             command_stack: CommandStack::new(max_undo_stack_size),
             unsaved_painting_time: 0.0,
+            frame: (0, 0, 0, 0),
+            frame_enabled: false,
+            xres: None,
+            yres: None,
+            settings: BTreeMap::new(),
         }
     }
 
@@ -78,6 +102,7 @@ impl Document {
             command_stack,
             surface,
             unsaved_painting_time,
+            ..
         } = self;
         (
             command_stack,
@@ -170,6 +195,161 @@ impl Document {
         self.unsaved_painting_time = 0.0;
     }
 
+    // ---- 画框（`lib/document.py:827-878`）----
+
+    /// 画框矩形（`:827` 的 `get_frame()`）。
+    #[inline]
+    pub fn get_frame(&self) -> (i32, i32, i32, i32) {
+        self.frame
+    }
+
+    /// 设置画框（`:835` 的 `update_frame()`）。
+    ///
+    /// 与源码一致：宽高被钳到非负（源码在 `:846-849` 处对 w/h 取 `max(0, …)`）。
+    pub fn set_frame(&mut self, x: i32, y: i32, w: i32, h: i32) {
+        self.frame = (x, y, w.max(0), h.max(0));
+    }
+
+    /// 画框是否启用（`:864`）。
+    #[inline]
+    pub fn get_frame_enabled(&self) -> bool {
+        self.frame_enabled
+    }
+
+    /// 启用/停用画框（`:867`）。
+    #[inline]
+    pub fn set_frame_enabled(&mut self, enabled: bool) {
+        self.frame_enabled = enabled;
+    }
+
+    /// 用户视角的导出外接框（`lib/document.py:1229` 的 `get_user_bbox()`）。
+    ///
+    /// 源码逻辑：画框启用时用它；否则用内容外接框，并按**背景图尺寸**向上取整
+    /// （「宽度与高度至少是一个背景图大小」）。我们没有背景图，而
+    /// [`Document::data_bbox`] 本身就是 tile 对齐的，取整退化为恒等 ——
+    /// 所以在"无背景层 + 画框关闭"这一档上，两者结果相同。
+    ///
+    /// 内容为空时回退成画框（源码靠背景图保证最小尺寸；我们靠画框）。
+    pub fn get_user_bbox(&self) -> (i32, i32, i32, i32) {
+        if self.frame_enabled {
+            return self.frame;
+        }
+        let bbox = self.data_bbox();
+        if bbox.2 == 0 || bbox.3 == 0 {
+            // 空文档：源码断言的 `bg_bbox.w/h > 0` 保证非零；我们退回画框，
+            // 画框也空时交给导出层（`save_as_png` 会退化成 1×1）
+            return self.frame;
+        }
+        bbox
+    }
+
+    // ---- 文档 I/O（照搬 `lib/document.py:1432` save / `:1488` load 的分派）----
+
+    /// 保存到文件，按扩展名分派（`lib/document.py:1432` 的 `save`）。
+    ///
+    /// 与源码一致：成功后把 `unsaved_painting_time` 归零（`:1485`）。
+    ///
+    /// `alpha` 只在 `.png` 分支有意义；`None` 时用源码的默认
+    /// `not background_visible`（我们无背景层，等价于 `true`，但为给用户
+    /// "像有背景层那样导出"的选择，调用方可显式传 `Some(false)`）。
+    pub fn save(
+        &mut self,
+        filename: impl AsRef<std::path::Path>,
+        alpha: Option<bool>,
+    ) -> Result<SaveOutcome, FileError> {
+        self.sync_pending_changes();
+        let path = filename.as_ref();
+        let outcome = match fileio::format_for_path(path) {
+            Some(Format::Ora) => {
+                let opts = OraSaveOptions {
+                    bbox: None,
+                    xres: self.xres,
+                    yres: self.yres,
+                    frame_active: self.frame_enabled,
+                    settings_json: Some(self.settings_json()),
+                    layer_name: None,
+                };
+                let bbox = self.data_bbox();
+                let saved = fileio::save_ora(&self.surface, path, &opts, bbox)?;
+                SaveOutcome::Ora { bbox: saved.bbox }
+            }
+            Some(Format::Png) => {
+                let bbox = self.get_user_bbox();
+                let saved = fileio::save_png(&self.surface, path, bbox, alpha.unwrap_or(true))?;
+                SaveOutcome::Png { bbox: saved.bbox }
+            }
+            _ => return Err(fileio::unsupported_message(path)),
+        };
+        self.unsaved_painting_time = 0.0;
+        Ok(outcome)
+    }
+
+    /// 从文件载入，按扩展名分派（`lib/document.py:1488` 的 `load`）。
+    ///
+    /// 与源码一致：成功后清空命令栈并把作画时长归零（`:1554-1555`）。
+    pub fn load(&mut self, filename: impl AsRef<std::path::Path>) -> Result<LoadOutcome, FileError> {
+        let path = filename.as_ref();
+        // 源码的前置检查（`:1513` / `:1519`）
+        if !path.is_file() {
+            return Err(FileError::NotFound(path.display().to_string()));
+        }
+        self.clear();
+        let outcome = match fileio::format_for_path(path) {
+            Some(Format::Ora) => {
+                let loaded = fileio::load_ora(&mut self.surface, path)?;
+                self.xres = loaded.xres;
+                self.yres = loaded.yres;
+                // 照源码：画幅设为文件里声明的尺寸，并按 `frame-active` 决定启用
+                self.set_frame(0, 0, loaded.bbox.2, loaded.bbox.3);
+                self.set_frame_enabled(loaded.frame_enabled);
+                if let Some(json) = &loaded.settings_json {
+                    self.set_settings_json(json);
+                }
+                LoadOutcome::Ora {
+                    bbox: loaded.bbox,
+                    layer_name: loaded.layer_name,
+                    mypaint_version: loaded.mypaint_version,
+                    compatibility: loaded.compatibility,
+                }
+            }
+            Some(Format::Png) => {
+                let loaded = fileio::load_png(&mut self.surface, path)?;
+                // `load_png` 末行 `self.set_frame(bbox, user_initiated=False)`（`:1736`）
+                self.set_frame(loaded.bbox.0, loaded.bbox.1, loaded.bbox.2, loaded.bbox.3);
+                LoadOutcome::Png { bbox: loaded.bbox }
+            }
+            _ => return Err(fileio::unsupported_message(path)),
+        };
+        self.command_stack.clear();
+        self.unsaved_painting_time = 0.0;
+        Ok(outcome)
+    }
+
+    /// `settings` 的 JSON 序列化（照 `json.dumps(dict(settings), indent=2)`）。
+    ///
+    /// 空字典对应源码的 `"{}"`（默认文档就是这一档）。
+    pub fn settings_json(&self) -> String {
+        if self.settings.is_empty() {
+            return "{}".to_string();
+        }
+        let obj = serde_json::Value::Object(
+            self.settings
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
+        serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// 从 JSON 串恢复 `settings`（照 `:1871` 的 `_settings.update(json.loads(...))`）。
+    ///
+    /// 非法 JSON 时保持现有设置不变（源码会记日志并继续）。
+    pub fn set_settings_json(&mut self, json: &str) {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json) {
+            self.settings = map.into_iter().collect();
+        }
+    }
+
     /// `sync_pending_changes()`（`lib/document.py:1127`）的等价物。
     ///
     /// MyPaint 需要它把"待刷的笔画工作"提交给模型（Brushwork 的记录期是
@@ -177,6 +357,27 @@ impl Document {
     /// 因此这里无事可做。保留这个方法名是为了让调用点与源码一一对应。
     #[inline]
     pub fn sync_pending_changes(&self) {}
+}
+
+/// [`Document::save`] 的结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Ora { bbox: (i32, i32, i32, i32) },
+    Png { bbox: (i32, i32, i32, i32) },
+}
+
+/// [`Document::load`] 的结果。
+#[derive(Debug, Clone)]
+pub enum LoadOutcome {
+    Ora {
+        bbox: (i32, i32, i32, i32),
+        layer_name: Option<String>,
+        mypaint_version: Option<String>,
+        compatibility: Option<fileio::Compatibility>,
+    },
+    Png {
+        bbox: (i32, i32, i32, i32),
+    },
 }
 
 #[cfg(test)]

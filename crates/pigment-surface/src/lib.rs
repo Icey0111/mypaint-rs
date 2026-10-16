@@ -39,10 +39,14 @@
 //! `draw_dab` 时注入高度图系数；届时以 parity 测试的对照快照做回归门禁。
 
 use std::collections::{HashMap, HashSet};
+use std::path::Path;
 use std::sync::Arc;
 
 use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
 use hokusai::TiledSurface;
+
+pub mod color;
+pub mod png;
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
 ///
@@ -283,6 +287,119 @@ impl PigmentSurface {
     pub fn load_from_surface(&mut self, other: &PigmentSurface) -> SnapshotDiff {
         let sshot = other.save_snapshot();
         self.load_snapshot(&sshot)
+    }
+
+    // ---- 文档 I/O（照搬 `lib/surface.py` 的 TileBlittable 层）----
+
+    /// 把 `rect` 指定的矩形渲染成 RGBA8 像素（行主序、每像素 4 字节）。
+    ///
+    /// `rect` 是绝对模型坐标 `(x, y, w, h)`；`alpha = false` 时把内容合成到
+    /// `bg` 底色上并输出不透明像素，`true` 时保留透明。
+    ///
+    /// 与 `lib/surface.py:save_as_png` 一致：**空矩形退化成 1×1**，这样空文档
+    /// 也能写出一个合法图像（源码注释：「Save at least one tile to allow empty
+    /// docs to be written」）。
+    pub fn render_rect_rgba8(&self, rect: (i32, i32, i32, i32), alpha: bool, bg: [u8; 3]) -> Vec<u8> {
+        let (x, y, mut w, mut h) = rect;
+        if w == 0 || h == 0 {
+            // 照源码：`if w == 0 or h == 0: x, y, w, h = (0, 0, 1, 1)`
+            w = 1;
+            h = 1;
+        }
+        let w = w.max(0) as usize;
+        let h = h.max(0) as usize;
+        let mut out = vec![0u8; w * h * 4];
+        // 底色只解码一次（线性域合成）
+        let bg_lin = color::bg_to_linear(bg);
+        for row in 0..h {
+            let wy = y + row as i32;
+            let ty = wy.div_euclid(TILE_SIZE as i32);
+            let iy = wy.rem_euclid(TILE_SIZE as i32) as usize;
+            for col in 0..w {
+                let wx = x + col as i32;
+                let tx = wx.div_euclid(TILE_SIZE as i32);
+                let ix = wx.rem_euclid(TILE_SIZE as i32) as usize;
+                let o = (row * w + col) * 4;
+                match self.tiles.get(&(tx, ty)) {
+                    None => {
+                        // 未分配 = 空：合成模式下写底色，alpha 模式写全透明
+                        if alpha {
+                            out[o..o + 4].copy_from_slice(&[0, 0, 0, 0]);
+                        } else {
+                            out[o..o + 3].copy_from_slice(&bg);
+                            out[o + 3] = 255;
+                        }
+                    }
+                    Some(tile) => {
+                        let p = tile.pixels[iy][ix];
+                        if alpha {
+                            let px = color::tile_to_rgba8_alpha_single(p);
+                            out[o..o + 4].copy_from_slice(&px);
+                        } else {
+                            let px = color::tile_to_rgba8_single(p, bg, bg_lin);
+                            out[o..o + 4].copy_from_slice(&px);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// 把 `rect` 写成 PNG（`lib/surface.py:220` 的 `save_as_png`）。
+    ///
+    /// 返回实际写出的矩形 `(x, y, w, h)` —— 空表面会被退化成 1×1，
+    /// 调用方需要知道真正落盘的尺寸（ORA 的 stack.xml 要用）。
+    pub fn save_as_png(
+        &self,
+        filename: impl AsRef<Path>,
+        rect: (i32, i32, i32, i32),
+        alpha: bool,
+        bg: [u8; 3],
+    ) -> Result<(i32, i32, i32, i32), String> {
+        let (x, y, mut w, mut h) = rect;
+        if w == 0 || h == 0 {
+            w = 1;
+            h = 1;
+        }
+        png::write_rgba8_png(filename.as_ref(), self.render_rect_rgba8(rect, alpha, bg), w as u32, h as u32)?;
+        Ok((x, y, w, h))
+    }
+
+    /// 用解码后的 RGBA8 像素替换表面内容（`load_layer_from_png` 的核心）。
+    ///
+    /// `(x, y)` 是内容左上角的模型坐标；像素按 tile 切分写入。
+    /// 与 MyPaint 一致：**整层替换**，调用方应先 `clear()`。
+    pub fn load_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
+        let (w, h) = (w as i32, h as i32);
+        for row in 0..h {
+            let wy = y + row;
+            let ty = wy.div_euclid(TILE_SIZE as i32);
+            let iy = wy.rem_euclid(TILE_SIZE as i32) as usize;
+            for col in 0..w {
+                let wx = x + col;
+                let tx = wx.div_euclid(TILE_SIZE as i32);
+                let ix = wx.rem_euclid(TILE_SIZE as i32) as usize;
+                let o = ((row as usize) * (w as usize) + col as usize) * 4;
+                let px = color::rgba8_to_fix15(pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]);
+                if px[3] == 0 {
+                    continue; // 全透明像素不必分配 tile（省内存，也与 MyPaint 一致）
+                }
+                let tile = self.tile_request_start(tx, ty);
+                tile[iy][ix] = px;
+                self.tile_request_end(tx, ty);
+            }
+        }
+    }
+
+    /// 从 PNG 读取并载入表面（`load_png` → `load_layer_from_png`）。
+    ///
+    /// 返回内容外接矩形 `(x, y, w, h)`，与 `load_layer_from_png` 的返回值
+    /// 语义一致（供 `Document` 设画框用）。
+    pub fn load_from_png(&mut self, filename: impl AsRef<Path>, x: i32, y: i32) -> Result<(i32, i32, i32, i32), String> {
+        let (px, w, h) = png::read_rgba8_png(filename.as_ref())?;
+        self.load_from_rgba8(&px, x, y, w, h);
+        Ok((x, y, w as i32, h as i32))
     }
 }
 

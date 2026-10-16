@@ -39,8 +39,11 @@ fn paint_line(doc: &mut Document, y: f32, radius: f32) -> bool {
     changed
 }
 
+/// 一块 tile 的像素（64×64 RGBA fix15）。
+type TilePixels = Box<[[[u16; 4]; TILE_SIZE]; TILE_SIZE]>;
+
 /// 把整个表面的像素抓成可比较的快照（坐标 → 数据）。
-fn capture(surface: &PigmentSurface) -> Vec<((i32, i32), Box<[[[u16; 4]; TILE_SIZE]; TILE_SIZE]>)> {
+fn capture(surface: &PigmentSurface) -> Vec<((i32, i32), TilePixels)> {
     let mut v: Vec<_> = surface
         .tiles()
         .map(|(c, t)| (c, Box::new(*t.pixels())))

@@ -599,6 +599,6 @@ mod tests {
     /// 画布显示（[`crate::convert`]）与预览图共用同一常量，这里一并钉住。
     #[test]
     fn eotf_default_matches_mypaint() {
-        assert_eq!(crate::convert::EOTF, 2.2);
+        assert_eq!(pigment_surface::color::EOTF, 2.2);
     }
 }

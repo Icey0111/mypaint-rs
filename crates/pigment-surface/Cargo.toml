@@ -9,6 +9,8 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 # 钉死精确版本：上游发布节奏未知，升级须显式进行（P0 决策）
 hokusai = "=0.3.0"
+# PNG 编解码 —— 照搬 lib/surface.py:220 的 save_as_png（tile-blittable 层）
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dev-dependencies]
 # parity 测试需要参考后端 MemSurface 做逐像素对比（tile-mem 在默认 feature 里）

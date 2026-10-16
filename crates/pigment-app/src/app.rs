@@ -135,6 +135,14 @@ pub struct PigmentApp {
     live_update: bool,
     /// 顶栏临时状态文字（带时间戳，2.5 秒后消失）。
     status: Option<(String, f64)>,
+    // ---- 文档 I/O ----
+    /// 当前文件的绝对路径（`gui/filehandling.py` 的 `self.filename`）。
+    ///
+    /// `None` = 还没存过盘 → `Ctrl+S` 走「另存为」（照 `save_cb`）。
+    current_file: Option<std::path::PathBuf>,
+    /// 在 app 内的路径输入框（**技术栈适配**：GTK FileChooser 在 egui 里没有
+    /// 对应物，改用内嵌的路径输入弹层；语义仍是"给个文件名再存/开"）。
+    file_prompt: Option<FilePrompt>,
     // ---- 交互与渲染 ----
     /// 正在绘制时的引擎状态（每次起笔新建，落笔丢弃）。
     stroke_state: Option<BrushState>,
@@ -150,6 +158,100 @@ pub struct PigmentApp {
     show_panels: bool,
     fullscreen: bool,
 }
+
+// ---- 文档 I/O ----
+
+/// 在 app 内的路径输入弹层。
+///
+/// **技术栈适配**：MyPaint 用 GTK 的 `Gtk.FileChooserDialog`
+/// （`gui/filehandling.py:1268` 的 `save_as_dialog` / `open_cb` 的对话框）。
+/// egui 没有自带文件对话框，本项目也不引入额外依赖，所以用一个内嵌的
+/// 文本输入弹层代替 —— 交互语义（"先确定文件名，再执行"）与源码一致，
+/// 只是控件形态不同。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum FileAction {
+        /// `save_as_cb`（另存为）。`save_cb` 在"还没存过盘"时也走这里 ——
+        /// 见 `PigmentApp::save_command`，所以不需要独立的 `Save` 变体。
+        SaveAs,
+        /// `open_cb`（打开）
+        Open,
+        /// `Export`（导出 PNG，不动 current_file）
+        Export,
+    }
+
+    struct FilePrompt {
+        action: FileAction,
+        path: String,
+        /// 上一次的错误（校验失败时显示，不关闭弹层）。
+        error: Option<String>,
+        /// 是否还没抢过键盘焦点。
+        ///
+        /// 只在第一帧抢：否则每帧 `request_focus()` 会把焦点一直锁在输入框上，
+        /// 「确定 / 取消」按钮永远点不到。
+        want_focus: bool,
+    }
+
+    impl FilePrompt {
+        fn new(action: FileAction, seed: Option<&std::path::Path>) -> Self {
+            let path = seed
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| default_document_path(action));
+            Self {
+                action,
+                path,
+                error: None,
+                want_focus: true,
+            }
+        }
+
+        fn title(&self) -> &'static str {
+            match self.action {
+                FileAction::SaveAs => "另存为（Save As）",
+                FileAction::Open => "打开（Open）",
+                FileAction::Export => "导出 PNG（Export）",
+            }
+        }
+    }
+
+/// 把文件名补成绝对路径（照 `os.path.abspath`，`filehandling.py:996`）。
+fn abspath(p: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(p);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|d| d.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// 弹层里给的路径要按动作补扩展名。
+///
+/// MyPaint 靠文件对话框的过滤器自动补扩展名（`save_as_dialog` 的
+/// `set_current_name`）；我们没有对话框，就按动作给个默认后缀。
+fn with_default_extension(action: FileAction, p: &str) -> String {
+    let ext = match action {
+        FileAction::Export => "png",
+        _ => "ora",
+    };
+    let path = std::path::Path::new(p);
+    match path.extension() {
+        Some(_) => p.to_string(),
+        None => format!("{p}.{ext}"),
+    }
+}
+
+/// 弹层的默认文件名（照 `save_as_dialog` 的 `suggested_filename`；
+/// 没有当前文件时 MyPaint 用文档名 "Untitled"，我们用 "untitled"）。
+fn default_document_path(action: FileAction) -> String {
+    let ext = match action {
+        FileAction::Export => "png",
+        _ => "ora",
+    };
+    std::env::current_dir()
+        .map(|d| d.join(format!("untitled.{ext}")).display().to_string())
+        .unwrap_or_else(|_| format!("untitled.{ext}"))
+}
+
 
 impl PigmentApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -187,6 +289,8 @@ impl PigmentApp {
             context_restores_color: true,
             live_update: false,
             status: None,
+            current_file: None,
+            file_prompt: None,
             stroke_state: None,
             brushwork: None,
             view: View::default(),
@@ -255,6 +359,207 @@ impl PigmentApp {
 
     fn set_status(&mut self, msg: String, now: f64) {
         self.status = Some((msg, now + STATUS_TTL));
+    }
+
+    /// `Ctrl+N` → `DocNew`：新建空白文档（`gui/filehandling.py:1088` 的
+    /// `open_cb` 之前那段 `app.doc.model.clear()` 语义 —— 新文档把
+    /// 内容、撤销栈、作画时长、当前文件名全部重置）。
+    fn new_document(&mut self, now: f64) {
+        self.flush_pending_stroke();
+        self.doc.clear();
+        self.doc.set_frame_enabled(false);
+        self.doc.set_frame(0, 0, 0, 0);
+        self.doc.xres = None;
+        self.doc.yres = None;
+        self.doc.settings.clear();
+        self.current_file = None;
+        self.force_resync = true; // 表面换了 → 显存全丢重传
+        self.view = View::default();
+        self.set_status("新建文档".to_string(), now);
+    }
+
+    /// 按扩展名分派保存并更新状态（`gui/filehandling.py:978` 的 `save_file`）。
+    fn save_to_path(&mut self, path: &std::path::Path, export: bool, now: f64) {
+        // 导出走 PNG 且不记进 current_file
+        let alpha = if export { Some(false) } else { None };
+        match self.doc.save(path, alpha) {
+            Ok(_) => {
+                if !export {
+                    self.current_file = Some(path.to_path_buf());
+                }
+                let verb = if export { "已导出" } else { "已保存" };
+                self.set_status(format!("{verb}：{}", path.display()), now);
+            }
+            Err(e) => self.set_status(format!("保存失败：{e}"), now),
+        }
+    }
+
+    /// 打开文件（`gui/filehandling.py:890` 的 `open_file`）。
+    fn open_from_path(&mut self, path: &std::path::Path, now: f64) {
+        self.flush_pending_stroke();
+        // 先记下旧状态：载入失败时不该把用户的画弄丢（源码会弹错并保留文档）
+        let snapshot = self.doc.surface().save_snapshot();
+        match self.doc.load(path) {
+            Ok(outcome) => {
+                self.current_file = Some(path.to_path_buf());
+                self.force_resync = true;
+                self.view = View::default();
+                let msg = match outcome {
+                    pigment_engine::LoadOutcome::Ora {
+                        bbox,
+                        mypaint_version,
+                        compatibility,
+                        ..
+                    } => {
+                        let compat = match compatibility {
+                            Some(pigment_engine::Compatibility::Partially) => {
+                                "（该文件来自更新的 MyPaint，可能只部分兼容）"
+                            }
+                            Some(pigment_engine::Compatibility::Incompatible) => {
+                                "（该文件来自不兼容的版本）"
+                            }
+                            _ => "",
+                        };
+                        let ver = mypaint_version.unwrap_or_else(|| "未知".to_string());
+                        format!(
+                            "已打开 {}×{} 的 OpenRaster（mypaint {}）{compat}",
+                            bbox.2, bbox.3, ver
+                        )
+                    }
+                    pigment_engine::LoadOutcome::Png { bbox } => {
+                        format!("已打开 {}×{} 的 PNG", bbox.2, bbox.3)
+                    }
+                };
+                self.set_status(msg, now);
+            }
+            Err(e) => {
+                // 回滚：`Document::load` 会先 clear()，所以失败时表面已经空了
+                self.doc.surface_mut().load_snapshot(&snapshot);
+                self.force_resync = true;
+                self.set_status(format!("打开失败：{e}"), now);
+            }
+        }
+    }
+
+    /// 处理弹层提交。
+    fn apply_file_prompt(&mut self, now: f64) {
+        let Some(prompt) = self.file_prompt.take() else {
+            return;
+        };
+        let raw = prompt.path.trim();
+        if raw.is_empty() {
+            self.file_prompt = Some(FilePrompt {
+                error: Some("请填写文件路径".to_string()),
+                ..prompt
+            });
+            return;
+        }
+        let action = prompt.action;
+        let candidate = if action == FileAction::Open {
+            raw.to_string()
+        } else {
+            with_default_extension(action, raw)
+        };
+        let path = abspath(&candidate);
+        match action {
+            FileAction::Open => {
+                if !path.is_file() {
+                    self.file_prompt = Some(FilePrompt {
+                        error: Some(format!("文件不存在：{}", path.display())),
+                        ..prompt
+                    });
+                    return;
+                }
+                self.open_from_path(&path, now);
+            }
+            FileAction::Export => self.save_to_path(&path, true, now),
+            FileAction::SaveAs => {
+                // 目录必须存在，否则给个明确提示（MyPaint 由对话框保证）
+                if let Some(dir) = path.parent() {
+                    if !dir.is_dir() {
+                        self.file_prompt = Some(FilePrompt {
+                            error: Some(format!("目录不存在：{}", dir.display())),
+                            ..prompt
+                        });
+                        return;
+                    }
+                }
+                self.save_to_path(&path, false, now);
+            }
+        }
+    }
+
+    /// `Ctrl+S`：有当前文件就直接存，否则走另存为（照 `save_cb`，`:1230`）。
+    fn save_command(&mut self, now: f64) {
+        match self.current_file.clone() {
+            Some(p) => self.save_to_path(&p, false, now),
+            None => {
+                self.file_prompt = Some(FilePrompt::new(FileAction::SaveAs, None));
+            }
+        }
+    }
+
+    /// 画路径输入弹层。
+    ///
+    /// 用 `egui::Modal`（带遮罩、挡住背后一切输入）—— 正好对应 GTK 的模态
+    /// 文件对话框，于是画布交互天然被屏蔽。
+    fn show_file_prompt(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(mut prompt) = self.file_prompt.take() else {
+            return;
+        };
+        // Enter 必须在画 TextEdit **之前**取：egui 的单行 TextEdit 会
+        // `consume_key(Enter)`（"回车即失焦"就靠它），之后再查 `key_pressed`
+        // 恒为 false —— 早先就是这么写的，结果回车提交不了。
+        let enter = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        let mut press_ok = false;
+        let mut cancel = false;
+        // `Id::new` 在 egui 0.37 已废弃；`Id::unique(源)` 是它的等价替换
+        // （同一个源每帧得到同一个 Id，正是模态需要的稳定标识）。
+        egui::Modal::new(egui::Id::unique("pigment_file_prompt")).show(ctx, |ui| {
+            ui.set_width(560.0);
+            ui.heading(prompt.title());
+            ui.label(match prompt.action {
+                FileAction::Open => "要打开的文件路径（.ora / .png）：",
+                FileAction::Export => "导出 PNG 的路径：",
+                FileAction::SaveAs => "保存路径（.ora / .png；不带后缀时按 .ora 处理）：",
+            });
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut prompt.path)
+                    .desired_width(540.0)
+                    .hint_text(r"C://path//to//picture.ora"),
+            );
+            // 只在第一帧抢焦点：否则每帧 `request_focus()` 会把焦点锁在输入框上，
+            // 「确定 / 取消」按钮永远点不到。
+            if prompt.want_focus {
+                resp.request_focus();
+                prompt.want_focus = false;
+            }
+            if let Some(err) = &prompt.error {
+                ui.colored_label(egui::Color32::LIGHT_RED, err);
+            }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("确定").clicked() {
+                    press_ok = true;
+                }
+                if ui.button("取消").clicked() {
+                    cancel = true;
+                }
+                ui.label(
+                    egui::RichText::new("回车 = 确定，Esc = 取消")
+                        .weak()
+                        .small(),
+                );
+            });
+        });
+        if cancel {
+            self.set_status("已取消".to_string(), now);
+            return;
+        }
+        self.file_prompt = Some(prompt);
+        if enter || press_ok {
+            self.apply_file_prompt(now);
+        }
     }
 
     // ---- 笔画生命周期 ----
@@ -428,6 +733,11 @@ impl PigmentApp {
             f11,
             undo,
             redo,
+            file_new,
+            file_open,
+            file_save,
+            file_save_as,
+            file_export,
             now,
         ) = ctx.input(|i| {
             let (mut restore, mut store) = (None, None);
@@ -454,13 +764,27 @@ impl PigmentApp {
             let redo = (ctrl && i.key_pressed(egui::Key::Y))
                 || (ctrl && shift && i.key_pressed(egui::Key::Z))
                 || (no_mod && i.key_pressed(egui::Key::Y));
+            // 文档 I/O 键位（`gui/resources.xml` 的动作加速键）：
+            //   Ctrl+N           → New（:68）
+            //   Ctrl+O           → Open（:78）
+            //   Ctrl+S           → Save（:124；没存过盘则走另存为，见 save_cb）
+            //   Ctrl+Shift+S     → SaveAs（:133）
+            //   Ctrl+Shift+E     → Export（:142）
+            let file_new = ctrl && !shift && i.key_pressed(egui::Key::N);
+            let file_open = ctrl && !shift && i.key_pressed(egui::Key::O);
+            let file_save = ctrl && !shift && i.key_pressed(egui::Key::S);
+            let file_save_as = ctrl && shift && i.key_pressed(egui::Key::S);
+            let file_export = ctrl && shift && i.key_pressed(egui::Key::E);
             (
                 restore.map(|d| (d, now)),
                 store.map(|d| (d, now)),
                 i.key_pressed(egui::Key::OpenBracket),
                 i.key_pressed(egui::Key::CloseBracket),
-                i.key_pressed(egui::Key::E),
-                i.key_pressed(egui::Key::P),
+                // 裸键必须排除修饰键：否则 Ctrl+Shift+E（Export）会连带切换橡皮。
+                // MyPaint 的 accelmap 天然区分（`<accelerator key="e"/>` 不带修饰），
+                // egui 的 `key_pressed` 只看键码，所以这里自己加判据。
+                no_mod && i.key_pressed(egui::Key::E),
+                no_mod && i.key_pressed(egui::Key::P),
                 i.key_pressed(egui::Key::F1),
                 i.key_pressed(egui::Key::F2),
                 i.key_pressed(egui::Key::Comma),
@@ -469,10 +793,40 @@ impl PigmentApp {
                 i.key_pressed(egui::Key::F11),
                 undo,
                 redo,
+                file_new,
+                file_open,
+                file_save,
+                file_save_as,
+                file_export,
                 now,
             )
         });
 
+        if file_new {
+            self.new_document(now);
+            ctx.request_repaint();
+        }
+        if file_open {
+            self.file_prompt = Some(FilePrompt::new(FileAction::Open, None));
+        }
+        if file_save_as {
+            self.file_prompt = Some(FilePrompt::new(
+                FileAction::SaveAs,
+                self.current_file.as_deref(),
+            ));
+        }
+        if file_save {
+            self.save_command(now);
+            ctx.request_repaint();
+        }
+        if file_export {
+            // 导出建议名 = 当前文件名换 .png（照 `save_as_dialog` 的 suggested_filename）
+            let seed = self
+                .current_file
+                .as_ref()
+                .map(|p| p.with_extension("png"));
+            self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
+        }
         if undo {
             self.undo(now);
             ctx.request_repaint();
@@ -540,6 +894,50 @@ impl PigmentApp {
                     .clicked()
                 {
                     self.show_panels = !self.show_panels;
+                }
+                ui.separator();
+                // ---- 文件（MyPaint 菜单栏「文件」+ 工具条，键位照 gui/resources.xml）----
+                // 源码里 New/Open/Save/SaveAs/Export 是菜单项与工具条项，
+                // 各自的加速键见 handle_keys。
+                let now_file = ui.input(|i| i.time);
+                if ui
+                    .button("新建")
+                    .on_hover_text("新建文档（Ctrl+N）")
+                    .clicked()
+                {
+                    self.new_document(now_file);
+                }
+                if ui
+                    .button("打开")
+                    .on_hover_text("打开 .ora / .png（Ctrl+O）")
+                    .clicked()
+                {
+                    self.file_prompt = Some(FilePrompt::new(FileAction::Open, None));
+                }
+                if ui
+                    .button("保存")
+                    .on_hover_text("保存（Ctrl+S；未命名时等同另存为）")
+                    .clicked()
+                {
+                    self.save_command(now_file);
+                }
+                if ui
+                    .button("另存为")
+                    .on_hover_text("另存为（Ctrl+Shift+S）")
+                    .clicked()
+                {
+                    self.file_prompt = Some(FilePrompt::new(
+                        FileAction::SaveAs,
+                        self.current_file.as_deref(),
+                    ));
+                }
+                if ui
+                    .button("导出")
+                    .on_hover_text("导出 PNG（Ctrl+Shift+E）")
+                    .clicked()
+                {
+                    let seed = self.current_file.as_ref().map(|p| p.with_extension("png"));
+                    self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
                 }
                 ui.separator();
                 // ---- 撤销 / 重做（MyPaint 工具条的 toolbar-edit.xml）----
@@ -630,6 +1028,26 @@ impl PigmentApp {
                             } else {
                                 format!("{}\n{}", e.mypaint_name(), e.display)
                             });
+                    }
+                    // 当前文件（MyPaint 把文件名放在窗口标题里；我们暂无标题栏，
+                    // 先放底栏 —— 属"底栏骨架未移植"前的权宜位置）
+                    ui.separator();
+                    match &self.current_file {
+                        Some(p) => {
+                            ui.label(
+                                egui::RichText::new(
+                                    p.file_name()
+                                        .map(|n| n.to_string_lossy().into_owned())
+                                        .unwrap_or_else(|| p.display().to_string()),
+                                )
+                                .weak()
+                                .small(),
+                            )
+                            .on_hover_text(p.display().to_string());
+                        }
+                        None => {
+                            ui.label(egui::RichText::new("未命名").weak().small());
+                        }
                     }
                     if let Some(msg) = status {
                         ui.separator();
@@ -850,8 +1268,11 @@ impl PigmentApp {
         // ---- 绘制 ----
         // 一次拖拽 = 一条 Brushwork（`gui/mode.py:722` 的 brushwork_begin/commit）：
         // 起笔取画前快照，落笔取画后快照并提交给撤销栈。
+        //
+        // 文件弹层开着时禁掉画布交互（GTK 的模态对话框也是这个效果）。
         let space_down = ui.input(|i| i.key_down(egui::Key::Space));
-        if !space_down && response.drag_started_by(egui::PointerButton::Primary) {
+        let modal = self.file_prompt.is_some();
+        if !modal && !space_down && response.drag_started_by(egui::PointerButton::Primary) {
             // 本应用的笔画开局：新建一份引擎状态（见文件头「撤销模型」注释）
             self.stroke_state = Some(BrushState::default());
             self.brushwork = Some(Brushwork::new());
@@ -863,7 +1284,7 @@ impl PigmentApp {
             }
             self.stroke_dirty = true;
         }
-        if !space_down && response.dragged_by(egui::PointerButton::Primary) {
+        if !modal && !space_down && response.dragged_by(egui::PointerButton::Primary) {
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = pos - rect.min;
                 let [wx, wy] = self.view.screen_to_world(local.x, local.y);
@@ -1029,5 +1450,13 @@ impl eframe::App for PigmentApp {
             // 画布底色 = MyPaint 默认背景（米白纸色），不是纯白
             .frame(egui::Frame::NONE.fill(convert::canvas_bg_color()))
             .show(ui, |ui| self.canvas(ui));
+
+        // 文件路径弹层放最后画（浮在最上层）。它打开时输入框会拿到键盘焦点，
+        // 于是 `handle_keys` 的 `text_edit_focused()` 早退会顺带挡住所有快捷键。
+        let now = ui.input(|i| i.time);
+        self.show_file_prompt(&ctx, now);
+        if self.file_prompt.is_some() {
+            ctx.request_repaint();
+        }
     }
 }
