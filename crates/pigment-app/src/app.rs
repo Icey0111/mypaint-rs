@@ -783,6 +783,46 @@ impl PigmentApp {
         }
     }
 
+    /// 菜单/工具条条目是否可用（决定置灰，S3/S4 共用）。
+    ///
+    /// 与 [`PigmentApp::run_action`] 的 match 臂**一一对应**：
+    /// 这里 true 的 id，`run_action` 必定返回 true。有状态的两条
+    /// （Undo/Redo 的 sensitivity）照搬 `document.py:582-591` 的
+    /// `_update_undo_redo`：栈里有没有命令。
+    pub(crate) fn action_available(&self, id: &str) -> bool {
+        match id {
+            // ---- 文档 I/O ----
+            "New" | "Open" | "Save" | "SaveAs" | "Export" => true,
+            // ---- 撤销栈（动态 sensitivity）----
+            "Undo" => self.doc.command_stack.undo_len() > 0,
+            "Redo" => self.doc.command_stack.redo_len() > 0,
+            // ---- 笔刷 ----
+            "Bigger" | "Smaller" | "BlendModeNormal" | "BlendModeEraser" => true,
+            // ---- 视图 ----
+            "ZoomIn" | "ZoomOut" | "ZoomInCentered" | "ZoomOutCentered" => true,
+            "PanLeft" | "PanRight" | "PanUp" | "PanDown" => true,
+            // ---- 窗口 ----
+            "Fullscreen" | "Quit" => true,
+            // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
+            "ContextRestoreColor" => true,
+            _ => actions::parse_context_action(id).is_some(),
+        }
+    }
+
+    /// 可勾选条目（`GtkToggleAction`）的当前状态；`None` = 不画复选槽。
+    ///
+    /// 只为**已实现**的 toggle 返回值。源码里 Normal/Eraser/LockAlpha/Colorize
+    /// 是一组互斥的 toggle（`gui/brushmodifier.py`），本应用目前只区分
+    /// "普通 / 橡皮"两种（差异记账在 B2）。
+    pub(crate) fn toggle_state(&self, id: &str) -> Option<bool> {
+        match id {
+            "Fullscreen" => Some(self.fullscreen),
+            "BlendModeNormal" => Some(!self.eraser),
+            "BlendModeEraser" => Some(self.eraser),
+            _ => None,
+        }
+    }
+
     /// 执行一个 MyPaint 动作（动作名来自 `resources.xml` 或源码里的额外键）。
     ///
     /// **没实现的动作返回 `false`** —— 这是"差异记账、不阻塞推进"的落点：

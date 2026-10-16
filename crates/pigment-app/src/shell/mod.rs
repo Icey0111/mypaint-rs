@@ -25,6 +25,7 @@
 
 pub(crate) mod actions;
 pub(crate) mod footer;
+pub(crate) mod menubar;
 pub(crate) mod topbar;
 pub(crate) mod workspace;
 

@@ -20,6 +20,7 @@
 use eframe::egui;
 
 use crate::app::{FileAction, FilePrompt, PigmentApp};
+use crate::shell::menubar::MenuNode;
 
 use super::TOPBAR_MIN_HEIGHT;
 
@@ -36,14 +37,66 @@ impl PigmentApp {
             });
     }
 
-    /// 菜单栏行。
+    /// 菜单栏行（S3）—— `gui/menu.xml` 的树渲染。
     ///
-    /// 源码是 `gui/menu.xml` 声明的 9 个顶级菜单，动作定义在
-    /// `gui/resources.xml`（161 个 `GtkAction` + 105 条加速键）。
-    /// **S3 落地前这里不画任何东西** —— 画一行空菜单栏既占地方又没有意义，
-    /// 而这个函数的存在保证了结构接缝已经就位。
-    fn menubar_row(&mut self, _ui: &mut egui::Ui) {
-        // S3：按 menu.xml 的菜单树渲染，未实现的动作置灰。
+    /// 树由 `build.rs` 从 menu.xml 生成（每条动作 id 都在构建期校验过存在）；
+    /// 条目的 label / tooltip / 加速键显示文本查 S2 的动作表，动态槽位动作
+    /// （`Context0N`）的文案照搬 `document.py:467-492` 的注册元组。
+    /// 未实现的动作置灰（不消费点击），与 GTK insensitive 语义一致。
+    fn menubar_row(&mut self, ui: &mut egui::Ui) {
+        use crate::shell::menubar::MENUBAR;
+        egui::MenuBar::new().ui(ui, |ui| {
+            for node in MENUBAR {
+                self.menu_node(ui, node);
+            }
+        });
+    }
+
+    /// 递归渲染一个菜单树节点。
+    fn menu_node(&mut self, ui: &mut egui::Ui, node: &MenuNode) {
+        match node {
+            MenuNode::Separator => {
+                ui.separator();
+            }
+            MenuNode::Item(id) => self.menu_item(ui, id),
+            MenuNode::SubMenu { action, items } => {
+                // 子菜单标题取动作 label（menu.xml 无 tooltip/快捷键，见
+                // resources.xml 里菜单动作的注释），不置灰（GTK 的菜单标题
+                // 只在整组动作 sensitive=false 时才灰，MyPaint 没有这种用法）
+                let label = crate::shell::menubar::item_info(action).label;
+                ui.menu_button(label, |ui| {
+                    for n in items.iter() {
+                        self.menu_node(ui, n);
+                    }
+                });
+            }
+        }
+    }
+
+    /// 渲染并处理一条菜单条目。
+    fn menu_item(&mut self, ui: &mut egui::Ui, id: &'static str) {
+        let info = crate::shell::menubar::item_info(id);
+        let available = self.action_available(id);
+        let resp = crate::shell::menubar::item(
+            ui,
+            &info.label,
+            info.accel.as_deref(),
+            available,
+            self.toggle_state(id),
+        );
+        // tooltip 只给可用的条目（GTK 对 insensitive 项不弹 tooltip）
+        if available {
+            if let Some(tip) = &info.tooltip {
+                // on_hover_text 消费 Response，用 clone 保住后面的点击判定
+                let _ = resp.clone().on_hover_text(tip.clone());
+            }
+        }
+        if available && resp.clicked() {
+            let ctx = ui.ctx().clone();
+            let now = ui.input(|i| i.time);
+            self.run_action(id, &ctx, now);
+            ui.close();
+        }
     }
 
     /// 工具条行 —— 左 toolbar1 / 右 toolbar2。
@@ -66,9 +119,10 @@ impl PigmentApp {
     fn toolbar1_row(&mut self, ui: &mut egui::Ui) {
         // ⚠️ 本项目新增：MyPaint 没有"显示/隐藏面板"的按钮（面板开关是 toolbar2
         // 的 `Toggle*Tool` 动作族）。S4/S6 到位后这枚 ☰ 应当被替换掉。
+        // （Tab 键在源码里是 FullscreenAutohide，见 actions::APP_KEYS 的记账。）
         if ui
             .selectable_label(self.show_panels, "☰")
-            .on_hover_text("显示/隐藏面板（Tab）")
+            .on_hover_text("显示/隐藏面板")
             .clicked()
         {
             self.show_panels = !self.show_panels;
@@ -76,8 +130,8 @@ impl PigmentApp {
         ui.separator();
 
         // ---- file-toolitems（`toolbar-file.xml`：New / Open / Save）----
-        // 源码里还有 SaveAs / Export 的菜单项，工具条片段只放这三个。
-        // 加速键见 `gui/resources.xml`（Ctrl+N / Ctrl+O / Ctrl+S）。
+        // 源码里还有 SaveAs / Export 的菜单项，工具条片段只放这三个
+        // （另存为 / 导出的入口在菜单栏的 File 菜单，S3 起可用）。
         let now = ui.input(|i| i.time);
         if ui.button("新建").on_hover_text("新建文档（Ctrl+N）").clicked() {
             self.new_document(now);
@@ -95,26 +149,6 @@ impl PigmentApp {
             .clicked()
         {
             self.save_command(now);
-        }
-        // SaveAs / Export 在源码里只出现在菜单栏，工具条片段没有 —— 但在 S3
-        // 菜单栏落地前，删掉它们会让功能完全没有入口，所以暂留（标注为权宜）。
-        if ui
-            .button("另存为")
-            .on_hover_text("另存为（Ctrl+Shift+S）· 源码里只在菜单栏")
-            .clicked()
-        {
-            self.file_prompt = Some(FilePrompt::new(
-                FileAction::SaveAs,
-                self.current_file.as_deref(),
-            ));
-        }
-        if ui
-            .button("导出")
-            .on_hover_text("导出 PNG（Ctrl+Shift+E）· 源码里只在菜单栏")
-            .clicked()
-        {
-            let seed = self.current_file.as_ref().map(|p| p.with_extension("png"));
-            self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
         }
         ui.separator();
 
@@ -156,8 +190,10 @@ impl PigmentApp {
             self.derive_active();
         }
         let mut paint = self.paint_active();
+        // 键位：应用本地扩展键 `x`（源码的 p 被 FlipFreehandMode 占用，
+        // 见 actions::APP_KEYS 的记账）
         if ui
-            .checkbox(&mut paint, "P 光谱混色")
+            .checkbox(&mut paint, "x 光谱混色")
             .on_hover_text("关掉即退回 RGB 插值，便于并排对比")
             .changed()
         {
