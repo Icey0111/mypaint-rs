@@ -65,6 +65,27 @@ pub fn plan_uploads(
     plan
 }
 
+/// 计算本帧需要从显存**剔除**的可见 tile：CPU 已经没有它，显存却还留着。
+///
+/// 撤销/重做会把表面退回较早的快照（`PigmentSurface::load_snapshot`），那时
+/// 画布上"多出来"的 tile 会从 CPU 侧消失；`plan_uploads` 对缺席的坐标只会
+/// 跳过（空白 tile 不占显存），于是显存里的旧纹理继续被画出来——表现就是
+/// "撤销不掉"。所以这里把这类坐标显式列出来交给渲染层删除。
+///
+/// 与 `plan_uploads` 一样是纯函数 + 幂等：同一状态下重复调用结果一致，
+/// UI pass 被丢弃重跑也不会误删或漏删。
+pub fn plan_evictions(
+    surface: &PigmentSurface,
+    resident: impl Fn((i32, i32)) -> bool,
+    visible: &[(i32, i32)],
+) -> Vec<(i32, i32)> {
+    visible
+        .iter()
+        .copied()
+        .filter(|c| surface.tile_entry(c.0, c.1).is_none() && resident(*c))
+        .collect()
+}
+
 struct GpuTile {
     // wgpu 对象内部引用计数，bind_group 持有即保活，无需再存 texture/buffer 句柄
     bind_group: wgpu::BindGroup,
@@ -370,6 +391,12 @@ impl TileRenderer {
         self.cache.clear();
     }
 
+    /// 剔除单个 tile 的显存副本（撤销后画布上已不存在的内容）。
+    #[inline]
+    pub fn evict(&mut self, coord: (i32, i32)) {
+        self.cache.remove(&coord);
+    }
+
     /// LRU 淘汰：超出容量时移除最久未用的 tile。
     fn evict_lru(&mut self) {
         if self.cache.len() <= GPU_TILE_CAPACITY {
@@ -392,6 +419,8 @@ pub struct CanvasPaint {
     pub view_matrix: [[f32; 4]; 4],
     /// 本帧需要上传的脏 tile。
     pub uploads: Vec<TileUpload>,
+    /// 本帧需要从显存剔除的 tile（撤销后已不在画布上）。
+    pub evict: Vec<(i32, i32)>,
     /// 画布矩形覆盖的可见 tile 坐标（可能含尚未有内容的空 tile）。
     pub visible: Vec<(i32, i32)>,
 }
@@ -409,6 +438,9 @@ impl CallbackTrait for CanvasPaint {
         r.frame += 1;
         for up in &self.uploads {
             r.upload_tile(device, queue, up);
+        }
+        for coord in &self.evict {
+            r.evict(*coord);
         }
         r.set_view(queue, &self.view_matrix);
         r.evict_lru();
@@ -528,5 +560,78 @@ mod tests {
         }
         let second = plan_uploads(&s, |c| synced.get(&c).copied(), &visible, 4);
         assert_eq!(second, vec![(4, 0), (5, 0), (6, 0), (7, 0)]);
+    }
+
+    // ---- 撤销/重做引发的显存剔除 ----
+
+    /// 撤销后画布上"多出来"的 tile 必须从显存删掉。
+    ///
+    /// 复现路径：画两笔 → 显存里有 (0,0)(1,0) → 撤销掉第二笔 → CPU 只剩 (0,0)，
+    /// 但 (1,0) 的纹理还在显存里被画出来。这就是"撤销不掉"的成因。
+    #[test]
+    fn plans_eviction_for_tiles_removed_by_undo() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 1, 0);
+        let sshot = s.save_snapshot();
+        touch(&mut s, 2, 0);
+        let _ = s.load_snapshot(&sshot); // 撤销：CPU 侧只剩 (0,0)(1,0)
+
+        let visible = vec![(0, 0), (1, 0), (2, 0)];
+        // 显存里三块都在（撤销前上传过）
+        let resident = |c: (i32, i32)| matches!(c, (0, 0) | (1, 0) | (2, 0));
+        assert_eq!(
+            plan_evictions(&s, resident, &visible),
+            vec![(2, 0)],
+            "(2,0) 已被撤销掉但显存里还在 → 必须剔除"
+        );
+    }
+
+    /// CPU 有内容、显存已同步的 tile 不该被剔除（正常作画路径不受影响）。
+    #[test]
+    fn does_not_evict_tiles_still_present_on_cpu() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        touch(&mut s, 1, 0);
+        let visible = vec![(0, 0), (1, 0)];
+        assert!(
+            plan_evictions(&s, |_| true, &visible).is_empty(),
+            "CPU 仍在的 tile 不该被剔除"
+        );
+    }
+
+    /// 显存里本来就没有的空白 tile 不必下发删除指令。
+    #[test]
+    fn does_not_evict_when_not_resident() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        let visible = vec![(0, 0), (7, 7)];
+        assert!(
+            plan_evictions(&s, |_| false, &visible).is_empty(),
+            "显存里没有的东西无需剔除"
+        );
+    }
+
+    /// 视口外的残留 tile 不处理：它们既不显示，也会被 LRU 自然淘汰。
+    #[test]
+    fn eviction_is_limited_to_the_visible_set() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        let visible = vec![(0, 0)]; // (9,9) 曾被上传但现在不在视口里
+        assert!(plan_evictions(&s, |c| c == (9, 9), &visible).is_empty());
+    }
+
+    /// 与上传规划一样是纯函数：同一状态下重复规划结果一致
+    /// （egui 多趟 pass 丢弃重跑时不会误删画布内容）。
+    #[test]
+    fn eviction_planning_is_idempotent() {
+        let mut s = PigmentSurface::new();
+        touch(&mut s, 0, 0);
+        let visible = vec![(0, 0), (1, 0)];
+        let resident = |c: (i32, i32)| c == (1, 0);
+        let a = plan_evictions(&s, resident, &visible);
+        let b = plan_evictions(&s, resident, &visible);
+        assert_eq!(a, b);
+        assert_eq!(a, vec![(1, 0)]);
     }
 }

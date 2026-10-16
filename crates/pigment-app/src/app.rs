@@ -6,6 +6,9 @@
 //! - `1..9,0` 恢复笔刷快捷键槽位；`Ctrl+数字` 存入槽位
 //!   （`gui/document.py:_init_context_actions`）
 //! - `,` / `.` 上一支 / 下一支笔刷；`Tab` 收起/展开面板；`F11` 全屏
+//! - `Ctrl+Z` 撤销、`Ctrl+Shift+Z` 重做（`gui/resources.xml:217-231` 的
+//!   动作加速键），另有 MyPaint 老式键位 `z` 撤销 / `y` 重做
+//!   （`gui/document.py:527-530`）
 //! - `F1` 强制全量重传显存 tile；`F2` 导出 CPU 侧画布 PNG（诊断）
 //!
 //! 数据流：指针事件 → hokusai 笔画引擎 → PigmentSurface（CPU fix15）
@@ -15,6 +18,14 @@
 //! `brush` = base + 颜色/橡皮/光谱/半径覆盖，是真正作画的那支。
 //! 对齐 MyPaint：颜色由应用持有并推给笔刷的 `color_h/s/v`
 //! （`gui/brushcolor.py:44`），所以改调色不会抹掉编辑器里做的曲线调整。
+//!
+//! 撤销模型：一次拖拽 = 一条 [`Brushwork`]（`lib/command.py:250`）——
+//! 起笔取"画前快照"、落笔取"画后快照"，撤销/重做就是在这两份快照之间
+//! 来回切（写时复制，见 `pigment-surface` 的模块文档）。命令栈由
+//! [`Document`] 持有，栈深 = MyPaint 的 `DEFAULT_UNDO_STACK_SIZE`(40)。
+//! 本应用每笔新建一份 [`BrushState`]（相当于一次干净的笔画开局），
+//! 这一点与 MyPaint 的"一支持久笔刷 + `new_stroke` 复位"有个已知差异，
+//! 见《MyPaint源码逐项比对报告.md》第九节。
 
 use std::sync::{Arc, Mutex};
 
@@ -23,7 +34,7 @@ use eframe::egui;
 use pigment_engine::brushlib::NUM_BRUSHKEYS;
 use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::{Brush, BrushSetting, BrushState};
-use pigment_surface::PigmentSurface;
+use pigment_engine::{Brushwork, CommandUpdate, Document, StrokeEvent};
 
 use crate::brushes::BrushPanel;
 use crate::color::{self, ColorHistory};
@@ -91,7 +102,8 @@ fn color_swatch(ui: &mut egui::Ui, hsv: [f32; 3], selected: bool, tip: &str) -> 
 }
 
 pub struct PigmentApp {
-    surface: PigmentSurface,
+    /// 文档模型（画布表面 + 撤销栈），对应 MyPaint 的 `app.doc.model`。
+    doc: Document,
     // ---- 笔刷 ----
     brushes: BrushPanel,
     editor: BrushEditor,
@@ -99,6 +111,9 @@ pub struct PigmentApp {
     base_brush: Brush,
     /// 实际作画的笔刷（base + 覆盖）。
     brush: Brush,
+    /// 当前笔刷的 MyPaint 展示名（`BrushInfo` 的 `parent_brush_name`）：
+    /// 笔画事件流要记它，命令的展示名由它生成（`lib/command.py:331`）。
+    brush_name: String,
     /// 半径覆盖（按 `[`/`]` 才产生；换笔刷时清空，回到笔刷自带尺寸）。
     radius_override: Option<f32>,
     /// 橡皮覆盖（`E`）。
@@ -114,10 +129,17 @@ pub struct PigmentApp {
     brushkeys: [Option<BrushKeySlot>; NUM_BRUSHKEYS],
     /// 恢复槽位时是否连颜色一起还原（MyPaint 偏好 `misc.context_restores_color`，默认开）。
     context_restores_color: bool,
+    /// 笔刷编辑器「实时更新最近一笔」（`gui/brusheditor.py` 的 live update）：
+    /// 开着时改笔刷设置就用新笔重绘上一笔
+    /// （`CommandStack::update_last_command`）。
+    live_update: bool,
     /// 顶栏临时状态文字（带时间戳，2.5 秒后消失）。
     status: Option<(String, f64)>,
     // ---- 交互与渲染 ----
-    stroke: Option<BrushState>,
+    /// 正在绘制时的引擎状态（每次起笔新建，落笔丢弃）。
+    stroke_state: Option<BrushState>,
+    /// 正在记录的作画命令（`gui/mode.py` 的 `__active_brushwork`）。
+    brushwork: Option<Brushwork>,
     view: View,
     renderer: Arc<Mutex<TileRenderer>>,
     /// 下一帧强制清空显存缓存并全量重传（诊断键 F1）。
@@ -145,12 +167,17 @@ impl PigmentApp {
 
         let color_history = ColorHistory::new();
         let brushkeys = seed_brushkeys(&brushes);
+        let brush_name = brushes
+            .selected_entry()
+            .map(|e| e.mypaint_name())
+            .unwrap_or_else(|| "Unknown Brush".to_string());
         let mut app = Self {
-            surface: PigmentSurface::new(),
+            doc: Document::new(),
             brushes,
             editor: BrushEditor::new(),
             base_brush,
             brush: Brush::new(),
+            brush_name,
             radius_override: None,
             eraser: false,
             paint_override: None,
@@ -158,8 +185,10 @@ impl PigmentApp {
             color_history,
             brushkeys,
             context_restores_color: true,
+            live_update: false,
             status: None,
-            stroke: None,
+            stroke_state: None,
+            brushwork: None,
             view: View::default(),
             renderer: Arc::new(Mutex::new(renderer)),
             force_resync: false,
@@ -205,6 +234,9 @@ impl PigmentApp {
             }
             Err(e) => eprintln!("笔刷加载失败: {e}"),
         }
+        if let Some(e) = self.brushes.selected_entry() {
+            self.brush_name = e.mypaint_name();
+        }
         self.derive_active();
     }
 
@@ -223,6 +255,107 @@ impl PigmentApp {
 
     fn set_status(&mut self, msg: String, now: f64) {
         self.status = Some((msg, now + STATUS_TTL));
+    }
+
+    // ---- 笔画生命周期 ----
+
+    /// 组装一个笔画事件。
+    ///
+    /// 参数表与 `gui/freehand.py:601-611` 一致；压力/倾角的钳位对齐它在
+    /// `stroke_to` 之前的 `clamp()`。我们还没有倾角、视图旋转与笔杆旋转
+    /// 输入（数位板属 M6），这三项填 0。
+    fn stroke_event(&self, x: f32, y: f32, pressure: f32, dtime: f64) -> StrokeEvent {
+        StrokeEvent::new(
+            dtime,
+            x,
+            y,
+            pressure.clamp(0.0, 1.0),
+            0.0,
+            0.0,
+            self.view.zoom, // viewzoom ← MyPaint 的 tdw.scale
+            0.0,
+            0.0,
+        )
+    }
+
+    /// 把一个事件喂给当前作画命令：记录事件流 + 落到画布。
+    fn paint_event(&mut self, ev: StrokeEvent) {
+        let (Some(mut bw), Some(mut st)) = (self.brushwork.take(), self.stroke_state.take()) else {
+            return;
+        };
+        bw.stroke_to(
+            self.doc.surface_mut(),
+            &self.brush,
+            &self.brush_name,
+            &mut st,
+            ev,
+        );
+        self.brushwork = Some(bw);
+        self.stroke_state = Some(st);
+    }
+
+    /// 落笔：收尾并把这段作画提交给撤销栈
+    /// （`gui/mode.py:766-768` 的 `brushwork_commit`）。
+    fn commit_stroke(&mut self) {
+        let (Some(mut bw), Some(st)) = (self.brushwork.take(), self.stroke_state.take()) else {
+            self.brushwork = None;
+            self.stroke_state = None;
+            return;
+        };
+        // 没画到东西的命令直接丢弃（`if changed: model.do(cmd)`）
+        if bw.stop_recording(self.doc.surface_mut(), &st, false) {
+            self.doc.do_brushwork(bw);
+        }
+    }
+
+    /// 把在途作画收尾（撤销/重做前的清账，对应 `Document.sync_pending_changes()`）。
+    fn flush_pending_stroke(&mut self) {
+        if self.brushwork.is_some() {
+            self.commit_stroke();
+        }
+    }
+
+    // ---- 撤销 / 重做 ----
+
+    /// 撤销（`gui/document.py:552` 的 `undo_cb`）。
+    fn undo(&mut self, now: f64) {
+        self.flush_pending_stroke();
+        match self.doc.undo() {
+            // 文案对齐 `gui/document.py:192` 的 `UNDO_CMD = _("Undo %s")`
+            Some(name) => self.set_status(format!("撤销：{name}"), now),
+            None => self.set_status("没有可撤销的操作".to_string(), now),
+        }
+    }
+
+    /// 重做（`gui/document.py:558` 的 `redo_cb`）。
+    fn redo(&mut self, now: f64) {
+        self.flush_pending_stroke();
+        match self.doc.redo() {
+            Some(name) => self.set_status(format!("重做：{name}"), now),
+            None => self.set_status("没有可重做的操作".to_string(), now),
+        }
+    }
+
+    /// 笔刷编辑器的 Live Update：用当前笔刷重绘上一笔
+    /// （`gui/brusheditor.py:1135` 的 `_live_update_idle_cb`）。
+    fn apply_live_update(&mut self) {
+        if self.brushwork.is_some() {
+            // 正在画的一笔不是"上一笔"，且它还没收尾（`sshot_after` 未取）
+            // → 交给下一次编辑动作。照搬源码的 `get_last_command()` 语义。
+            return;
+        }
+        let brush = self.brush.clone();
+        let name = self.brush_name.clone();
+        let updated = self.doc.update_last_command(&CommandUpdate::Brush {
+            brush: &brush,
+            name: &name,
+        });
+        if updated.is_none() {
+            // 没有可更新的作画命令（或笔刷设置无法序列化）
+            return;
+        }
+        // 重绘会改写 surface 内容，显存按 revision 自愈式重传
+        self.stroke_dirty = true;
     }
 
     /// 恢复笔刷快捷键槽位 —— 对齐 `document.context_cb` 的非 store 分支：
@@ -280,43 +413,81 @@ impl PigmentApp {
             egui::Key::Num8,
             egui::Key::Num9,
         ];
-        let (restore, store, smaller, larger, eraser, paint, resync, dump, prev, next, tab, f11) =
-            ctx.input(|i| {
-                let (mut restore, mut store) = (None, None);
-                for (digit, key) in DIGITS.iter().enumerate() {
-                    if !i.key_pressed(*key) {
-                        continue;
-                    }
-                    if i.modifiers.ctrl {
-                        store = Some(digit);
-                    } else if !i.modifiers.alt && !i.modifiers.command {
-                        restore = Some(digit);
-                    }
+        let (
+            restore,
+            store,
+            smaller,
+            larger,
+            eraser,
+            paint,
+            resync,
+            dump,
+            prev,
+            next,
+            tab,
+            f11,
+            undo,
+            redo,
+            now,
+        ) = ctx.input(|i| {
+            let (mut restore, mut store) = (None, None);
+            for (digit, key) in DIGITS.iter().enumerate() {
+                if !i.key_pressed(*key) {
+                    continue;
                 }
-                let now = i.time;
-                (
-                    restore.map(|d| (d, now)),
-                    store.map(|d| (d, now)),
-                    i.key_pressed(egui::Key::OpenBracket),
-                    i.key_pressed(egui::Key::CloseBracket),
-                    i.key_pressed(egui::Key::E),
-                    i.key_pressed(egui::Key::P),
-                    i.key_pressed(egui::Key::F1),
-                    i.key_pressed(egui::Key::F2),
-                    i.key_pressed(egui::Key::Comma),
-                    i.key_pressed(egui::Key::Period),
-                    i.key_pressed(egui::Key::Tab),
-                    i.key_pressed(egui::Key::F11),
-                )
-            });
+                if i.modifiers.ctrl {
+                    store = Some(digit);
+                } else if !i.modifiers.alt && !i.modifiers.command {
+                    restore = Some(digit);
+                }
+            }
+            let now = i.time;
+            // 撤销/重做键位（`gui/resources.xml:217-231` + `gui/document.py:527-530`）：
+            //   Ctrl+Z           → 撤销
+            //   Ctrl+Shift+Z     → 重做；Ctrl+Y → 重做
+            //   z / y（无修饰）  → MyPaint 老式键位
+            let ctrl = i.modifiers.ctrl || i.modifiers.command;
+            let shift = i.modifiers.shift;
+            let no_mod = !ctrl && !shift && !i.modifiers.alt;
+            let undo = (ctrl && !shift && i.key_pressed(egui::Key::Z))
+                || (no_mod && i.key_pressed(egui::Key::Z));
+            let redo = (ctrl && i.key_pressed(egui::Key::Y))
+                || (ctrl && shift && i.key_pressed(egui::Key::Z))
+                || (no_mod && i.key_pressed(egui::Key::Y));
+            (
+                restore.map(|d| (d, now)),
+                store.map(|d| (d, now)),
+                i.key_pressed(egui::Key::OpenBracket),
+                i.key_pressed(egui::Key::CloseBracket),
+                i.key_pressed(egui::Key::E),
+                i.key_pressed(egui::Key::P),
+                i.key_pressed(egui::Key::F1),
+                i.key_pressed(egui::Key::F2),
+                i.key_pressed(egui::Key::Comma),
+                i.key_pressed(egui::Key::Period),
+                i.key_pressed(egui::Key::Tab),
+                i.key_pressed(egui::Key::F11),
+                undo,
+                redo,
+                now,
+            )
+        });
 
+        if undo {
+            self.undo(now);
+            ctx.request_repaint();
+        }
+        if redo {
+            self.redo(now);
+            ctx.request_repaint();
+        }
         if resync {
             // 诊断：丢弃全部显存 tile 并重传。若画面恢复正常 → 属显存同步问题
             self.force_resync = true;
         }
         if dump {
             // 诊断：导出 CPU 侧画布为 PNG，与屏幕画面对照可区分「CPU 无内容」与「显存没同步」
-            match crate::dump::dump_surface_png(&self.surface) {
+            match crate::dump::dump_surface_png(self.doc.surface()) {
                 Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
                 Err(e) => eprintln!("导出失败: {e}"),
             }
@@ -371,6 +542,35 @@ impl PigmentApp {
                     self.show_panels = !self.show_panels;
                 }
                 ui.separator();
+                // ---- 撤销 / 重做（MyPaint 工具条的 toolbar-edit.xml）----
+                // 文案与置灰规则照搬 `gui/document.py:582-591` 的
+                // `_update_undo_redo`：有命令时显示 "Undo <命令名>"，否则 "Undo"。
+                let now_tb = ui.input(|i| i.time);
+                let undo_label = match self.doc.get_last_command() {
+                    Some(cmd) => format!("↶ 撤销 {}", cmd.display_name()),
+                    None => "↶ 撤销".to_string(),
+                };
+                let redo_label = match self.doc.command_stack.next_redo_name() {
+                    Some(name) => format!("↷ 重做 {name}"),
+                    None => "↷ 重做".to_string(),
+                };
+                let can_undo = self.doc.command_stack.undo_len() > 0;
+                let can_redo = self.doc.command_stack.redo_len() > 0;
+                if ui
+                    .add_enabled(can_undo, egui::Button::new(undo_label))
+                    .on_hover_text("撤销（Ctrl+Z / z）")
+                    .clicked()
+                {
+                    self.undo(now_tb);
+                }
+                if ui
+                    .add_enabled(can_redo, egui::Button::new(redo_label))
+                    .on_hover_text("重做（Ctrl+Shift+Z / Ctrl+Y / y）")
+                    .clicked()
+                {
+                    self.redo(now_tb);
+                }
+                ui.separator();
                 // ---- 颜色历史（`ColorManager._hist`：最旧 → 最新）----
                 let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
                 let n = history.len();
@@ -410,8 +610,8 @@ impl PigmentApp {
                 let resident = self.renderer.lock().unwrap().resident();
                 ui.label(format!(
                     "tiles {} · {:.1} MiB · 显存 {resident}",
-                    self.surface.tile_count(),
-                    self.surface.memory_bytes() as f64 / 1048576.0
+                    self.doc.surface().tile_count(),
+                    self.doc.surface().memory_bytes() as f64 / 1048576.0
                 ));
                 // MyPaint 的底栏有 128px 笔刷指示按钮；我们先把「笔刷名 + 描述」
                 // 与快捷键槽位反馈放在同一处（GTK 底栏未移植前的权宜位置）
@@ -579,6 +779,14 @@ impl PigmentApp {
                             .id_salt("editor")
                             .default_open(true)
                             .show(ui, |ui| {
+                                // 「实时更新最近一笔」= MyPaint 笔刷编辑器的 live_update
+                                // （`gui/brusheditor.py:1119-1139`）：改设置就用新笔
+                                // 重绘上一笔，靠的是 `Brushwork.update()`
+                                ui.checkbox(&mut self.live_update, "实时更新最近一笔")
+                                    .on_hover_text(
+                                        "开着时改笔刷设置会用新笔重绘上一笔\n\
+                                         （MyPaint 笔刷编辑器的 Live Update）",
+                                    );
                                 // 编辑器顶部图标 = 当前笔刷的预览图（MyPaint `brusheditor.py:786`）
                                 let sel = self.brushes.selected;
                                 let icon = self.brushes.icon(ui.ctx(), sel);
@@ -586,6 +794,9 @@ impl PigmentApp {
                                     self.editor.show(ui, &mut self.base_brush, Some(&icon));
                                 if edited {
                                     self.derive_active();
+                                    if self.live_update {
+                                        self.apply_live_update();
+                                    }
                                 }
                             });
 
@@ -637,33 +848,33 @@ impl PigmentApp {
         }
 
         // ---- 绘制 ----
+        // 一次拖拽 = 一条 Brushwork（`gui/mode.py:722` 的 brushwork_begin/commit）：
+        // 起笔取画前快照，落笔取画后快照并提交给撤销栈。
         let space_down = ui.input(|i| i.key_down(egui::Key::Space));
         if !space_down && response.drag_started_by(egui::PointerButton::Primary) {
-            self.stroke = Some(BrushState::default());
+            // 本应用的笔画开局：新建一份引擎状态（见文件头「撤销模型」注释）
+            self.stroke_state = Some(BrushState::default());
+            self.brushwork = Some(Brushwork::new());
             if let Some(pos) = response.interact_pointer_pos() {
                 let local = pos - rect.min;
                 let [wx, wy] = self.view.screen_to_world(local.x, local.y);
-                let mut st = self.stroke.take().unwrap();
-                self.brush
-                    .stroke_to(&mut st, &mut self.surface, wx, wy, 1.0, 0.0, 0.0, 0.01);
-                self.stroke = Some(st);
-                self.stroke_dirty = true;
+                let ev = self.stroke_event(wx, wy, 1.0, 0.01);
+                self.paint_event(ev);
             }
+            self.stroke_dirty = true;
         }
         if !space_down && response.dragged_by(egui::PointerButton::Primary) {
-            if let (Some(pos), Some(mut st)) = (response.interact_pointer_pos(), self.stroke.take())
-            {
+            if let Some(pos) = response.interact_pointer_pos() {
                 let local = pos - rect.min;
                 let [wx, wy] = self.view.screen_to_world(local.x, local.y);
                 let dt = ui.input(|i| i.stable_dt).clamp(0.001, 0.05) as f64;
-                self.brush
-                    .stroke_to(&mut st, &mut self.surface, wx, wy, 1.0, 0.0, 0.0, dt);
-                self.stroke = Some(st);
-                self.stroke_dirty = true;
+                let ev = self.stroke_event(wx, wy, 1.0, dt);
+                self.paint_event(ev);
             }
+            self.stroke_dirty = true;
         }
         if response.drag_stopped_by(egui::PointerButton::Primary) {
-            self.stroke = None;
+            self.commit_stroke();
             // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
             // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
             if !self.eraser {
@@ -704,20 +915,20 @@ impl PigmentApp {
         // ---- 自愈式增量同步：比对 CPU revision 与显存已上传 revision ----
         // 判据是状态而非事件流水，所以本帧的决定可被安全丢弃后重算，不会丢上传。
         let mut uploads: Vec<TileUpload> = Vec::new();
-        {
+        let evict: Vec<(i32, i32)> = {
             let mut renderer = self.renderer.lock().unwrap();
             if self.force_resync {
                 renderer.invalidate_all();
                 self.force_resync = false;
             }
             let plan = crate::gpu::plan_uploads(
-                &self.surface,
+                self.doc.surface(),
                 |c| renderer.uploaded_rev(c),
                 &visible,
                 crate::gpu::MAX_UPLOADS_PER_FRAME,
             );
             for coord in plan {
-                let Some(t) = self.surface.tile_entry(coord.0, coord.1) else {
+                let Some(t) = self.doc.surface().tile_entry(coord.0, coord.1) else {
                     continue;
                 };
                 uploads.push(TileUpload {
@@ -726,7 +937,14 @@ impl PigmentApp {
                     pixels: convert::tile_to_rgba8(t.pixels(), convert::CANVAS_BG),
                 });
             }
-        }
+            // 撤销会把画布退回较早状态：那时"多出来"的 tile 已从 CPU 消失，
+            // 但显存里还留着旧内容，必须剔除，否则画面残留撤销不掉的笔迹。
+            crate::gpu::plan_evictions(
+                self.doc.surface(),
+                |c| renderer.uploaded_rev(c).is_some(),
+                &visible,
+            )
+        };
         self.pending_uploads = uploads.len();
 
         // ---- 视图矩阵：world px → 全窗口裁剪空间 ----
@@ -749,6 +967,7 @@ impl PigmentApp {
                     renderer: Arc::clone(&self.renderer),
                     view_matrix,
                     uploads,
+                    evict,
                     visible,
                 },
             ));
@@ -774,7 +993,7 @@ impl PigmentApp {
         // 绘制中持续重绘（dab 沿笔画插值）；上传有欠账（命中每帧上限）时也要继续，
         // 否则剩下的 tile 会一直停在旧状态
         let backlog = self.pending_uploads >= crate::gpu::MAX_UPLOADS_PER_FRAME;
-        if self.stroke.is_some() || self.stroke_dirty || backlog {
+        if self.stroke_state.is_some() || self.stroke_dirty || backlog {
             self.stroke_dirty = false;
             ui.ctx().request_repaint();
         }

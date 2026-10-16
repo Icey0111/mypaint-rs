@@ -13,18 +13,42 @@
 //!    淘汰策略（M2 的 LRU 显存驻留）提供依据。
 //! 3. **原子脏区**：`begin_atomic` / `end_atomic` 收集一次笔画内被修改的
 //!    tile 列表（与 libmypaint 的 `tile_request` 语义对齐）。
+//! 4. **写时复制快照**：`save_snapshot` / `load_snapshot` 是 M4 撤销体系的
+//!    基石（见下）。
+//!
+//! # 快照（照搬 MyPaint `lib/tiledsurface.py:461-494`）
+//!
+//! MyPaint 的做法是：`save_snapshot()` 把全部 tile 标记为 `readonly` 并
+//! **浅拷贝** tiledict（共享 tile 对象），之后任何写借出遇到 `readonly`
+//! 的 tile 就先复制一份再写——即经典的 copy-on-write；`load_snapshot()`
+//! 把 tiledict 换回快照那份，靠**对象同一性**的对称差算出变化的 tile 并
+//! 通知观察者（未变的 tile 对象被两个 dict 共享，天然"无变化"）。
+//!
+//! Rust 侧用 `Arc<TilePixels>` + [`Arc::make_mut`] 表达同一件事：
+//!
+//! - `save_snapshot` 浅拷贝一张坐标→`Arc` 的表（不复制像素）；
+//! - 写借出时 `Arc::make_mut` 在**引用计数 > 1**（即与某个快照共享）时
+//!   自动复制像素、脱离共享，计数为 1 时零开销——对应 MyPaint 的
+//!   `readonly` 分支；
+//! - `load_snapshot` 用 `Arc::ptr_eq` 判"对象是否同一个"，等价于 MyPaint
+//!   的 `set(tiledict.items())` 对称差。
+//!
+//! 因此快照成本与撤销内存都只落在「真正被改过的 tile」上。
 //!
 //! 扩展点（暂未启用）：tooth 纹理沉积（M6 超越点）将在本 crate 覆盖
 //! `draw_dab` 时注入高度图系数；届时以 parity 测试的对照快照做回归门禁。
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
 use hokusai::TiledSurface;
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
+///
+/// `pixels` 是 `Arc`：与快照共享时写借出自动复制（见模块文档的写时复制一节）。
 pub struct Tile {
-    pixels: Box<TilePixels>,
+    pixels: Arc<TilePixels>,
     /// 内容版本号：每次「写意图」借出（`tile_request_start`）时递增。
     /// 保守策略——借出即视为可能脏，宁可多传不可漏传。
     revision: u64,
@@ -33,6 +57,14 @@ pub struct Tile {
 }
 
 impl Tile {
+    fn empty() -> Self {
+        Self {
+            pixels: Arc::new(*empty_tile()),
+            revision: 0,
+            last_touched: 0,
+        }
+    }
+
     #[inline]
     pub fn pixels(&self) -> &TilePixels {
         &self.pixels
@@ -48,6 +80,66 @@ impl Tile {
     #[inline]
     pub fn last_touched(&self) -> u64 {
         self.last_touched
+    }
+}
+
+/// 表面快照（不可变）：坐标 → 共享像素。
+///
+/// 只在 Undo/Redo（`lib/command.py:Brushwork`）与表面复制中使用，
+/// 对应 MyPaint 的 `_SurfaceSnapshot`（`lib/tiledsurface.py:94`）。
+#[derive(Clone, Default)]
+pub struct SurfaceSnapshot {
+    tiles: HashMap<(i32, i32), Arc<TilePixels>>,
+}
+
+impl SurfaceSnapshot {
+    /// 快照里的 tile 数。
+    #[inline]
+    pub fn tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// 快照像素数据的内存占用（只统计**独占**的 tile，共享部分不计）。
+    pub fn memory_bytes(&self) -> usize {
+        self.tiles
+            .values()
+            .filter(|px| Arc::strong_count(px) == 1)
+            .count()
+            * TILE_SIZE
+            * TILE_SIZE
+            * 4
+            * 2
+    }
+
+    /// 只读读取某个 tile（不存在则 `None`）。
+    #[inline]
+    pub fn tile(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
+        self.tiles.get(&(tx, ty)).map(|px| &**px)
+    }
+
+    /// 遍历快照持有的 tile 坐标。
+    #[inline]
+    pub fn coords(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
+        self.tiles.keys().copied()
+    }
+}
+
+/// `load_snapshot` 的结果：哪些 tile 需要重新上传、哪些需要从显存剔除。
+///
+/// MyPaint 用同一个对称差去 `notify_observers(*bbox)`（`tiledsurface.py:492`）；
+/// 我们的渲染层是"显存镜像"模型，所以除了脏 tile 还要知道**被删掉**的 tile，
+/// 否则撤销到较早状态后，显存里会残留已经不存在的 tile（画布漏出旧内容）。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SnapshotDiff {
+    /// 内容变化（含新增）的 tile，需要重新上传。
+    pub changed: Vec<(i32, i32)>,
+    /// 快照中不存在、需从显存剔除的 tile。
+    pub removed: Vec<(i32, i32)>,
+}
+
+impl SnapshotDiff {
+    pub fn is_empty(&self) -> bool {
+        self.changed.is_empty() && self.removed.is_empty()
     }
 }
 
@@ -117,6 +209,81 @@ impl PigmentSurface {
     pub fn clock(&self) -> u64 {
         self.clock
     }
+
+    // ---- 快照（照搬 `lib/tiledsurface.py:461-494`）----
+
+    /// 创建并返回表面快照（`tiledsurface.py:461`）。
+    ///
+    /// 浅拷贝：像素仍与表面共享（`Arc` 计数 +1），只有之后的**写借出**
+    /// 才会真正复制被碰到的那几个 tile。等价于 MyPaint 的
+    /// `for t in itervalues(self.tiledict): t.readonly = True` + dict 浅拷贝。
+    pub fn save_snapshot(&self) -> SurfaceSnapshot {
+        SurfaceSnapshot {
+            tiles: self
+                .tiles
+                .iter()
+                .map(|(&coord, t)| (coord, Arc::clone(&t.pixels)))
+                .collect(),
+        }
+    }
+
+    /// 加载快照，替换内部 tiledict（`tiledsurface.py:475`）。
+    ///
+    /// 返回需要同步到显存的差异；内容未变的 tile 会**保留原 `Tile`**
+    /// （revision 不变 → 显存无需重传），变化的 tile 拿到新 revision。
+    pub fn load_snapshot(&mut self, sshot: &SurfaceSnapshot) -> SnapshotDiff {
+        let mut diff = SnapshotDiff::default();
+        // 与 MyPaint 的 `if d == self.tiledict: return` 同理：同一张快照
+        // 重复加载（典型场景：redo 后再 undo）不该产生任何重传。
+        if self.tiles.len() == sshot.tiles.len()
+            && self
+                .tiles
+                .iter()
+                .all(|(c, t)| sshot.tiles.get(c).is_some_and(|px| Arc::ptr_eq(&t.pixels, px)))
+        {
+            return diff;
+        }
+
+        self.clock += 1;
+        let clock = self.clock;
+        let old = std::mem::take(&mut self.tiles);
+        let mut tiles = HashMap::with_capacity(sshot.tiles.len());
+        for (&coord, px) in &sshot.tiles {
+            let tile = match old.get(&coord) {
+                // 同一个像素对象 → 内容未变（MyPaint 的集合对称差不含它）
+                Some(t) if Arc::ptr_eq(&t.pixels, px) => Tile {
+                    pixels: Arc::clone(px),
+                    revision: t.revision,
+                    last_touched: clock,
+                },
+                _ => {
+                    diff.changed.push(coord);
+                    Tile {
+                        pixels: Arc::clone(px),
+                        revision: clock,
+                        last_touched: clock,
+                    }
+                }
+            };
+            tiles.insert(coord, tile);
+        }
+        // 快照里没有、当前却有的 tile：撤销到较早状态时被"删掉"的内容
+        diff.removed.extend(
+            old.keys()
+                .filter(|c| !sshot.tiles.contains_key(c))
+                .copied(),
+        );
+        self.tiles = tiles;
+        diff.changed.sort_unstable();
+        diff.removed.sort_unstable();
+        diff
+    }
+
+    /// 用另一个表面的内容替换自身（`tiledsurface.py:498` 的 `load_from_surface`）。
+    pub fn load_from_surface(&mut self, other: &PigmentSurface) -> SnapshotDiff {
+        let sshot = other.save_snapshot();
+        self.load_snapshot(&sshot)
+    }
 }
 
 impl TiledSurface for PigmentSurface {
@@ -126,14 +293,13 @@ impl TiledSurface for PigmentSurface {
         if self.in_atomic {
             self.dirty.insert((tx, ty));
         }
-        let tile = self.tiles.entry((tx, ty)).or_insert_with(|| Tile {
-            pixels: empty_tile(),
-            revision: 0,
-            last_touched: 0,
-        });
+        let tile = self.tiles.entry((tx, ty)).or_insert_with(Tile::empty);
         tile.revision = clock;
         tile.last_touched = clock;
-        &mut tile.pixels
+        // 写时复制：与快照共享像素（引用计数 > 1）时先复制一份再写，
+        // 对应 MyPaint `tile_request` 里遇到 `tile.readonly` 的复制分支
+        // （`tiledsurface.py:280-291`）。独占时零开销。
+        Arc::make_mut(&mut tile.pixels)
     }
 
     fn tile_request_end(&mut self, _tx: i32, _ty: i32) {}
@@ -159,6 +325,16 @@ impl TiledSurface for PigmentSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn write(surface: &mut PigmentSurface, tx: i32, ty: i32, v: u16) {
+        let t = surface.tile_request_start(tx, ty);
+        t[0][0] = [v, v, v, 1 << 15];
+        surface.tile_request_end(tx, ty);
+    }
+
+    fn pixel(surface: &PigmentSurface, tx: i32, ty: i32) -> Option<[u16; 4]> {
+        surface.tile(tx, ty).map(|t| t[0][0])
+    }
 
     #[test]
     fn lends_records_dirty_and_stamps_metadata() {
@@ -203,5 +379,146 @@ mod tests {
         // 重复借出仍递增（保守脏策略）
         let r1 = s.tile_entry(1, 0).unwrap().revision();
         assert!(r1 < s.tile_entry(0, 0).unwrap().revision());
+    }
+
+    /// 快照的核心契约：**之后的写入不得污染快照**（写时复制）。
+    #[test]
+    fn snapshot_survives_later_writes() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 111);
+        let sshot = s.save_snapshot();
+
+        write(&mut s, 0, 0, 222);
+        assert_eq!(pixel(&s, 0, 0).unwrap()[0], 222, "表面应写入新值");
+        assert_eq!(
+            sshot.tile(0, 0).unwrap()[0][0][0],
+            111,
+            "快照必须保留旧值（写时复制）"
+        );
+
+        // 未触碰的 tile 不复制：像素对象仍与快照同一个
+        write(&mut s, 5, 5, 9);
+        let s2 = s.save_snapshot();
+        assert!(s2.tile(0, 0).is_some() && sshot.tile(0, 0).is_some());
+
+        // 回滚
+        s.load_snapshot(&sshot);
+        assert_eq!(pixel(&s, 0, 0).unwrap()[0], 111, "回滚应恢复旧值");
+    }
+
+    /// 多张快照共存（undo + redo 两份状态）各自独立。
+    #[test]
+    fn multiple_snapshots_coexist() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 1);
+        let a = s.save_snapshot();
+        write(&mut s, 0, 0, 2);
+        let b = s.save_snapshot();
+        write(&mut s, 0, 0, 3);
+
+        s.load_snapshot(&b);
+        assert_eq!(pixel(&s, 0, 0).unwrap()[0], 2);
+        s.load_snapshot(&a);
+        assert_eq!(pixel(&s, 0, 0).unwrap()[0], 1);
+        s.load_snapshot(&b);
+        assert_eq!(pixel(&s, 0, 0).unwrap()[0], 2, "两次加载互不影响");
+    }
+
+    /// 加载快照要报告差异：变化的 tile 需重传，缺席的 tile 需从显存剔除。
+    #[test]
+    fn load_snapshot_reports_changed_and_removed() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 1);
+        let sshot = s.save_snapshot();
+
+        write(&mut s, 0, 0, 2); // 变化
+        write(&mut s, 9, 9, 3); // 新增（快照里没有）
+
+        let diff = s.load_snapshot(&sshot);
+        assert_eq!(diff.changed, vec![(0, 0)], "恢复后 (0,0) 内容变了");
+        assert_eq!(diff.removed, vec![(9, 9)], "(9,9) 不在快照里 → 需剔除");
+    }
+
+    /// 内容未变的 tile 保留原 revision：显存无需重传。
+    #[test]
+    fn unchanged_tiles_keep_revision() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 1);
+        write(&mut s, 1, 0, 7);
+        let sshot = s.save_snapshot();
+        let before = s.tile_entry(0, 0).unwrap().revision();
+
+        // 只改 (1,0)，再撤销 —— (0,0) 两个状态完全一致
+        write(&mut s, 1, 0, 8);
+        let diff = s.load_snapshot(&sshot);
+        assert_eq!(diff.changed, vec![(1, 0)]);
+        assert_eq!(
+            s.tile_entry(0, 0).unwrap().revision(),
+            before,
+            "未变 tile 的 revision 不该动，否则会白白重传"
+        );
+        assert!(s.tile_entry(1, 0).unwrap().revision() > before);
+    }
+
+    /// 重复加载同一张快照是幂等的（redo → undo → redo 的老路径）。
+    #[test]
+    fn reloading_same_snapshot_is_idempotent() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 1);
+        let sshot = s.save_snapshot();
+        let diff = s.load_snapshot(&sshot);
+        // 首次加载：状态本来就一致（像素对象同一个）→ 无需任何同步
+        assert!(diff.is_empty());
+        let rev = s.tile_entry(0, 0).unwrap().revision();
+        assert!(s.load_snapshot(&sshot).is_empty());
+        assert_eq!(s.tile_entry(0, 0).unwrap().revision(), rev, "revision 不动");
+    }
+
+    /// 写时复制只在共享时发生：独占 tile 的像素对象原地复用。
+    #[test]
+    fn copy_on_write_only_when_shared() {
+        let mut s = PigmentSurface::new();
+        write(&mut s, 0, 0, 1);
+        let lone = Arc::as_ptr(&s.tiles[&(0, 0)].pixels);
+        write(&mut s, 0, 0, 2);
+        assert_eq!(
+            Arc::as_ptr(&s.tiles[&(0, 0)].pixels),
+            lone,
+            "独占写入不该复制像素"
+        );
+
+        let _sshot = s.save_snapshot();
+        let shared = Arc::as_ptr(&s.tiles[&(0, 0)].pixels);
+        write(&mut s, 0, 0, 3);
+        assert_ne!(
+            Arc::as_ptr(&s.tiles[&(0, 0)].pixels),
+            shared,
+            "与快照共享时必须复制像素"
+        );
+    }
+
+    /// 空表面快照 → 恢复后应把画布清空（document.clear 与 redo 的路径）。
+    #[test]
+    fn loading_empty_snapshot_clears_surface() {
+        let mut s = PigmentSurface::new();
+        let empty = s.save_snapshot();
+        write(&mut s, 0, 0, 1);
+        write(&mut s, 1, 1, 1);
+        let diff = s.load_snapshot(&empty);
+        assert_eq!(diff.removed, vec![(0, 0), (1, 1)]);
+        assert_eq!(s.tile_count(), 0);
+    }
+
+    #[test]
+    fn load_from_surface_copies_content() {
+        let mut a = PigmentSurface::new();
+        write(&mut a, 3, 4, 5);
+        let mut b = PigmentSurface::new();
+        let diff = b.load_from_surface(&a);
+        assert_eq!(b.tile(3, 4).unwrap()[0][0][0], 5);
+        assert_eq!(diff.changed, vec![(3, 4)]);
+        // 复制是写时复制语义：改 a 不影响 b
+        write(&mut a, 3, 4, 6);
+        assert_eq!(b.tile(3, 4).unwrap()[0][0][0], 5);
     }
 }
