@@ -261,6 +261,11 @@ impl PigmentApp {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context) {
+        // GTK 的 accelerator 在文本输入框获得焦点时不会触发（MyPaint 的笔刷搜索框同理），
+        // egui 的 `key_pressed` 不看焦点，所以这里自己补上等价判断。
+        if ctx.text_edit_focused() {
+            return;
+        }
         // MyPaint `_init_context_actions`（gui/document.py:468）：
         //   数字键    → Context0N，accel "N"            → 恢复槽位 N
         //   Ctrl+数字 → Context0Ns，accel "<control>N"  → 存入槽位 N
