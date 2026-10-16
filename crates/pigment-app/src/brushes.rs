@@ -139,6 +139,11 @@ pub struct BrushPanel {
     thumbnails: HashMap<usize, egui::TextureHandle>,
     /// 面板头图标缓存：`(笔刷下标, 边长)` → 纹理。
     header_icons: HashMap<(usize, usize), egui::TextureHandle>,
+    /// **原始尺寸**预览图缓存：笔刷下标 → 128×128 纹理。
+    ///
+    /// 底栏笔刷指示器要用：`footer.py:_draw_cb` 自己算缩放与对齐
+    /// （等比缩放到 `max(aw,ah)-2`、顶部对齐），所以取图时不能把比例定死。
+    previews: HashMap<usize, egui::TextureHandle>,
     /// 面板内容的 library 下标列表（`BrushList.brushes` 的下标形式）。
     visible: Vec<usize>,
     /// 与 [`Self::visible`] 一一对应的 tooltip 文本（`managedbrush_namefunc` 的结果）。
@@ -166,6 +171,7 @@ impl BrushPanel {
             search: String::new(),
             thumbnails: HashMap::new(),
             header_icons: HashMap::new(),
+            previews: HashMap::new(),
             visible: Vec::new(),
             tooltips: Vec::new(),
         };
@@ -182,6 +188,25 @@ impl BrushPanel {
     /// 供笔刷编辑器顶部复用 —— MyPaint 那里也是直接取 `ManagedBrush.preview`。
     pub fn icon(&mut self, ctx: &egui::Context, idx: usize) -> egui::TextureHandle {
         thumb_for(ctx, &self.library, &mut self.thumbnails, idx)
+    }
+
+    /// 某支笔刷的**原始预览图**纹理（128×128，既不缩放也不合成白底）。
+    ///
+    /// 供底栏笔刷指示器使用 —— MyPaint 那里画的就是 `ManagedBrush.preview`
+    /// 原图（`gui/footer.py:151`），缩放与对齐由指示器自己按 `_draw_cb` 算。
+    pub fn preview(&mut self, ctx: &egui::Context, idx: usize) -> egui::TextureHandle {
+        if let Some(t) = self.previews.get(&idx) {
+            return t.clone();
+        }
+        let (w, h) = (thumb::PREVIEW_W, thumb::PREVIEW_H);
+        let rgba = raw_icon(&self.library, idx, w, h);
+        let tex = ctx.load_texture(
+            format!("preview:{idx}"),
+            icon_image(&rgba, w, h),
+            egui::TextureOptions::LINEAR,
+        );
+        self.previews.insert(idx, tex.clone());
+        tex
     }
 
     /// 解析当前选中笔刷（解析失败极少见，调用方以兜底笔刷处理）。

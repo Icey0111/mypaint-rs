@@ -1,6 +1,8 @@
 //! GPU tile 渲染器：egui PaintCallback 内的自定义 wgpu render pass。
 //!
-//! - 每 tile 一张 64×64 `Rgba8UnormSrgb` 纹理（CPU 侧已完成 fix15→sRGB 合成）
+//! - 每 tile 一张 64×64 纹理（CPU 侧已完成 fix15→EOTF sRGB 合成）；
+//!   纹理的色彩空间跟着渲染目标走，见 [`tile_format`] —— 这里对着一次就
+//!   会让空白 tile 显示成暗方块，把每一笔变成一个个 tile 方格
 //! - LRU 显存驻留：超出容量按 `last_frame` 淘汰最久未用者
 //! - **自愈式增量同步**：每帧对可见 tile 比对「CPU revision vs GPU 已上传
 //!   revision」，不一致才上传。每个 GpuTile 记住自己上传过的 revision，
@@ -101,8 +103,29 @@ pub struct TileRenderer {
     view_bg: wgpu::BindGroup,
     tile_layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    /// tile 纹理的颜色空间 —— 必须与渲染目标匹配，见 [`TileRenderer::tile_format`]。
+    tile_format: wgpu::TextureFormat,
     cache: HashMap<(i32, i32), GpuTile>,
     frame: u64,
+}
+
+/// 依渲染目标选 tile 纹理格式。
+///
+/// CPU 侧 [`crate::convert::tile_to_rgba8`] 交出来的是**显示编码值**
+/// （EOTF 2.2 之后的 8 位），不是线性值。所以纹理格式必须和渲染目标的色彩空间
+/// 一致，否则会多跑一次转换：
+/// - 目标带 sRGB → 纹理也用 sRGB：采样时硬件解码、写出时硬件编码，一来一回抵消；
+/// - 目标不带 sRGB（egui 的 `target_format` 就可能是不带 sRGB 的 `*Unorm`）→ 纹理
+///   也得用 `*Unorm`，否则采样时被解码一次而写出时不编码，画面**整体压暗**。
+///
+/// 后者正是本项目曾经的缺陷：空白 tile 本应与画布底色完全同色，实际却显示成
+/// `237^(2.2) ≈ 216` 的暗方块，让每一笔都露出一个个 tile 方格。
+fn tile_format(target: wgpu::TextureFormat) -> wgpu::TextureFormat {
+    if target.is_srgb() {
+        wgpu::TextureFormat::Rgba8UnormSrgb
+    } else {
+        wgpu::TextureFormat::Rgba8Unorm
+    }
 }
 
 const SHADER: &str = r#"
@@ -259,6 +282,7 @@ impl TileRenderer {
             view_bg,
             tile_layout,
             sampler,
+            tile_format: tile_format(target_format),
             cache: HashMap::new(),
             frame: 0,
         }
@@ -309,7 +333,7 @@ impl TileRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: self.tile_format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -474,6 +498,21 @@ mod tests {
         let t = surface.tile_request_start(tx, ty);
         t[0][0] = [100, 200, 300, 1 << 15];
         surface.tile_request_end(tx, ty);
+    }
+
+    #[test]
+    fn tile_format_follows_target_colorspace() {
+        // 目标带 sRGB → 纹理也带：采样解码、写出编码，一来一回抵消
+        assert_eq!(
+            tile_format(wgpu::TextureFormat::Bgra8UnormSrgb),
+            wgpu::TextureFormat::Rgba8UnormSrgb
+        );
+        // 目标不带 sRGB → 纹理也不能带：CPU 给的是显示编码值，多解码一次
+        // 就会把空白 tile 压成 `237^(2.2)≈216` 的暗方块（曾经的实际缺陷）
+        assert_eq!(
+            tile_format(wgpu::TextureFormat::Bgra8Unorm),
+            wgpu::TextureFormat::Rgba8Unorm
+        );
     }
 
     #[test]

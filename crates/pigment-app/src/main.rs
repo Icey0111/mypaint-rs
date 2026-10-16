@@ -2,6 +2,7 @@
 //!
 //! M2：无限画布 + GPU tile 渲染 + 平移缩放 + 绘制。
 //! M3：.myb 笔刷库（196 支官方包内嵌）+ 笔刷列表 + 笔刷编辑器。
+//! S1：窗口骨架（顶栏 / 工作区 / 底栏三段，照 `gui/mypaint.glade`）。
 
 mod app;
 mod brushes;
@@ -10,6 +11,7 @@ mod convert;
 mod dump;
 mod editor;
 mod gpu;
+mod shell;
 mod thumb;
 mod view;
 

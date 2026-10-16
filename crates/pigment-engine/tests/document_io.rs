@@ -119,16 +119,32 @@ fn assert_pixels_match(a: &pigment_surface::PigmentSurface, b: &pigment_surface:
     }
 }
 
+/// 找一个**能 `import PIL`** 的 Python。
+///
+/// 这条互操作门禁要靠 PIL 解 PNG，所以只判"有 python 可执行文件"是不够的：
+/// 缺 Pillow 的机器上脚本会以 `ModuleNotFoundError` 退出，门禁直接红脸而
+/// 原因与被测代码无关（本机的 `python` 就没装 Pillow，`py` 装了 12.1.1）。
+/// 候选顺序按 Windows 常见情况排；都不可用则整条门禁跳过（而非误报失败）。
+fn python_with_pil() -> Option<&'static str> {
+    static FOUND: std::sync::OnceLock<Option<&'static str>> = std::sync::OnceLock::new();
+    *FOUND.get_or_init(|| {
+        ["python", "python3", "py"].into_iter().find(|cand| {
+            std::process::Command::new(cand)
+                .args(["-c", "import PIL"])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        })
+    })
+}
+
 fn has_python() -> bool {
-    std::process::Command::new("python")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    python_with_pil().is_some()
 }
 
 fn run_python(script: &str) -> Result<String, String> {
-    let out = std::process::Command::new("python")
+    let py = python_with_pil().ok_or_else(|| "本机没有带 PIL 的 python".to_string())?;
+    let out = std::process::Command::new(py)
         .arg("-c")
         .arg(script)
         .output()
