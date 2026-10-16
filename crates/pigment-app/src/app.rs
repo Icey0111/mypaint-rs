@@ -187,6 +187,12 @@ pub struct PigmentApp {
     pub(crate) stroke_dirty: bool,
     pub(crate) show_panels: bool,
     pub(crate) fullscreen: bool,
+    // ---- 工具条（S4）----
+    /// 图标纹理缓存（`shell::toolbars::IconCache`）。
+    pub(crate) icon_cache: crate::shell::toolbars::IconCache,
+    /// toolbar1 的 8 个片段开关（偏好 `ui.toolbar_items`，出厂默认见
+    /// `userconfig.py:76-85`）。持久化属 B6。
+    pub(crate) toolbar_fragments: [bool; 8],
 }
 
 // ---- 文档 I/O ----
@@ -331,6 +337,8 @@ impl PigmentApp {
             stroke_dirty: false,
             show_panels: true,
             fullscreen: false,
+            icon_cache: Default::default(),
+            toolbar_fragments: crate::shell::toolbars::DEFAULT_FRAGMENTS,
         };
         app.derive_active();
         app
@@ -780,6 +788,16 @@ impl PigmentApp {
                 self.run_behavior(b, ctx);
             }
             None => {}
+        }
+    }
+
+    /// 工具条按钮的**按下态**（toggle 语义的动作，对应 GtkToggleAction
+    /// 的 active）。未列出的动作（含全部未实现的）不亮。
+    pub(crate) fn toolbar_pressed(&self, id: &str) -> bool {
+        match id {
+            "BlendModeEraser" => self.eraser,
+            "Fullscreen" => self.fullscreen,
+            _ => false,
         }
     }
 

@@ -178,6 +178,14 @@ fn main() {
     // menu.xml 是纯声明式的 UI 描述：`<menu action=…>`（子菜单，标题取该动作
     // 的 label）、`<menuitem action=…>`（条目）、`<separator/>`。照搬即翻译。
     generate_menus(&manifest, &actions_by_id(&doc));
+
+    // ------------------------------------------------------------------
+    // 工具条（gui/toolbar.xml + 8 个片段 → toolbars_generated.rs）
+    generate_toolbars(&manifest, &actions_by_id(&doc));
+
+    // ------------------------------------------------------------------
+    // 工具条图标（assets/icons/*.svg → 栅格化为 PNG，内嵌字节）
+    generate_icons(&manifest);
 }
 
 /// 所有已声明动作的 id 集合（供菜单树校验引用）。
@@ -271,6 +279,204 @@ fn generate_menus(manifest: &std::path::Path, known_actions: &[String]) {
         sub_count
     );
 }
+
+/// 工具条节点。
+#[derive(Clone, Debug)]
+enum TbNode {
+    /// `<toolitem action="…"/>`
+    Item(String),
+    /// `<separator/>`
+    Separator,
+    /// `<placeholder name="…">` —— 片段按占位符名合并；`items` 为框架内联条目
+    Placeholder { name: String, items: Vec<TbNode> },
+}
+
+/// 解析一个 `<ui>` 文件，返回每个 `<toolbar name=…>` 的节点序列。
+fn parse_toolbar_xml(path: &std::path::Path) -> Vec<(String, Vec<TbNode>)> {
+    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+    let doc = roxmltree::Document::parse(&text).unwrap_or_else(|e| panic!("{} 解析失败：{e}", path.display()));
+    let mut out = Vec::new();
+    for tb in doc
+        .descendants()
+        .filter(|n| n.is_element() && tag_is(*n, "toolbar"))
+    {
+        let name = attr(tb, "name").unwrap_or("?").to_string();
+        out.push((name, gen_tb_nodes(tb)));
+    }
+    out
+}
+
+fn gen_tb_nodes(node: roxmltree::Node) -> Vec<TbNode> {
+    node.children()
+        .filter(|n| n.is_element())
+        .map(|child| {
+            if tag_is(child, "toolitem") {
+                TbNode::Item(attr(child, "action").unwrap_or("?").to_string())
+            } else if tag_is(child, "separator") {
+                TbNode::Separator
+            } else if tag_is(child, "placeholder") {
+                let name = attr(child, "name").unwrap_or("?").to_string();
+                TbNode::Placeholder {
+                    name,
+                    items: gen_tb_nodes(child),
+                }
+            } else {
+                panic!("toolbar XML 里的意外元素：<{}>", child.tag_name().name());
+            }
+        })
+        .collect()
+}
+
+fn emit_tb(nodes: &[TbNode], depth: usize) -> String {
+    let ind = "    ".repeat(depth + 1);
+    nodes
+        .iter()
+        .map(|n| match n {
+            TbNode::Item(id) => format!("{ind}TbNode::Item(\"{}\"),", esc(id)),
+            TbNode::Separator => format!("{ind}TbNode::Separator,"),
+            TbNode::Placeholder { name, items } => format!(
+                "{ind}TbNode::Placeholder {{ name: \"{}\", items: &[\n{}\n{ind}]}},",
+                esc(name),
+                emit_tb(items, depth + 1)
+            ),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 解析框架与 8 个片段 → `$OUT_DIR/toolbars_generated.rs`。
+///
+/// 框架 `toolbar.xml` 声明 toolbar1（占位符 + 内联条目）与 toolbar2；
+/// 片段文件各含一个同名占位符（条目在运行期按偏好合并，见
+/// `gui/toolbar.py:80-126` 的 UI manager merge 行为）。
+/// 每个动作 id 都在构建期校验存在于动作表。
+fn generate_toolbars(manifest: &std::path::Path, known_actions: &[String]) {
+    let toolbars = parse_toolbar_xml(&manifest.join("assets/gui/toolbar.xml"));
+    let get = |name: &str| -> Vec<TbNode> {
+        toolbars
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("toolbar.xml 里没有 <toolbar name=\"{name}\">"))
+    };
+    let framework1 = get("toolbar1");
+    let framework2 = get("toolbar2");
+
+    // 8 个片段（toolbar.py:26-39 的 MERGEABLE_XML 列出文件与顺序）
+    let mut frag_rows: Vec<String> = Vec::new();
+    for file in [
+        "toolbar-file.xml",
+        "toolbar-scrap.xml",
+        "toolbar-edit.xml",
+        "toolbar-blendmodes.xml",
+        "toolbar-linemodes.xml",
+        "toolbar-view-modes.xml",
+        "toolbar-view-manips.xml",
+        "toolbar-view-resets.xml",
+    ] {
+        let tbs = parse_toolbar_xml(&manifest.join("assets/gui").join(file));
+        assert_eq!(tbs.len(), 1, "{file} 应只含一个 <toolbar> 框架");
+        match &tbs[0].1[..] {
+            [TbNode::Placeholder { name, items }] => {
+                let its: Vec<String> = items
+                    .iter()
+                    .map(|a| match a {
+                        TbNode::Item(id) => format!("\"{}\"", esc(id)),
+                        other => panic!("{file} 片段里出现了非条目节点：{other:?}"),
+                    })
+                    .collect();
+                frag_rows.push(format!("    (\"{}\", &[{}]),", esc(name), its.join(", ")));
+            }
+            _ => panic!("{file} 片段的顶层应是单个 placeholder"),
+        }
+    }
+
+    let known = |id: &str| -> bool { known_actions.iter().any(|a| a == id) };
+    fn validate(nodes: &[TbNode], known: &dyn Fn(&str) -> bool) {
+        for n in nodes {
+            match n {
+                TbNode::Item(id) => assert!(known(id), "工具条引用了未声明的动作：{id}"),
+                TbNode::Separator => {}
+                TbNode::Placeholder { items, .. } => validate(items, known),
+            }
+        }
+    }
+    validate(&framework1, &known);
+    validate(&framework2, &known);
+
+    let generated = format!(
+        "// @generated by build.rs —— MyPaint 工具条（gui/toolbar*.xml）。请勿手工编辑。\n\
+         pub static TOOLBAR1_FRAMEWORK: &[TbNode] = &[\n{}\n];\n\n\
+         pub static TOOLBAR2: &[TbNode] = &[\n{}\n];\n\n\
+         /// 片段条目（toolbar.py MERGEABLE_XML 所列 8 个文件）：\n\
+         /// (placeholder 名, 动作 id…)。运行期按偏好 `ui.toolbar_items` 合并进\n\
+         /// 框架的同名占位符（GTK UI manager 的 merge 行为：追加在占位符\n\
+         /// 内联条目之后）。\n\
+         pub static FRAGMENT_ITEMS: &[(&str, &[&str])] = &[\n{}\n];\n",
+        emit_tb(&framework1, 0),
+        emit_tb(&framework2, 0),
+        frag_rows.join("\n")
+    );
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("toolbars_generated.rs");
+    std::fs::write(&dest, generated).expect("写入 toolbars_generated.rs 失败");
+    println!("cargo:warning=工具条已生成：toolbar1 框架 + 8 片段 + toolbar2（来自 gui/toolbar*.xml）");
+}
+
+/// 图标：`assets/icons/*.svg`（MyPaint 的 hicolor scalable symbolic 源文件，
+/// GPL，随项目分发）→ resvg 栅格化为 24×24 PNG（`ui.toolbar_icon_size` 的
+/// 默认 "large" = LARGE_TOOLBAR，GTK 文档承诺 24×24）→ `$OUT_DIR/icons/`，
+/// 生成 `ICONS: &[(&str, &[u8])]`（文件名去 .svg → PNG 字节）。
+fn generate_icons(manifest: &std::path::Path) {
+    let dir = manifest.join("assets").join("icons");
+    println!("cargo:rerun-if-changed={}", dir.display());
+    let mut names: Vec<String> = std::fs::read_dir(&dir)
+        .expect("读不到 assets/icons")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "svg"))
+        .map(|e| e.path().file_stem().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+
+    const SIZE: u32 = 24;
+    let mut rows: Vec<String> = Vec::new();
+    let mut opt = resvg::tiny_skia::Pixmap::new(SIZE, SIZE).unwrap();
+    for name in &names {
+        let svg_path = dir.join(format!("{name}.svg"));
+        let text = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| panic!("读不到 {}: {e}", svg_path.display()));
+        let tree = resvg::usvg::Tree::from_str(
+            &text,
+            &resvg::usvg::Options::default(),
+        )
+        .unwrap_or_else(|e| panic!("{name}.svg 解析失败：{e}"));
+        opt.fill(resvg::tiny_skia::Color::TRANSPARENT);
+        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(
+            SIZE as f32 / tree.size().width(),
+            SIZE as f32 / tree.size().height(),
+        ), &mut opt.as_mut());
+        let png = opt.encode_png().unwrap_or_else(|e| panic!("{name}.png 编码失败：{e}"));
+        let out = PathBuf::from(std::env::var("OUT_DIR").unwrap())
+            .join("icons")
+            .join(format!("{name}.png"));
+        std::fs::create_dir_all(out.parent().unwrap()).unwrap();
+        std::fs::write(&out, png).unwrap();
+        rows.push(format!(
+            "    (\"{}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons/{}.png\"))),",
+            esc(name),
+            esc(name)
+        ));
+    }
+
+    let generated = format!(
+        "// @generated by build.rs —— MyPaint 工具条图标（assets/icons/*.svg，GPL）。\n\
+         // 24×24 PNG（偏好 ui.toolbar_icon_size 默认 large）。\n\
+         pub static ICONS: &[(&str, &[u8])] = &[\n{}\n];\n",
+        rows.join("\n")
+    );
+    let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("icons_generated.rs");
+    std::fs::write(&dest, generated).expect("写入 icons_generated.rs 失败");
+    println!("cargo:warning=图标已生成：{} 枚 24×24（resvg 栅格化）", names.len());
+}
+
 
 /// 粗略校验：生成文件里的 `Action {` 行数。
 fn rows_count(path: &std::path::Path) -> usize {

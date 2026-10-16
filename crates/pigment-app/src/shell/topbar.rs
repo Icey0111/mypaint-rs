@@ -19,7 +19,7 @@
 
 use eframe::egui;
 
-use crate::app::{FileAction, FilePrompt, PigmentApp};
+use crate::app::PigmentApp;
 use crate::shell::menubar::MenuNode;
 
 use super::TOPBAR_MIN_HEIGHT;
@@ -99,130 +99,140 @@ impl PigmentApp {
         }
     }
 
-    /// 工具条行 —— 左 toolbar1 / 右 toolbar2。
+    /// 工具条行 —— 左 toolbar1 / 右 toolbar2；整行右键弹片段设置菜单。
     fn toolbar_row(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
+        let container = ui.horizontal(|ui| {
             self.toolbar1_row(ui);
             // toolbar2 的 `hexpand=False`：贴在右侧（源码里它不抢横向空间）
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 self.toolbar2_row(ui);
             });
         });
+        // 右键弹片段设置菜单（toolbar.py:101-108 的 popup-context-menu）。
+        // `container_context_menu` 连按钮上的右键也算（与 GTK 一致）。
+        container
+            .response
+            .container_context_menu(|ui| self.fragment_settings_menu(ui));
     }
 
-    /// `toolbar1` —— 主工具条。
+    /// `toolbar1-settings-menu` 的内容 —— 8 个片段开关
+    /// （`toolbar.py:110-126`：勾选 = merge 进 toolbar1，取消 = remove）。
+    fn fragment_settings_menu(&mut self, ui: &mut egui::Ui) {
+        use crate::shell::toolbars::FRAGMENTS;
+        for (i, frag) in FRAGMENTS.iter().enumerate() {
+            let mut on = self.toolbar_fragments[i];
+            if ui.checkbox(&mut on, frag.label).changed() {
+                self.toolbar_fragments[i] = on;
+            }
+        }
+    }
+
+    /// `toolbar1` —— 主工具条（S4：数据驱动）。
     ///
-    /// 源码由 `gui/toolbar.xml` 的框架 + 8 个可开关片段
-    /// （`toolbar-file.xml` / `toolbar-scrap.xml` / …，见 `gui/toolbar.py:26`
-    /// 的 `MERGEABLE_XML`）拼成。S4 会把它改成"数据驱动 + 片段开关"；
-    /// 当下先把已经能用的动作摆上，条目集合与源码的对应关系逐个标在下面。
+    /// 有效条目 = 框架（`toolbar.xml`）+ 按偏好开关合并的片段；渲染为
+    /// 24×24 图标按钮（Gtk.ToolbarStyle.ICONS），组间分隔线只留白
+    /// （`toolbar.py:68-70` 的 `set_draw(False)`）。
     fn toolbar1_row(&mut self, ui: &mut egui::Ui) {
-        // ⚠️ 本项目新增：MyPaint 没有"显示/隐藏面板"的按钮（面板开关是 toolbar2
-        // 的 `Toggle*Tool` 动作族）。S4/S6 到位后这枚 ☰ 应当被替换掉。
-        // （Tab 键在源码里是 FullscreenAutohide，见 actions::APP_KEYS 的记账。）
-        if ui
-            .selectable_label(self.show_panels, "☰")
-            .on_hover_text("显示/隐藏面板")
-            .clicked()
-        {
-            self.show_panels = !self.show_panels;
-        }
-        ui.separator();
-
-        // ---- file-toolitems（`toolbar-file.xml`：New / Open / Save）----
-        // 源码里还有 SaveAs / Export 的菜单项，工具条片段只放这三个
-        // （另存为 / 导出的入口在菜单栏的 File 菜单，S3 起可用）。
-        let now = ui.input(|i| i.time);
-        if ui.button("新建").on_hover_text("新建文档（Ctrl+N）").clicked() {
-            self.new_document(now);
-        }
-        if ui
-            .button("打开")
-            .on_hover_text("打开 .ora / .png（Ctrl+O）")
-            .clicked()
-        {
-            self.file_prompt = Some(FilePrompt::new(FileAction::Open, None));
-        }
-        if ui
-            .button("保存")
-            .on_hover_text("保存（Ctrl+S；未命名时等同另存为）")
-            .clicked()
-        {
-            self.save_command(now);
-        }
-        ui.separator();
-
-        // ---- edit-toolitems（`toolbar-edit.xml`：Undo / Redo）----
-        // 文案与置灰规则照搬 `gui/document.py:582-591` 的 `_update_undo_redo`：
-        // 有命令时显示 "Undo <命令名>"，否则 "Undo"。
-        let undo_label = match self.doc.get_last_command() {
-            Some(cmd) => format!("↶ 撤销 {}", cmd.display_name()),
-            None => "↶ 撤销".to_string(),
-        };
-        let redo_label = match self.doc.command_stack.next_redo_name() {
-            Some(name) => format!("↷ 重做 {name}"),
-            None => "↷ 重做".to_string(),
-        };
-        let can_undo = self.doc.command_stack.undo_len() > 0;
-        let can_redo = self.doc.command_stack.redo_len() > 0;
-        if ui
-            .add_enabled(can_undo, egui::Button::new(undo_label))
-            .on_hover_text("撤销（Ctrl+Z / z）")
-            .clicked()
-        {
-            self.undo(now);
-        }
-        if ui
-            .add_enabled(can_redo, egui::Button::new(redo_label))
-            .on_hover_text("重做（Ctrl+Shift+Z / Ctrl+Y / y）")
-            .clicked()
-        {
-            self.redo(now);
-        }
-        ui.separator();
-
-        // ---- blendmodes-toolitems（`toolbar-blendmodes.xml`）----
-        // 片段里的条目是 BlendModeEraser / BlendModeLockAlpha / BlendModeColorize，
-        // 而框架 `toolbar.xml` 默认只把 Eraser 放上去。这里的 `E 橡皮` 正是
-        // `BlendModeEraser`；LockAlpha / Colorize 属 B2（图层与混合模式）。
-        if ui.selectable_label(self.eraser, "E 橡皮").clicked() {
-            self.eraser = !self.eraser;
-            self.derive_active();
-        }
-        let mut paint = self.paint_active();
-        // 键位：应用本地扩展键 `x`（源码的 p 被 FlipFreehandMode 占用，
-        // 见 actions::APP_KEYS 的记账）
-        if ui
-            .checkbox(&mut paint, "x 光谱混色")
-            .on_hover_text("关掉即退回 RGB 插值，便于并排对比")
-            .changed()
-        {
-            self.paint_override = Some(paint);
-            self.derive_active();
-        }
-        ui.separator();
-
-        // ---- 本项目新增的诊断读数（MyPaint 无此控件）----
-        ui.label(format!(
-            "半径 {:.0}px",
-            self.brush.get(pigment_engine::hokusai::BrushSetting::Radius).base_value.exp()
-        ));
-        let resident = self.renderer.lock().unwrap().resident();
-        ui.label(format!(
-            "tiles {} · {:.1} MiB · 显存 {resident}",
-            self.doc.surface().tile_count(),
-            self.doc.surface().memory_bytes() as f64 / 1048576.0
-        ));
+        use crate::shell::toolbars::{self, TbNode, TOOLBAR1_FRAMEWORK};
+        let nodes = toolbars::expand(TOOLBAR1_FRAMEWORK, &self.toolbar_fragments);
+        ui.horizontal(|ui| {
+            for node in &nodes {
+                match node {
+                    TbNode::Separator => {
+                        // 源码 set_draw(False)：不画线，只留组间距
+                        ui.add_space(6.0);
+                    }
+                    TbNode::Item(id) => self.tool_item(ui, id),
+                    TbNode::Placeholder { .. } => unreachable!("expand 不产出占位符"),
+                }
+            }
+        });
     }
 
-    /// `toolbar2` —— 面板开关与全屏。
+    /// 渲染并处理一个 toolitem（数据快照 → [`toolbars::tool_button`]）。
+    fn tool_item(&mut self, ui: &mut egui::Ui, id: &'static str) {
+        use crate::shell::toolbars::{tool_button, ToolBtn};
+        let available = self.action_available(id);
+        let pressed = self.toolbar_pressed(id);
+        let action = crate::shell::actions::by_id(id);
+        let tip = action.map(|a| {
+            let mut t = a.effective_label().unwrap_or(id).to_string();
+            if let Some(acc) = a.accel {
+                t.push_str(&format!("  ({})", acc.label()));
+            }
+            t
+        });
+        let tip = if available { tip } else { None };
+        let clicked = tool_button(
+            ui,
+            &mut self.icon_cache,
+            ToolBtn {
+                available,
+                pressed,
+                icon_name: action.and_then(|a| a.icon_name),
+                tip,
+                fallback_label: action
+                    .and_then(|a| a.toolbar_label())
+                    .unwrap_or(id)
+                    .to_string(),
+            },
+        );
+        if clicked {
+            let ctx = ui.ctx().clone();
+            let now = ui.input(|i| i.time);
+            self.run_action(id, &ctx, now);
+        }
+    }
+
+    /// `toolbar2` —— 面板开关与全屏（S4：数据驱动）。
     ///
-    /// 源码内容（`toolbar.xml:47`）：
-    /// `ColorAdjusters` `BrushGroups` │ `ToggleModeOptionsTool` `ToggleLayersTool`
-    /// `ToggleScratchpadTool` `TogglePreviewTool` `ToggleHistoryPanel` │ `Fullscreen`。
-    /// 其中 `Fullscreen` 已经能用（对应本项目现有的 F11），但**面板类动作要等
-    /// S6 的停靠面板系统**才有作用对象，所以 S4 之前此处留空。
-    fn toolbar2_row(&mut self, _ui: &mut egui::Ui) {
-        // S4：按 toolbar.xml 的 toolbar2 排布，未实现的动作置灰。
+    /// 源码内容（`toolbar.xml:47-58`）：`ColorAdjusters` `BrushGroups` │
+    /// `ToggleModeOptionsTool` `ToggleLayersTool` `ToggleScratchpadTool`
+    /// `TogglePreviewTool` `ToggleHistoryPanel` │ `Fullscreen`。
+    /// 面板类动作要等 S6 的停靠面板系统才有作用对象，在那之前置灰。
+    fn toolbar2_row(&mut self, ui: &mut egui::Ui) {
+        use crate::shell::toolbars::{TbNode, TOOLBAR2};
+        // 外层是 right_to_left（toolbar2 贴右），内层显式转回 left_to_right，
+        // 否则条目顺序整体镜像（与 toolbar.xml 相反）
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            for node in TOOLBAR2 {
+                match node {
+                    TbNode::Separator => ui.add_space(6.0),
+                    TbNode::Item(id) => self.tool_item(ui, id),
+                    TbNode::Placeholder { items, .. } => {
+                        for n in items.iter() {
+                            match n {
+                                TbNode::Item(id) => self.tool_item(ui, id),
+                                TbNode::Separator => ui.add_space(6.0),
+                                TbNode::Placeholder { .. } => unreachable!("toolbar2 无嵌套占位符"),
+                            }
+                        }
+                    }
+                }
+            }
+            // ---- 本项目新增：诊断读数（MyPaint 无此控件；S6 后迁往状态栏）----
+            ui.separator();
+            ui.label(format!(
+                "半径 {:.0}px",
+                self.brush
+                    .get(pigment_engine::hokusai::BrushSetting::Radius)
+                    .base_value
+                    .exp()
+            ));
+            let resident = self.renderer.lock().unwrap().resident();
+            ui.label(format!(
+                "tiles {} · {:.1} MiB · 显存 {resident}",
+                self.doc.surface().tile_count(),
+                self.doc.surface().memory_bytes() as f64 / 1048576.0
+            ));
+            // ⚠️ 本项目新增：面板整块开关（S6 的停靠面板系统落地后删除）
+            if ui
+                .selectable_label(self.show_panels, "☰")
+                .on_hover_text("显示/隐藏面板")
+                .clicked()
+            {
+                self.show_panels = !self.show_panels;
+            }
+        });
     }
 }

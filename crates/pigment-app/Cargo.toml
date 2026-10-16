@@ -15,5 +15,6 @@ eframe = { version = "0.37", features = ["wgpu"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 [build-dependencies]
+resvg = "0.48.1"
 # 构建期解析 gui/resources.xml（219 个动作 / 105 条加速键）生成动作表。只读、纯 Rust。
 roxmltree = "0.21"
