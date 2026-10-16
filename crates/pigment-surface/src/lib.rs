@@ -46,6 +46,7 @@ use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
 use hokusai::TiledSurface;
 
 pub mod color;
+pub mod combine;
 pub mod png;
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
