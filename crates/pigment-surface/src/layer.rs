@@ -141,6 +141,23 @@ impl LayerStack {
         self.rev = self.rev.wrapping_add(1);
     }
 
+    /// 由一组**自顶向下**的层直接构造（`.ora` 载入路径；index 0 = 最顶层）。
+    ///
+    /// 空列表等价于 [`LayerStack::new`]（补一层空绘画层）。
+    pub fn from_layers(layers: Vec<Layer>) -> Self {
+        let mut layers = layers;
+        if layers.is_empty() {
+            layers.push(Layer::new());
+        }
+        Self {
+            layers,
+            current: 0,
+            background_color: [255, 255, 255],
+            background_visible: true,
+            rev: 0,
+        }
+    }
+
     // ---- 列表访问（`group.py` 的 list 语义）----
 
     /// 子层数。
@@ -414,16 +431,23 @@ impl LayerStack {
         let ts = TILE_SIZE as i32;
         let bg = color::bg_to_linear(self.background_color);
         let mut scratch: Vec<u16> = vec![0; TILE_CHANNELS];
+        // 行进方向缓存：同一 tile 只合成一次（导出 3456×3008 这种大画幅时，
+        // 每像素重合成整 tile 是 64×64 倍的无谓开销）。
+        let mut last: (i32, i32) = (i32::MIN, i32::MIN);
+        let mut last_composed = false;
         for y in 0..rh as i32 {
             let py = ry + y;
+            let row_ty = py.div_euclid(ts);
+            let in_y = py.rem_euclid(ts) as usize;
             for x in 0..rw as i32 {
                 let px = rx + x;
-                let (tx, ty) = (px.div_euclid(ts), py.div_euclid(ts));
-                // 行进方向同一 tile 会重复合成；以正确性优先（导出路径），
-                // 显示路径走 GPU 增量上传，不经过这里。
-                let composed = self.composite_tile(tx, ty, &mut scratch);
+                let tx = px.div_euclid(ts);
+                if (tx, row_ty) != last {
+                    last = (tx, row_ty);
+                    last_composed = self.composite_tile(tx, row_ty, &mut scratch);
+                }
+                let composed = last_composed;
                 let in_x = px.rem_euclid(ts) as usize;
-                let in_y = py.rem_euclid(ts) as usize;
                 let src = &scratch[(in_y * TILE_SIZE + in_x) * 4..][..4];
                 let mut p4: [u16; 4] = src.try_into().unwrap();
                 if !composed {

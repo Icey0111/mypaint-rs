@@ -410,22 +410,40 @@ impl PigmentSurface {
 
     pub fn load_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
         let (w, h) = (w as i32, h as i32);
+        let ts = TILE_SIZE as i32;
+        // 行内按 tile 分段处理：一段只做一次 tile 请求与 fix15 转换缓冲，
+        // 避免 276M 像素级别的逐像素 div_euclid + 哈希查找（载入整份
+        // fill_outlines.ora 时这是分钟级 → 秒级的差别）。
+        let mut seg: Vec<[u16; 4]> = Vec::with_capacity(TILE_SIZE as usize);
         for row in 0..h {
             let wy = y + row;
-            let ty = wy.div_euclid(TILE_SIZE as i32);
-            let iy = wy.rem_euclid(TILE_SIZE as i32) as usize;
-            for col in 0..w {
-                let wx = x + col;
-                let tx = wx.div_euclid(TILE_SIZE as i32);
-                let ix = wx.rem_euclid(TILE_SIZE as i32) as usize;
-                let o = ((row as usize) * (w as usize) + col as usize) * 4;
-                let px = color::rgba8_to_fix15(pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]);
-                if px[3] == 0 {
-                    continue; // 全透明像素不必分配 tile（省内存，也与 MyPaint 一致）
+            let ty = wy.div_euclid(ts);
+            let iy = wy.rem_euclid(ts) as usize;
+            let mut col = 0;
+            while col < w {
+                let tx = (x + col).div_euclid(ts);
+                let seg_len = (ts - (x + col).rem_euclid(ts)).min(w - col);
+                let ix0 = (x + col).rem_euclid(ts) as usize;
+                // 转换本段（跳过全透明像素 —— 不必分配 tile，与 MyPaint 一致）
+                seg.clear();
+                let mut any = false;
+                for c in 0..seg_len {
+                    let o = ((row as usize) * (w as usize) + (col + c) as usize) * 4;
+                    let px = color::rgba8_to_fix15(pixels[o], pixels[o + 1], pixels[o + 2], pixels[o + 3]);
+                    any |= px[3] != 0;
+                    seg.push(px);
                 }
-                let tile = self.tile_request_start(tx, ty);
-                tile[iy][ix] = px;
-                self.tile_request_end(tx, ty);
+                if any {
+                    let tile = self.tile_request_start(tx, ty);
+                    for (c, px) in seg.iter().enumerate() {
+                        if px[3] == 0 {
+                            continue;
+                        }
+                        tile[iy][ix0 + c] = *px;
+                    }
+                    self.tile_request_end(tx, ty);
+                }
+                col += seg_len;
             }
         }
     }

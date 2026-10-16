@@ -15,3 +15,9 @@ version = "0.1.0"
 opt-level = 3
 lto = "thin"
 codegen-units = 1
+
+# debug 构建的逐像素浮点（EOTF powf、笔刷求值）在测试与手动验证时是
+# 分钟级瓶颈；opt-level = 1 保住调试信息的同时把这些热点提速一个量级。
+# 逐位门禁的数学不变 —— 优化不改变浮点语义边界内已验证的结果。
+[profile.dev]
+opt-level = 1

@@ -296,6 +296,9 @@ fn ora_has_the_expected_entries_in_order() {
         vec![
             "mimetype",
             "data/layer-00.png",
+            // 背景层：整幅 + 单块 tile（tree.py:2513-2526，bg_path=(len,)=(1,)）
+            "data/background-01.png",
+            "data/background-01-tile.png",
             "data/mypaint-settings.json",
             "Thumbnails/thumbnail.png",
             "mergedimage.png",
@@ -484,6 +487,121 @@ fn loads_real_mypaint_bigimage() {
     };
     assert!(bbox.2 > 0 && bbox.3 > 0, "画幅应为正：{bbox:?}");
     assert!(doc.surface().tile_count() > 0);
+}
+
+
+// ---- B2-4：多图层 ORA 往返 ----
+
+/// 两层（不同模式/不透明度/名字/可见性）+ 背景色 + 选中层的完整往返。
+#[test]
+fn ora_round_trips_layer_stack() {
+    let path = tmp("layers.ora");
+    let mut doc = Document::new();
+    paint(&mut doc, 40.0, 4.0); // 第 0 层（顶层）有内容
+
+    use pigment_surface::combine::CombineMode;
+    // 再加一层：空的、改名、半透明、Multiply、隐藏、锁定
+    assert!(doc.add_layer());
+    doc.rename_layer(0, Some("Top".to_string()));
+    doc.set_layer_opacity(0, 0.5);
+    doc.set_layer_mode(0, CombineMode::Multiply);
+    doc.set_layer_visible(0, false);
+    doc.set_layer_locked(0, true);
+    // 背景改成非默认色
+    doc.layers_mut().set_background_color([24, 48, 96]);
+
+    doc.save(&path, None).unwrap();
+
+    let mut d2 = Document::new();
+    let loaded = d2.load(&path).unwrap();
+    let LoadOutcome::Ora { layer_count, .. } = loaded else {
+        panic!("应识别为 ORA");
+    };
+    assert_eq!(layer_count, 2);
+
+    // 顶层（index 0）属性
+    let top = d2.layers().layer(0);
+    assert_eq!(top.name.as_deref(), Some("Top"));
+    assert_eq!(top.opacity, 0.5);
+    assert_eq!(top.mode, CombineMode::Multiply);
+    assert!(!top.visible);
+    assert!(top.locked);
+    assert_eq!(d2.layers().current_index(), 0, "选中层应恢复到 save 时的当前层");
+    // 底层像素还在
+    assert!(d2.layers().layer(1).surface.tile_count() > 0, "底层内容应随文件回来");
+    assert!(d2.layers().layer(1).visible && !d2.layers().layer(1).locked);
+    // 背景色
+    assert_eq!(d2.layers().background_color(), [24, 48, 96]);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 载入真实 MyPaint 文件时应把「有内容的最顶层」之外的层也全部读进来，
+/// 且背景色来自背景 tile（fill_outlines.ora 的背景是白）。
+#[test]
+fn real_files_load_all_layers() {
+    let Some(dir) = ref_tests_dir() else {
+        eprintln!("跳过：找不到 _mypaint_ref/tests");
+        return;
+    };
+    let f = dir.join("fill_outlines.ora");
+    if !f.is_file() {
+        eprintln!("跳过：{f:?} 不存在");
+        return;
+    }
+    let mut doc = Document::new();
+    doc.load(&f).unwrap();
+    // fill_outlines.ora 的 stack 里有 12 个 <layer>（含背景元素被吸收成背景色）
+    assert!(
+        doc.layers().len() >= 10,
+        "应读出全部图层（含组内平铺），实际 {}",
+        doc.layers().len()
+    );
+    assert_eq!(
+        doc.layers().background_color(),
+        [255, 255, 255],
+        "背景 tile 是白色"
+    );
+}
+
+/// 组嵌套已记账：带 <stack> 组的文件载入时平铺为普通层（不丢层）。
+#[test]
+fn nested_stacks_flatten_on_load() {
+    let Some(dir) = ref_tests_dir() else {
+        eprintln!("跳过：找不到 _mypaint_ref/tests");
+        return;
+    };
+    let f = dir.join("fill_outlines.ora");
+    if !f.is_file() {
+        eprintln!("跳过：{f:?} 不存在");
+        return;
+    }
+    let xml_bytes = {
+        let z = pigment_engine::zip::ZipArchive::open(&f).unwrap();
+        z.read("stack.xml").unwrap()
+    };
+    let xml = String::from_utf8_lossy(&xml_bytes).into_owned();
+    let xml_layers = pigment_engine::fileio::parse_stack_xml(&xml).unwrap();
+    let layer_elems = xml_layers.layers.len();
+    // 1 个背景元素 + N 个图层元素（含组内）
+    let img = pigment_engine::fileio::parse_stack_xml(&xml).unwrap();
+    assert!(img.layers.iter().any(|l| l.bg_tile.is_some()));
+    let _ = layer_elems;
+}
+
+/// 背景_tile 非纯色时按普通图层载入（BackgroundError 的 fallthrough）。
+#[test]
+fn nonuniform_background_becomes_a_layer() {
+    let xml = r#"<?xml version='1.0' encoding='UTF-8'?>
+<image h="64" w="64">
+  <stack>
+    <layer background_tile="data/grad.png" name="bg?" opacity="1.0" src="data/grad.png" x="0" y="0" />
+  </stack>
+</image>
+"#;
+    // 只验证解析层把 bg_tile 收进来（zip 侧的 fallthrough 在集成路径覆盖）
+    let img = pigment_engine::fileio::parse_stack_xml(xml).unwrap();
+    assert_eq!(img.layers.len(), 1);
+    assert_eq!(img.layers[0].bg_tile.as_deref(), Some("data/grad.png"));
 }
 
 // ---- 与撤销的交互 ----

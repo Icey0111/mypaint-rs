@@ -460,9 +460,9 @@ impl PigmentApp {
                 let msg = match outcome {
                     pigment_engine::LoadOutcome::Ora {
                         bbox,
+                        layer_count,
                         mypaint_version,
                         compatibility,
-                        ..
                     } => {
                         let compat = match compatibility {
                             Some(pigment_engine::Compatibility::Partially) => {
@@ -474,8 +474,13 @@ impl PigmentApp {
                             _ => "",
                         };
                         let ver = mypaint_version.unwrap_or_else(|| "未知".to_string());
+                        let layers = if layer_count == 1 {
+                            "1 层".to_string()
+                        } else {
+                            format!("{layer_count} 层")
+                        };
                         format!(
-                            "已打开 {}×{} 的 OpenRaster（mypaint {}）{compat}",
+                            "已打开 {}×{}、{layers} 的 OpenRaster（mypaint {}）{compat}",
                             bbox.2, bbox.3, ver
                         )
                     }

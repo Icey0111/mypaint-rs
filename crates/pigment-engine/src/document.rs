@@ -384,10 +384,9 @@ impl Document {
                     yres: self.yres,
                     frame_active: self.frame_enabled,
                     settings_json: Some(self.settings_json()),
-                    layer_name: None,
                 };
                 let bbox = self.data_bbox();
-                let saved = fileio::save_ora(self.surface(), path, &opts, bbox)?;
+                let saved = fileio::save_ora(&self.layers, path, &opts, bbox)?;
                 SaveOutcome::Ora { bbox: saved.bbox }
             }
             Some(Format::Png) => {
@@ -413,7 +412,25 @@ impl Document {
         self.clear();
         let outcome = match fileio::format_for_path(path) {
             Some(Format::Ora) => {
-                let loaded = fileio::load_ora(self.surface_mut(), path)?;
+                let loaded = fileio::load_ora(path)?;
+                // 组栈：XML 文档序 = 自顶向下（OraLoaded::layers 注释）
+                let mut vec = Vec::with_capacity(loaded.layers.len());
+                for d in loaded.layers {
+                    let mut layer = Layer::new();
+                    layer.surface = d.surface;
+                    layer.name = d.name;
+                    layer.mode = d.mode;
+                    layer.opacity = d.opacity;
+                    layer.visible = d.visible;
+                    layer.locked = d.locked;
+                    vec.push(layer);
+                }
+                let mut st = LayerStack::from_layers(vec);
+                st.set_current_index(loaded.current_index.min(st.len() - 1));
+                if loaded.background_found {
+                    st.set_background_color(loaded.background_color);
+                }
+                self.layers = st;
                 self.xres = loaded.xres;
                 self.yres = loaded.yres;
                 // 照源码：画幅设为文件里声明的尺寸，并按 `frame-active` 决定启用
@@ -424,7 +441,7 @@ impl Document {
                 }
                 LoadOutcome::Ora {
                     bbox: loaded.bbox,
-                    layer_name: loaded.layer_name,
+                    layer_count: self.layers.len(),
                     mypaint_version: loaded.mypaint_version,
                     compatibility: loaded.compatibility,
                 }
@@ -488,7 +505,8 @@ pub enum SaveOutcome {
 pub enum LoadOutcome {
     Ora {
         bbox: (i32, i32, i32, i32),
-        layer_name: Option<String>,
+        /// 载入的图层数（不含背景层）。
+        layer_count: usize,
         mypaint_version: Option<String>,
         compatibility: Option<fileio::Compatibility>,
     },
