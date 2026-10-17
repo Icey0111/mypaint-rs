@@ -594,7 +594,7 @@ pub fn load_jpg(
         .map_err(|e| FileError::Jpg(format!("JPEG 解码失败: {e}")))?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
-    surface.load_from_rgba8(rgba.as_raw(), 0, 0, w, h);
+    surface.replace_from_rgba8(rgba.as_raw(), 0, 0, w, h);
     Ok(PngLoaded {
         bbox: (0, 0, w as i32, h as i32),
     })
@@ -1207,7 +1207,7 @@ fn build_ora_layers(
             .map_err(|e| FileError::Malformed(format!("读图层数据 {src:?} 失败：{e}")))?;
         let (px, w, h) = pigment_surface::png::decode_rgba8_png(&png).map_err(FileError::Png)?;
         let mut surface = PigmentSurface::new();
-        surface.load_from_rgba8(&px, x, y, w, h);
+        surface.replace_from_rgba8(&px, x, y, w, h);
         if let Some(name) = &l.strokemap {
             if let Ok(dat) = z.read(name) {
                 surface
@@ -1445,7 +1445,10 @@ fn apply_image_attrs(img: &mut XmlImage, attrs: &[(String, String)], saw_image: 
         .or_else(|| get("frame-active"))
         .map(|v| xsd2bool(&v))
         .unwrap_or(false);
-    img.mypaint_version = get(ATTR_NS_VERSION).or_else(|| get("version"));
+    // 只认 MyPaint 命名空间属性。OpenRaster 的 `version="0.0.5"` 是
+    // **文件格式版本**，不是 MyPaint 版本；源码 `_compat_check` 读的是
+    // `mypaint:version`（`document.py:1788`），无前缀属性不参与判定。
+    img.mypaint_version = get(ATTR_NS_VERSION);
     img.json_settings = get(ATTR_NS_JSON_SETTINGS).or_else(|| get("json-settings"));
 }
 
@@ -1547,6 +1550,28 @@ mod tests {
         assert_eq!(make_refname("layer", &[], ".png"), "layer-.png");
         // 两位以上要大写补零，不能截断
         assert_eq!(make_refname("layer", &[123], ".png"), "layer-123.png");
+    }
+
+    #[test]
+    fn openraster_version_is_not_mypaint_version() {
+        let xml = r#"<image w="64" h="64" version="0.0.5">
+          <stack><layer src="data/a.png" x="0" y="0"/></stack>
+        </image>"#;
+        let img = parse_stack_xml(xml).unwrap();
+        assert_eq!(img.mypaint_version, None, "OpenRaster 0.0.5 不是 MyPaint 版本");
+        assert_eq!(
+            compatibility(img.mypaint_version.as_deref().unwrap_or("")),
+            None,
+            "无 mypaint:version → 不做兼容判定"
+        );
+
+        let xml = r#"<image xmlns:mypaint="http://mypaint.org/ns/openraster"
+          w="64" h="64" version="0.0.5" mypaint:version="2.0.0">
+          <stack><layer src="data/a.png" x="0" y="0"/></stack>
+        </image>"#;
+        let img = parse_stack_xml(xml).unwrap();
+        assert_eq!(img.mypaint_version.as_deref(), Some("2.0.0"));
+        assert_eq!(compatibility("2.0.0"), Some(Compatibility::Fully));
     }
 
     #[test]
@@ -1944,3 +1969,4 @@ fn test_layer_attrs(
         assert_eq!((w, h), (216, 188));
     }
 }
+

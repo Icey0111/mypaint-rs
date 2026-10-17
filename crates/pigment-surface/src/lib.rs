@@ -511,13 +511,23 @@ impl PigmentSurface {
         }
     }
 
+    /// 整体替换：清空旧 tile 后载入（`load_from_surface` 的整层语义）。
+    ///
+    /// 与 [`PigmentSurface::load_from_rgba8`] 的区别：后者是"把一块像素
+    /// 铺上去"，供测试/叠加用；整层文件载入必须用这个，否则透明区域会
+    /// 透出旧内容。
+    pub fn replace_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
+        self.tiles.clear();
+        self.load_from_rgba8(pixels, x, y, w, h);
+    }
+
     /// 从 PNG 读取并载入表面（`load_png` → `load_layer_from_png`）。
     ///
     /// 返回内容外接矩形 `(x, y, w, h)`，与 `load_layer_from_png` 的返回值
     /// 语义一致（供 `Document` 设画框用）。
     pub fn load_from_png(&mut self, filename: impl AsRef<Path>, x: i32, y: i32) -> Result<(i32, i32, i32, i32), String> {
         let (px, w, h) = png::read_rgba8_png(filename.as_ref())?;
-        self.load_from_rgba8(&px, x, y, w, h);
+        self.replace_from_rgba8(&px, x, y, w, h);
         Ok((x, y, w as i32, h as i32))
     }
 }
@@ -769,5 +779,17 @@ mod tests {
         // 复制是写时复制语义：改 a 不影响 b
         write(&mut a, 3, 4, 6);
         assert_eq!(b.tile(3, 4).unwrap()[0][0][0], 5);
+    }
+
+    #[test]
+    fn load_from_rgba8_replaces_the_whole_surface() {
+        let mut s = PigmentSurface::new();
+        let red = [255u8, 0, 0, 255];
+        s.replace_from_rgba8(&red, 0, 0, 1, 1);
+        assert_eq!(s.tile_count(), 1);
+        // 载入一张全透明图：旧内容必须被清掉（整体替换）
+        let clear = vec![0u8; 64 * 64 * 4];
+        s.replace_from_rgba8(&clear, 0, 0, 64, 64);
+        assert_eq!(s.tile_count(), 0);
     }
 }
