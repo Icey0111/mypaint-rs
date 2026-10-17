@@ -2,8 +2,8 @@
 //!
 //! 两个断言层次：
 //!
-//! 1. **解析**：196 支官方 `.myb` 全部能被 `hokusai` 解析成 `Brush`，7 个分组、
-//!    key 唯一。这是「导入官方笔刷包」这件事的硬门禁。
+//! 1. **解析**：196 支官方 `.myb` 全部能被 `hokusai` 解析成 `Brush`，8 个分组
+//!    （含空 Favorites）、key 唯一。这是「导入官方笔刷包」这件事的硬门禁。
 //! 2. **作画**：每支笔刷在自家 `PigmentSurface` 上跑一条完整笔画，都必须
 //!    产生 dab（有脏 tile，无 panic），且必须真正改变像素——196/196 全绿
 //!    才算「官方笔刷包全部可用」。
@@ -81,14 +81,16 @@ fn official_pack_parses_completely() {
             "Dieterle",
             "classic",
             "deevad",
+            "favorites",
             "ramon",
             "experimental",
             "tanda",
             "kaerhon_v1"
         ],
-        "分组顺序应与官方 order.conf 一致"
+        "分组顺序应与官方 order.conf 一致（含空 Favorites 组）"
     );
     assert_eq!(groups[1].display, "Classic", "分组展示名取自 order.conf");
+    assert!(groups[3].count == 0, "官方 order.conf 的 Favorites 是空组");
     assert_eq!(groups.iter().map(|g| g.count).sum::<usize>(), 196);
 
     // key 唯一

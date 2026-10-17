@@ -29,6 +29,9 @@ mod generated {
 
 pub use generated::IndexedBrush;
 
+/// 官方 `order.conf` 原文（构建期随包内嵌；用于恢复**空分组** Favorites 与组顺序）。
+const OFFICIAL_ORDER_CONF: &str = include_str!("../assets/brushes/order.conf");
+
 /// 官方内嵌笔刷索引（顺序 = 官方 `order.conf`）。
 pub fn indexed() -> &'static [IndexedBrush] {
     generated::INDEXED
@@ -243,18 +246,143 @@ impl GroupInfo {
     }
 }
 
+/// 一个笔刷分组（`BrushManager.groups` 的一项）。
+///
+/// MyPaint 的组是**有序的笔刷名列表**，同一支笔可以同时出现在多个组里
+/// （Favorites 就是"额外挂一份"，不离开原组，`brushselectionwindow.py:267-294`）。
+/// 这里用 key 列表表达多对多；`BrushEntry::group` 只保留"主分组"供旧代码使用。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrushGroup {
+    /// 分组 id。官方分组 = 资产目录名（`deevad`）；用户组 / 特殊组 = 组名
+    /// （`favorites`、`Favorites` 等）。
+    pub id: String,
+    /// 展示名（`order.conf` 的 `Group:` 行，或目录名）。
+    pub display: String,
+    /// 成员 key（`classic/pencil`），顺序 = `order.conf` 顺序。
+    pub members: Vec<String>,
+}
+
+impl BrushGroup {
+    pub fn title(&self) -> &str {
+        translate_group_name(&self.display)
+    }
+}
+
 /// 笔刷库：内嵌官方包 + 可选用户目录。
 #[derive(Debug, Default)]
 pub struct BrushLibrary {
     pub entries: Vec<BrushEntry>,
+    /// 分组与成员顺序（`order.conf` 语义）。UI 的列表顺序取自这里。
+    pub groups: Vec<BrushGroup>,
+    /// 用户可写的 `order.conf`（第一个用户笔刷目录下；`None` = 不落盘）。
+    pub order_conf_path: Option<PathBuf>,
     /// 扫描期失败的文件（路径, 原因）——不阻塞其它笔刷加载。
     pub errors: Vec<(PathBuf, String)>,
+}
+
+/// 解析 `order.conf` —— 逐行照 `brushmanager._parse_order_conf`（`:148-185`）：
+/// 空行/`#` 注释跳过，`Group: ` 起新组，其余行是笔刷 key（重复项组内忽略）。
+///
+/// 返回 `[(组名, [key...])]`，保持文件顺序；空组也保留（Favorites）。
+pub fn parse_order_conf(text: &str) -> Vec<(String, Vec<String>)> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    let mut current: Option<usize> = None;
+    for raw in text.replace('\r', "\n").split('\n') {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("Group: ") {
+            let name = name.to_string();
+            if !groups.iter().any(|(n, _)| n == &name) {
+                groups.push((name.clone(), Vec::new()));
+            }
+            current = groups.iter().position(|(n, _)| n == &name);
+            continue;
+        }
+        let Some(i) = current else {
+            // 文件头没有 Group: 的条目归 Lost & Found（源码 curr_group 初值）
+            if !groups.iter().any(|(n, _)| n == FOUND_BRUSHES_GROUP) {
+                groups.push((FOUND_BRUSHES_GROUP.to_string(), Vec::new()));
+            }
+            current = groups.iter().position(|(n, _)| n == FOUND_BRUSHES_GROUP);
+            let i = current.expect("刚插入");
+            if !groups[i].1.iter().any(|k| k.as_str() == line) {
+                groups[i].1.push(line.to_string());
+            }
+            continue;
+        };
+        if !groups[i].1.iter().any(|k| k.as_str() == line) {
+            groups[i].1.push(line.to_string());
+        }
+    }
+    groups
+}
+
+/// 从 `order.conf` 形式的 `(组名, key 列表)` 建组：
+/// 官方组沿用资产目录 id（`Deevad` → `deevad`），特殊/用户组用组名。
+fn groups_from_order(
+    entries: &[BrushEntry],
+    order: &[(String, Vec<String>)],
+) -> Vec<BrushGroup> {
+    let key_to_entry: std::collections::HashMap<&str, &BrushEntry> =
+        entries.iter().map(|e| (e.key.as_str(), e)).collect();
+    let mut groups: Vec<BrushGroup> = Vec::new();
+    for (display, keys) in order {
+        let id = keys
+            .iter()
+            .find_map(|k| key_to_entry.get(k.as_str()).map(|e| e.group.clone()))
+            .unwrap_or_else(|| match display.as_str() {
+                "Favorites" => FAVORITES_BRUSH_GROUP.to_string(),
+                "Lost & Found" => FOUND_BRUSHES_GROUP.to_string(),
+                "Deleted" => DELETED_BRUSH_GROUP.to_string(),
+                "New" => NEW_BRUSH_GROUP.to_string(),
+                other => other.to_string(),
+            });
+        let members: Vec<String> = keys
+            .iter()
+            .filter(|k| key_to_entry.contains_key(k.as_str()))
+            .cloned()
+            .collect();
+        // 同一 id 出现两次（用户文件里两个组同名）时合并成员
+        if let Some(g) = groups.iter_mut().find(|g| g.id == id) {
+            for k in members {
+                if !g.members.contains(&k) {
+                    g.members.push(k);
+                }
+            }
+            continue;
+        }
+        groups.push(BrushGroup {
+            id,
+            display: display.clone(),
+            members,
+        });
+    }
+    // 未列入任何组的笔刷 → Lost & Found（`_init_unordered_groups`）
+    let mut orphaned: Vec<String> = entries
+        .iter()
+        .filter(|e| !groups.iter().any(|g| g.members.contains(&e.key)))
+        .map(|e| e.key.clone())
+        .collect();
+    if !orphaned.is_empty() {
+        if let Some(g) = groups.iter_mut().find(|g| g.id == FOUND_BRUSHES_GROUP) {
+            g.members.append(&mut orphaned);
+        } else {
+            groups.push(BrushGroup {
+                id: FOUND_BRUSHES_GROUP.to_string(),
+                display: "Lost & Found".to_string(),
+                members: orphaned,
+            });
+        }
+    }
+    groups
 }
 
 impl BrushLibrary {
     /// 仅内嵌官方包（无 IO，构造立即返回）。
     pub fn embedded() -> Self {
-        let entries = indexed()
+        let entries: Vec<BrushEntry> = indexed()
             .iter()
             .map(|b| BrushEntry {
                 group: b.group.to_string(),
@@ -267,8 +395,11 @@ impl BrushLibrary {
                 embedded_preview: b.prev,
             })
             .collect();
+        let groups = groups_from_order(&entries, &parse_order_conf(OFFICIAL_ORDER_CONF));
         Self {
             entries,
+            groups,
+            order_conf_path: None,
             errors: Vec::new(),
         }
     }
@@ -276,8 +407,17 @@ impl BrushLibrary {
     /// 内嵌官方包 + 扫描用户笔刷目录（同名以用户版本覆盖）。
     pub fn load() -> Self {
         let mut lib = Self::embedded();
-        for dir in default_brush_dirs() {
-            lib.scan_dir(&dir);
+        let dirs = default_brush_dirs();
+        for dir in &dirs {
+            lib.scan_dir(dir);
+        }
+        // 用户 order.conf（`<user_brush>/order.conf`）覆盖组顺序与成员
+        if let Some(dir) = dirs.first() {
+            let path = dir.join("order.conf");
+            if let Ok(text) = fs::read_to_string(&path) {
+                lib.apply_order_conf(&text);
+            }
+            lib.order_conf_path = Some(path);
         }
         lib
     }
@@ -322,22 +462,231 @@ impl BrushLibrary {
                 embedded_preview: None,
             });
         }
-    }
-
-    /// 按首次出现顺序返回分组摘要（内嵌部分即官方 `order.conf` 顺序）。
-    pub fn groups(&self) -> Vec<GroupInfo> {
-        let mut out: Vec<GroupInfo> = Vec::new();
+        // 新扫描到的笔刷挂进组：同 id 的组（目录名）追加，否则建新组。
+        let mut pending: Vec<(String, String, String)> = Vec::new(); // (group_id, display, key)
         for e in &self.entries {
-            match out.iter_mut().find(|g| g.id == e.group) {
-                Some(g) => g.count += 1,
-                None => out.push(GroupInfo {
-                    id: e.group.clone(),
-                    display: e.group_display.clone(),
-                    count: 1,
-                }),
+            if self.groups.iter().any(|g| g.members.contains(&e.key)) {
+                continue;
+            }
+            pending.push((e.group.clone(), e.group_display.clone(), e.key.clone()));
+        }
+        for (id, display, key) in pending {
+            if let Some(g) = self.groups.iter_mut().find(|g| g.id == id) {
+                g.members.push(key);
+            } else {
+                self.groups.push(BrushGroup {
+                    id,
+                    display,
+                    members: vec![key],
+                });
             }
         }
-        out
+    }
+
+    /// 按 `order.conf` 顺序返回分组摘要（含空组 Favorites）。
+    pub fn groups(&self) -> Vec<GroupInfo> {
+        self.groups
+            .iter()
+            .map(|g| GroupInfo {
+                id: g.id.clone(),
+                display: g.display.clone(),
+                count: g.members.len(),
+            })
+            .collect()
+    }
+
+    /// 某组的成员在 `entries` 里的下标（顺序 = `order.conf`）。
+    pub fn group_members(&self, group_id: &str) -> Vec<usize> {
+        let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
+            return Vec::new();
+        };
+        g.members
+            .iter()
+            .filter_map(|k| self.find(k))
+            .collect()
+    }
+
+    /// 用户 order.conf 覆盖组顺序/成员（`_load_ordered_groups` 的简化版：
+    /// 用户文件为准；未列出的旧组保留在尾部）。
+    pub fn apply_order_conf(&mut self, text: &str) {
+        let parsed = parse_order_conf(text);
+        let mut new_groups: Vec<BrushGroup> = Vec::new();
+        for (display, keys) in &parsed {
+            // 官方组按展示名匹配（Deevad ↔ deevad），用户组按 id/展示名匹配
+            let old = self
+                .groups
+                .iter()
+                .find(|g| g.display == *display || g.id == *display || g.title() == display);
+            let id = old
+                .map(|g| g.id.clone())
+                .unwrap_or_else(|| match display.as_str() {
+                    "Favorites" => FAVORITES_BRUSH_GROUP.to_string(),
+                    "Lost & Found" => FOUND_BRUSHES_GROUP.to_string(),
+                    "Deleted" => DELETED_BRUSH_GROUP.to_string(),
+                    "New" => NEW_BRUSH_GROUP.to_string(),
+                    other => other.to_string(),
+                });
+            let members: Vec<String> = keys
+                .iter()
+                .filter(|k| self.find(k).is_some())
+                .cloned()
+                .collect();
+            if let Some(g) = new_groups.iter_mut().find(|g| g.id == id) {
+                for k in members {
+                    if !g.members.contains(&k) {
+                        g.members.push(k);
+                    }
+                }
+            } else {
+                new_groups.push(BrushGroup {
+                    id,
+                    display: display.clone(),
+                    members,
+                });
+            }
+        }
+        // 用户文件没提到的旧组保留（例如用户只写了 Favorites 一个组）
+        for g in &self.groups {
+            if !new_groups.iter().any(|n| n.id == g.id) {
+                new_groups.push(g.clone());
+            }
+        }
+        // 仍未入组的笔刷 → Lost & Found
+        let orphaned: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|e| !new_groups.iter().any(|g| g.members.contains(&e.key)))
+            .map(|e| e.key.clone())
+            .collect();
+        if !orphaned.is_empty() {
+            if let Some(g) = new_groups.iter_mut().find(|g| g.id == FOUND_BRUSHES_GROUP) {
+                g.members.extend(orphaned);
+            } else {
+                new_groups.push(BrushGroup {
+                    id: FOUND_BRUSHES_GROUP.to_string(),
+                    display: "Lost & Found".to_string(),
+                    members: orphaned,
+                });
+            }
+        }
+        if !new_groups.iter().any(|g| g.id == FAVORITES_BRUSH_GROUP) {
+            // 官方包/源码都保留空 Favorites 组
+            new_groups.push(BrushGroup {
+                id: FAVORITES_BRUSH_GROUP.to_string(),
+                display: "Favorites".to_string(),
+                members: Vec::new(),
+            });
+        }
+        self.groups = new_groups;
+    }
+
+    /// 写回 `order.conf` —— 逐字照 `save_brushorder`（`brushmanager.py:922-935`）：
+    /// 头注释 + 每组建 `Group: 展示名`，随后按顺序写成员 key。
+    ///
+    /// 返回写入路径；`order_conf_path` 为 `None`（纯内嵌库/测试）时写当前目录
+    /// 的 `order.conf`，由调用方决定是否保留。
+    pub fn save_order_conf(&self) -> io::Result<PathBuf> {
+        let path = self
+            .order_conf_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from("order.conf"));
+        if let Some(dir) = path.parent() {
+            if !dir.as_os_str().is_empty() {
+                fs::create_dir_all(dir)?;
+            }
+        }
+        let mut out = String::from("# this file saves brush groups and order\n");
+        for g in &self.groups {
+            out.push_str(&format!("Group: {}\n", g.display));
+            for key in &g.members {
+                out.push_str(key);
+                out.push('\n');
+            }
+        }
+        fs::write(&path, out)?;
+        Ok(path)
+    }
+
+    /// 把某支笔刷加入/移出 Favorites（`BrushPopupMenu._favorite_cb`，`:267-294`）。
+    /// 不离开原组。返回写入后是否在 Favorites 里。
+    pub fn toggle_favorite(&mut self, key: &str) -> bool {
+        let faves = self
+            .groups
+            .iter_mut()
+            .find(|g| g.id == FAVORITES_BRUSH_GROUP);
+        let Some(faves) = faves else {
+            self.groups.push(BrushGroup {
+                id: FAVORITES_BRUSH_GROUP.to_string(),
+                display: "Favorites".to_string(),
+                members: vec![key.to_string()],
+            });
+            return true;
+        };
+        if let Some(pos) = faves.members.iter().position(|k| k == key) {
+            faves.members.remove(pos);
+            false
+        } else {
+            faves.members.push(key.to_string());
+            true
+        }
+    }
+
+    pub fn is_favorite(&self, key: &str) -> bool {
+        self.groups
+            .iter()
+            .find(|g| g.id == FAVORITES_BRUSH_GROUP)
+            .is_some_and(|g| g.members.iter().any(|k| k == key))
+    }
+
+    /// 从某组移除（不删笔刷）—— `BrushList.remove_brush`（`:143-145`）。
+    pub fn remove_from_group(&mut self, group_id: &str, key: &str) -> bool {
+        let Some(g) = self.groups.iter_mut().find(|g| g.id == group_id) else {
+            return false;
+        };
+        let before = g.members.len();
+        g.members.retain(|k| k != key);
+        g.members.len() != before
+    }
+
+    /// 新建空组（`create_group`，`:1131-1141`）。返回组 id；同名已存在则直接返回。
+    pub fn create_group(&mut self, name: &str) -> Option<String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return None;
+        }
+        if let Some(g) = self
+            .groups
+            .iter()
+            .find(|g| g.display == name || g.id == name)
+        {
+            return Some(g.id.clone());
+        }
+        let id = match name {
+            "Favorites" => FAVORITES_BRUSH_GROUP.to_string(),
+            "New" => NEW_BRUSH_GROUP.to_string(),
+            "Deleted" => DELETED_BRUSH_GROUP.to_string(),
+            _ => name.to_string(),
+        };
+        self.groups.push(BrushGroup {
+            id: id.clone(),
+            display: name.to_string(),
+            members: Vec::new(),
+        });
+        Some(id)
+    }
+
+    /// 组内重排（`PixbufList` 的 DnD 落点语义）：把 `key` 移到 `target` 下标。
+    pub fn move_in_group(&mut self, group_id: &str, key: &str, target: usize) -> bool {
+        let Some(g) = self.groups.iter_mut().find(|g| g.id == group_id) else {
+            return false;
+        };
+        let Some(from) = g.members.iter().position(|k| k == key) else {
+            return false;
+        };
+        let item = g.members.remove(from);
+        let target = target.min(g.members.len());
+        g.members.insert(target, item);
+        true
     }
 
     pub fn len(&self) -> usize {
@@ -355,12 +704,12 @@ impl BrushLibrary {
     /// 启动分组：`DEFAULT_STARTUP_GROUP` 若存在则用它，否则取**成员最多**的分组
     /// （并列时分组名靠后者胜出）—— 对齐 `_init_default_brushkeys_and_history`。
     pub fn startup_group(&self) -> Option<String> {
-        if self.entries.iter().any(|e| e.group == DEFAULT_STARTUP_GROUP) {
+        if self.groups.iter().any(|g| g.id == DEFAULT_STARTUP_GROUP) {
             return Some(DEFAULT_STARTUP_GROUP.to_string());
         }
-        self.groups()
-            .into_iter()
-            .map(|g| (g.count, g.id))
+        self.groups
+            .iter()
+            .map(|g| (g.members.len(), g.id.clone()))
             .max_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)))
             .map(|(_, id)| id)
     }
@@ -380,13 +729,7 @@ impl BrushLibrary {
         let Some(group) = self.startup_group() else {
             return [None; NUM_BRUSHKEYS];
         };
-        let members: Vec<usize> = self
-            .entries
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.group == group)
-            .map(|(i, _)| i)
-            .collect();
+        let members = self.group_members(&group);
         if members.is_empty() {
             return [None; NUM_BRUSHKEYS];
         }
@@ -548,5 +891,87 @@ mod tests {
         assert_eq!(deevad.title(), "Deevad");
         let kaerhon = groups.iter().find(|g| g.id == "kaerhon_v1").unwrap();
         assert_eq!(kaerhon.title(), "Kaerhon");
+    }
+
+    #[test]
+    fn order_conf_parser_keeps_empty_groups_and_comments() {
+        // 逐行照 _parse_order_conf：空行/# 注释跳过、Group 起组、组内去重
+        let parsed = parse_order_conf(
+            "# header\nGroup: Favorites\nGroup: A\na/one\n# note\nA/two\na/one\n",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ("Favorites".to_string(), vec![]),
+                (
+                    "A".to_string(),
+                    vec!["a/one".to_string(), "A/two".to_string()]
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn official_groups_include_empty_favorites() {
+        let lib = BrushLibrary::embedded();
+        let faves = lib
+            .groups
+            .iter()
+            .find(|g| g.id == FAVORITES_BRUSH_GROUP)
+            .expect("官方 order.conf 有空 Favorites 组");
+        assert!(faves.members.is_empty());
+        assert_eq!(faves.title(), "Favorites");
+        // 官方 order.conf 覆盖 196 支；不应出现 Lost & Found
+        assert!(!lib.groups.iter().any(|g| g.id == FOUND_BRUSHES_GROUP));
+    }
+
+    #[test]
+    fn favorites_are_multi_group_and_roundtrip_order_conf() {
+        let mut lib = BrushLibrary::embedded();
+        let key = "classic/pencil";
+        assert!(!lib.is_favorite(key));
+        assert!(lib.toggle_favorite(key));
+        assert!(lib.is_favorite(key));
+        // 仍留在原组（MyPaint 的 Favorites 是"额外挂一份"）
+        assert!(lib
+            .groups
+            .iter()
+            .find(|g| g.id == "classic")
+            .unwrap()
+            .members
+            .iter()
+            .any(|k| k == key));
+
+        let dir = std::env::temp_dir().join(format!("pigment-order-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        let path = lib.save_order_conf().unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("# this file saves brush groups and order\n"));
+        let parsed = parse_order_conf(&text);
+        let faves = parsed.iter().find(|(n, _)| n == "Favorites").unwrap();
+        assert_eq!(faves.1, vec![key.to_string()]);
+
+        // 重新载入用户 order.conf：Favorites 仍能看到成员
+        let mut reloaded = BrushLibrary::embedded();
+        reloaded.apply_order_conf(&text);
+        assert!(reloaded.is_favorite(key));
+        assert_eq!(reloaded.group_members(FAVORITES_BRUSH_GROUP).len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn create_group_and_reorder_are_persisted_in_memory() {
+        let mut lib = BrushLibrary::embedded();
+        let id = lib.create_group("My Group").unwrap();
+        assert!(lib.group_members(&id).is_empty());
+        assert_eq!(lib.create_group("My Group").unwrap(), id, "同名返回原组");
+
+        let members = lib.group_members("classic");
+        let second = lib.entries[members[1]].key.clone();
+        assert!(lib.move_in_group("classic", &second, 0));
+        let after = lib.group_members("classic");
+        assert_eq!(after[0], members[1], "移到组首");
     }
 }
