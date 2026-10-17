@@ -249,6 +249,8 @@ pub struct PigmentApp {
     // ---- 笔刷快捷键 ----
     /// 10 个槽位（`BrushManager.contexts`）。
     pub(crate) brushkeys: [Option<BrushKeySlot>; NUM_BRUSHKEYS],
+    /// 最近一次保存/恢复的槽位（`BrushManager.selected_context`，初值 `None`）。
+    pub(crate) selected_context: Option<usize>,
     /// 笔刷编辑器「实时更新最近一笔」（`gui/brusheditor.py` 的 live update）：
     /// 开着时改笔刷设置就用新笔重绘上一笔
     /// （`CommandStack::update_last_command`）。
@@ -588,7 +590,22 @@ impl PigmentApp {
         // 当前色/历史/调色板/色轮类型都从偏好来（`adjbases.py:121-147`）
         let color_manager = ColorManager::from_prefs(&prefs);
         let initial_color = color::hsv_of(&color_manager.get_color());
-        let brushkeys = seed_brushkeys(&brushes);
+        let mut brushkeys = seed_brushkeys(&brushes);
+        // 源码启动时用用户目录里的 `contextNN.myb` 覆盖默认播种
+        // （`brushmanager.py:414-416`）；颜色随 brush 的 color_h/s/v 一起回来。
+        for (i, saved) in brushes.library.load_contexts().into_iter().enumerate() {
+            let Some(brush) = saved else { continue };
+            let color = [
+                brush.get(BrushSetting::ColorH).base_value,
+                brush.get(BrushSetting::ColorS).base_value,
+                brush.get(BrushSetting::ColorV).base_value,
+            ];
+            let name = brush
+                .parent_brush_name
+                .clone()
+                .unwrap_or_else(|| format!("context{i:02}"));
+            brushkeys[i] = Some(BrushKeySlot { brush, color, name });
+        }
         let brush_name = brushes
             .selected_entry()
             .map(|e| e.mypaint_name())
@@ -639,6 +656,7 @@ impl PigmentApp {
             last_selected_color: initial_color,
             in_brush_selected: false,
             brushkeys,
+            selected_context: None,
             live_update: false,
             status: None,
             current_file: None,
@@ -1714,6 +1732,7 @@ impl PigmentApp {
         self.radius_override = None;
         self.eraser = false;
         self.paint_override = None;
+        self.selected_context = Some(i);
         // `document.py:1717-1719`：`misc.context_restores_color` 开着时调
         // `restore_context_of_selected_brush()`，即从槽位快照把颜色取回来。
         // 开关的判断在管理器里（它也是偏好的持有者）。
@@ -1736,6 +1755,16 @@ impl PigmentApp {
             color: color::to_f32_3(self.color_manager.brush_slot_color()),
             name,
         });
+        self.selected_context = Some(i);
+        // `context.save()`：整份 brushinfo 写 `contextNN.myb`（颜色也在里面）
+        if let Err(e) = self
+            .brushes
+            .library
+            .save_context(i, &self.base_brush.clone())
+        {
+            self.set_status(format!("槽位 {i} 保存失败：{e}"), now);
+            return;
+        }
         self.set_status(format!("笔刷 {i} ← 已存入当前设置"), now);
     }
 
@@ -1948,6 +1977,9 @@ impl PigmentApp {
             "PreferencesWindow" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
             "ContextRestoreColor" => true,
+            // `ContextStore`（`q`）：把当前笔刷存进最近一次选中/存过的槽位
+            // （`document.py:1692-1709`）；没有选中槽位时源码只记日志。
+            "ContextStore" => true,
             _ => actions::parse_context_action(id).is_some(),
         }
     }
@@ -2519,6 +2551,11 @@ impl PigmentApp {
                 let state = if value { "开" } else { "关" };
                 self.set_status(format!("恢复笔刷槽位时连颜色一起还原：{state}"), now);
             }
+            // `ContextStore`（`q`）：存进 `selected_context`；没有则忽略
+            "ContextStore" => match self.selected_context {
+                Some(i) => self.store_brushkey(i, now),
+                None => self.set_status("没有选中的笔刷槽位".to_string(), now),
+            },
             // ---- 笔刷槽位（`gui/document.py:467-492` 动态注册的 Context0N/Context0Ns）----
             _ => {
                 if let Some((slot, store)) = actions::parse_context_action(id) {

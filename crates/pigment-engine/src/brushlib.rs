@@ -20,7 +20,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use hokusai::myb;
-use hokusai::{Brush, BrushSetting};
+use hokusai::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 
 /// 构建期生成的官方笔刷索引（`build.rs`）。
 mod generated {
@@ -165,11 +165,7 @@ impl BrushEntry {
     /// 见 `gui/compatconfig.py:36-48` + `gui/brushmanager.py:609-643`。
     pub fn load(&self) -> Result<Brush, BrushLoadError> {
         let json = self.read_json()?;
-        let mut brush = myb::from_str(&json).map_err(|e| BrushLoadError::Parse(e.to_string()))?;
-        if !json_has_setting(&json, "paint_mode") {
-            brush.set(BrushSetting::Paint, hokusai::SettingValue::constant(1.0));
-        }
-        Ok(brush)
+        parse_brush_json(&json).map_err(|e| BrushLoadError::Parse(e))
     }
 
     /// 是否来自内嵌官方包。
@@ -736,12 +732,26 @@ impl BrushLibrary {
         brush: &Brush,
         preview: Option<(u32, u32, &[u8])>,
     ) -> io::Result<PathBuf> {
+        let meta = self.find(key).map(|i| &self.entries[i]);
+        self.save_brush_files_with_meta(key, brush, preview, meta)
+    }
+
+    /// 同 [`Self::save_brush_files`]，但可显式指定元数据来源（Clone 用源笔刷的
+    /// description/notes）。
+    fn save_brush_files_with_meta(
+        &self,
+        key: &str,
+        brush: &Brush,
+        preview: Option<(u32, u32, &[u8])>,
+        meta: Option<&BrushEntry>,
+    ) -> io::Result<PathBuf> {
         let dir = self.user_brush_dir();
         let path = dir.join(format!("{key}.myb"));
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = hokusai::myb::to_string_pretty(brush)
+        let (description, notes) = meta.map(raw_meta).unwrap_or_default();
+        let json = serialize_brush(brush, &description, &notes)
             .map_err(|e| io::Error::other(format!("序列化 .myb 失败: {e}")))?;
         fs::write(&path, json)?;
         if let Some((w, h, rgba)) = preview {
@@ -796,7 +806,7 @@ impl BrushLibrary {
         let src = self.entries[src_idx].clone();
         let new_key = self.unique_key(&format!("{src_key} copy"));
         brush.parent_brush_name = Some(src_key.to_string());
-        let path = self.save_brush_files(&new_key, brush, preview)?;
+        let path = self.save_brush_files_with_meta(&new_key, brush, preview, Some(&src))?;
         let name = new_key
             .rsplit('/')
             .next()
@@ -968,6 +978,30 @@ impl BrushLibrary {
             .map(|(_, id)| id)
     }
 
+    /// 保存一个笔刷快捷键槽位 —— `context.save()` 写
+    /// `<user_brush>/contextNN.myb`（`gui/document.py:1710-1713`）。
+    pub fn save_context(&self, slot: usize, brush: &Brush) -> io::Result<PathBuf> {
+        let dir = self.user_brush_dir();
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("context{slot:02}.myb"));
+        let json = serialize_brush(brush, "", "")
+            .map_err(|e| io::Error::other(format!("序列化 context 笔刷失败: {e}")))?;
+        fs::write(&path, json)?;
+        Ok(path)
+    }
+
+    /// 启动时读回 `contextNN.myb`（`brushmanager.py:414-416`）。
+    ///
+    /// 文件名是 `context00` … `context09`；缺失的槽位为 `None`。
+    pub fn load_contexts(&self) -> [Option<Brush>; NUM_BRUSHKEYS] {
+        let dir = self.user_brush_dir();
+        std::array::from_fn(|i| {
+            let path = dir.join(format!("context{i:02}.myb"));
+            let text = fs::read_to_string(path).ok()?;
+            parse_brush_json(&text).ok()
+        })
+    }
+
     /// 笔刷快捷键槽位的默认内容（返回 `entries` 下标）。
     ///
     /// 对齐 `gui/brushmanager.py:_init_default_brushkeys_and_history`：
@@ -1064,6 +1098,142 @@ fn json_has_setting(json: &str, name: &str) -> bool {
         .ok()
         .and_then(|v| v.get("settings")?.get(name).map(|_| true))
         .unwrap_or(false)
+}
+
+/// 解析 `.myb` JSON 并恢复**显式写出**的设置（不把显式 0 当未定义）。
+fn parse_brush_json(json: &str) -> Result<Brush, String> {
+    let mut brush = myb::from_str(json).map_err(|e| e.to_string())?;
+    apply_raw_settings(json, &mut brush);
+    if !json_has_setting(json, "paint_mode") {
+        brush.set(BrushSetting::Paint, SettingValue::constant(1.0));
+    }
+    Ok(brush)
+}
+
+/// 把原始 JSON 里**显式出现**的设置覆盖回 `Brush`（保住显式 0 与输入曲线）。
+fn apply_raw_settings(json: &str, brush: &mut Brush) {
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return;
+    };
+    let Some(settings) = v.get("settings").and_then(|s| s.as_object()) else {
+        return;
+    };
+    for (name, obj) in settings {
+        let Some(setting) = BrushSetting::from_cname(name) else {
+            continue;
+        };
+        let base_value = obj
+            .get("base_value")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(0.0) as f32;
+        let mut inputs: Vec<InputMapping> = Vec::new();
+        let mut unknown_inputs: std::collections::BTreeMap<String, Vec<(f32, f32)>> =
+            std::collections::BTreeMap::new();
+        if let Some(map) = obj.get("inputs").and_then(|x| x.as_object()) {
+            for (iname, pts) in map {
+                let points: Vec<(f32, f32)> = pts
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|p| {
+                                let a = p.as_array()?;
+                                Some((
+                                    a.first()?.as_f64()? as f32,
+                                    a.get(1)?.as_f64()? as f32,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(input) = BrushInput::from_cname(iname) {
+                    inputs.push(InputMapping { input, points });
+                } else {
+                    unknown_inputs.insert(iname.clone(), points);
+                }
+            }
+        }
+        brush.set(
+            setting,
+            SettingValue {
+                base_value,
+                inputs,
+                unknown_inputs,
+            },
+        );
+    }
+}
+
+/// 把 `Brush` 序列化成 MyPaint v3 `.myb`（`BrushInfo.to_json`，`lib/brush.py:251-277`）。
+///
+/// 与 hokusai 0.3 的 `to_string_pretty` 的三处差异（都是源语义）：
+/// 1. **写全部设置**，包括 `base_value == 0.0` 的显式零；hokusai 会把它们略掉，
+///    重读时又被 libmypaint 默认值回填（`anti_aliasing` 0→1 等）；
+/// 2. 写 `description` / `notes`（hokusai 的 Raw 没有这两个字段，保存即丢）；
+/// 3. 逐项写 `inputs`（升序输入名 + `[[x,y],…]`）。
+///
+/// 未知设置（`smudge_bucket` 等）按 hokusai 解析出的原文补回，保证不丢键。
+fn serialize_brush(brush: &Brush, description: &str, notes: &str) -> Result<String, String> {
+    use serde_json::{json, Map, Value};
+
+    let mut settings: std::collections::BTreeMap<String, Value> = std::collections::BTreeMap::new();
+    for (i, sv) in brush.settings().iter().enumerate() {
+        let name = BrushSetting::ALL[i].cname();
+        let mut inputs: Map<String, Value> = Map::new();
+        for m in &sv.inputs {
+            let pts: Vec<Value> = m.points.iter().map(|(x, y)| json!([x, y])).collect();
+            inputs.insert(m.input.cname().to_string(), Value::Array(pts));
+        }
+        for (iname, pts) in &sv.unknown_inputs {
+            let pts: Vec<Value> = pts.iter().map(|(x, y)| json!([x, y])).collect();
+            inputs.insert(iname.clone(), Value::Array(pts));
+        }
+        settings.insert(
+            name.to_string(),
+            json!({ "base_value": sv.base_value, "inputs": inputs }),
+        );
+    }
+    for (name, u) in &brush.unknown_settings {
+        let mut inputs: Map<String, Value> = Map::new();
+        for (iname, pts) in &u.inputs {
+            let pts: Vec<Value> = pts.iter().map(|(x, y)| json!([x, y])).collect();
+            inputs.insert(iname.clone(), Value::Array(pts));
+        }
+        settings.insert(
+            name.clone(),
+            json!({ "base_value": u.base_value, "inputs": inputs }),
+        );
+    }
+
+    let doc = json!({
+        "version": 3,
+        "comment": brush.comment.clone().unwrap_or_else(|| "MyPaint brush file".to_string()),
+        "parent_brush_name": brush.parent_brush_name.clone().unwrap_or_default(),
+        "settings": settings,
+        "group": brush.group.clone().unwrap_or_default(),
+        "notes": notes,
+        "description": description,
+    });
+    serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())
+}
+
+/// 从原始 `.myb` 取 `description` / `notes`（保存时原样保留）；解析失败退回 entry 元数据。
+fn raw_meta(entry: &BrushEntry) -> (String, String) {
+    let Ok(raw) = entry.read_json() else {
+        return (entry.display.clone(), entry.notes.clone());
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return (entry.display.clone(), entry.notes.clone());
+    };
+    (
+        v.get("description")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+        v.get("notes")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -1234,6 +1404,80 @@ mod tests {
         lib2.scan_dir(&dir);
         let j = lib2.find("classic/dry_brush").unwrap();
         assert_eq!(lib2.entries[j].load().unwrap().get(BrushSetting::Paint).base_value, 0.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn explicit_zero_settings_survive_save_and_load() {
+        // Classic/Pencil 显式写 `anti_aliasing: 0.0`；hokusai 的 from_str 会把它
+        // 当成未定义并回填 1.0（源码用“键是否存在”区分，`brush.py:300-305`）。
+        let lib = BrushLibrary::embedded();
+        let i = lib.find("classic/pencil").unwrap();
+        assert!(!json_has_setting(&lib.entries[i].read_json().unwrap(), "paint_mode"));
+        let b = lib.entries[i].load().unwrap();
+        assert_eq!(b.get(BrushSetting::AntiAliasing).base_value, 0.0);
+
+        let json = serialize_brush(&b, "", "").unwrap();
+        assert!(json_has_setting(&json, "anti_aliasing"));
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            v["settings"]["anti_aliasing"]["base_value"].as_f64(),
+            Some(0.0),
+            "显式 0 必须写进文件"
+        );
+        // 重新走我们的 load 路径仍应是 0
+        let mut b2 = myb::from_str(&json).unwrap();
+        apply_raw_settings(&json, &mut b2);
+        assert_eq!(b2.get(BrushSetting::AntiAliasing).base_value, 0.0);
+    }
+
+    #[test]
+    fn save_preserves_description_and_notes() {
+        let lib = BrushLibrary::embedded();
+        let i = lib.find("deevad/2B_pencil").unwrap();
+        let (desc, notes) = raw_meta(&lib.entries[i]);
+        assert!(desc.contains("digital pencil"), "desc={desc}");
+        assert!(notes.contains("David Revoy"), "notes={notes}");
+
+        let b = lib.entries[i].load().unwrap();
+        let json = serialize_brush(&b, &desc, &notes).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["description"].as_str(), Some(desc.as_str()));
+        assert_eq!(v["notes"].as_str(), Some(notes.as_str()));
+        assert_eq!(v["comment"].as_str(), Some("MyPaint brush file"));
+        // 全部设置都写出（含显式零），而不是 hokusai 的“非零才写”
+        assert!(
+            v["settings"].as_object().unwrap().len() >= BrushSetting::ALL.len(),
+            "应写全部设置"
+        );
+    }
+
+    #[test]
+    fn context_slots_roundtrip_through_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-brush-context-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let mut lib = BrushLibrary::embedded();
+        lib.order_conf_path = Some(dir.join("order.conf"));
+
+        let i = lib.find("classic/pencil").unwrap();
+        let mut b = lib.entries[i].load().unwrap();
+        b.set(BrushSetting::ColorH, SettingValue::constant(0.42));
+        b.set(BrushSetting::ColorS, SettingValue::constant(0.8));
+        b.set(BrushSetting::ColorV, SettingValue::constant(0.6));
+        lib.save_context(3, &b).unwrap();
+        assert!(dir.join("context03.myb").is_file());
+
+        let loaded = lib.load_contexts();
+        assert!(loaded[0].is_none());
+        let s = loaded[3].as_ref().expect("槽位 3 应读回");
+        assert_eq!(s.get(BrushSetting::AntiAliasing).base_value, 0.0);
+        assert!((s.get(BrushSetting::ColorH).base_value - 0.42).abs() < 1e-6);
+        assert!((s.get(BrushSetting::ColorS).base_value - 0.8).abs() < 1e-6);
+        assert!((s.get(BrushSetting::ColorV).base_value - 0.6).abs() < 1e-6);
         let _ = fs::remove_dir_all(&dir);
     }
 
