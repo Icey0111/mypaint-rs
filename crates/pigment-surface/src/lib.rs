@@ -212,6 +212,11 @@ impl PigmentSurface {
         &self.strokes
     }
 
+    /// 整体替换 strokemap（移动图层的撤销需要恢复平移后的形状列表）。
+    pub fn replace_strokes(&mut self, strokes: Vec<StrokeShape>) {
+        self.strokes = strokes;
+    }
+
     /// 记录一笔的形状（`StrokemappedPaintingLayer.add_stroke_shape`）。
     pub fn add_stroke_shape(
         &mut self,
@@ -467,6 +472,53 @@ impl PigmentSurface {
         flat.copy_from_slice(pixels);
         entry.revision = self.clock;
         entry.last_touched = self.clock;
+    }
+
+    /// 按像素平移整个表面与 strokemap（`StrokemappedPaintingLayerMove` /
+    /// `layer.translate(dx, dy)`，`lib/layer/data.py:1607`）。
+    ///
+    /// 平移是逐像素的（源码允许任意整数 dx/dy，不要求 tile 对齐）；透明像素
+    /// 跳过，保持稀疏存储。返回是否有内容被移动。
+    pub fn translate(&mut self, dx: i32, dy: i32) -> bool {
+        if dx == 0 && dy == 0 {
+            return false;
+        }
+        let ts = TILE_SIZE as i32;
+        let mut moved: HashMap<(i32, i32), Vec<u16>> = HashMap::new();
+        for ((tx, ty), tile) in &self.tiles {
+            let src = tile.pixels();
+            for y in 0..ts {
+                for x in 0..ts {
+                    let px = src[y as usize][x as usize];
+                    if px == [0, 0, 0, 0] {
+                        continue;
+                    }
+                    let wx = tx * ts + x + dx;
+                    let wy = ty * ts + y + dy;
+                    let dtx = wx.div_euclid(ts);
+                    let dty = wy.div_euclid(ts);
+                    let dix = wx.rem_euclid(ts) as usize;
+                    let diy = wy.rem_euclid(ts) as usize;
+                    let arr = moved
+                        .entry((dtx, dty))
+                        .or_insert_with(|| vec![0u16; TILE_SIZE * TILE_SIZE * 4]);
+                    let o = (diy * TILE_SIZE + dix) * 4;
+                    arr[o..o + 4].copy_from_slice(&px);
+                }
+            }
+        }
+        self.tiles.clear();
+        if moved.is_empty() {
+            self.clock += 1;
+        } else {
+            for ((tx, ty), arr) in moved {
+                self.paste_tile(tx, ty, &arr);
+            }
+        }
+        for stroke in &mut self.strokes {
+            stroke.translate(dx, dy);
+        }
+        true
     }
 
     pub fn load_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
@@ -782,6 +834,18 @@ mod tests {
     }
 
     #[test]
+    fn translate_moves_pixels_across_tiles() {
+        let mut s = PigmentSurface::new();
+        s.load_from_rgba8(&[255, 0, 0, 255], 1, 1, 1, 1);
+        assert!(s.tile(0, 0).is_some());
+        assert!(s.translate(64, 0));
+        // (1,1) + (64,0) = (65,1) → tile (1,0)，块内 (1,1)
+        let t = s.tile(1, 0).expect("应移到右侧 tile");
+        assert_eq!(t[1][1][0], 1 << 15, "红色 + 全 alpha");
+        assert!(s.tile(0, 0).is_none(), "旧 tile 应清掉");
+    }
+
+    #[test]
     fn load_from_rgba8_replaces_the_whole_surface() {
         let mut s = PigmentSurface::new();
         let red = [255u8, 0, 0, 255];
@@ -793,4 +857,5 @@ mod tests {
         assert_eq!(s.tile_count(), 0);
     }
 }
+
 

@@ -30,7 +30,7 @@ use std::collections::VecDeque;
 use hokusai::{Brush, BrushState, TiledSurface};
 use pigment_surface::combine::CombineMode;
 use pigment_surface::layer::LayerMode;
-use pigment_surface::{Layer, LayerStack, PigmentSurface, SurfaceSnapshot};
+use pigment_surface::{Layer, LayerStack, PigmentSurface, StrokeShape, SurfaceSnapshot};
 
 use crate::stroke::{Stroke, StrokeEvent};
 
@@ -1412,6 +1412,59 @@ impl MergeLayerDown {
             upper_layer: None,
             lower_layer: None,
         })
+    }
+}
+
+/// 交互式移动图层（`lib/command.py:1093` 的 `MoveLayer`）。
+///
+/// 源码在拖拽期间只改表面，提交时把命令入栈；这里用前后快照实现
+/// 撤销/重做，并同时保存 strokemap（平移会改形状坐标）。
+pub struct MoveLayer {
+    layer_id: u64,
+    before: SurfaceSnapshot,
+    after: SurfaceSnapshot,
+    before_strokes: Vec<StrokeShape>,
+    after_strokes: Vec<StrokeShape>,
+}
+
+impl MoveLayer {
+    pub fn new(
+        layer_id: u64,
+        before: SurfaceSnapshot,
+        after: SurfaceSnapshot,
+        before_strokes: Vec<StrokeShape>,
+        after_strokes: Vec<StrokeShape>,
+    ) -> Self {
+        Self {
+            layer_id,
+            before,
+            after,
+            before_strokes,
+            after_strokes,
+        }
+    }
+}
+
+impl Command for MoveLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(surface) = ctx.layers.surface_by_id(self.layer_id) else {
+            return false;
+        };
+        surface.load_snapshot(&self.after);
+        surface.replace_strokes(self.after_strokes.clone());
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        let Some(surface) = ctx.layers.surface_by_id(self.layer_id) else {
+            return;
+        };
+        surface.load_snapshot(&self.before);
+        surface.replace_strokes(self.before_strokes.clone());
+    }
+
+    fn display_name(&self) -> String {
+        "Move Layer".to_string()
     }
 }
 

@@ -28,6 +28,7 @@
 pub mod fill;
 pub mod freehand;
 pub mod ink;
+pub mod layermove;
 pub mod line;
 pub mod pick;
 
