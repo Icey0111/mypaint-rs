@@ -23,6 +23,7 @@
 //! 尺寸常量**全部有源码出处**，逐条标在常量定义处。凡是"本项目自定"的
 //! 数值一律不在此文件出现。
 
+pub(crate) mod accelmap;
 pub(crate) mod actions;
 pub(crate) mod color_panel;
 pub(crate) mod dock;

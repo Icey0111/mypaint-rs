@@ -5,6 +5,7 @@
 //! 撤销/重做命令模型与文档（lib/command.py、lib/document.py）、
 //! 文档 I/O（.ora / .png，lib/document.py 的 save/load）、tooth 纹理沉积等。
 
+pub mod accelmap;
 pub mod brushlib;
 pub mod color;
 pub mod command;
@@ -19,6 +20,7 @@ pub mod zip;
 pub use hokusai;
 pub use pigment_surface as surface;
 
+pub use accelmap::{Accel, AccelError, Entry as AccelEntry, Mods as AccelMods};
 pub use brushlib::{BrushEntry, BrushLibrary, Origin};
 pub use command::{
     Brushwork, Command, CommandOutcome, CommandStack, CommandUpdate, DocContext,

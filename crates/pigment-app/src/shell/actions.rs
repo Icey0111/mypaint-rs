@@ -102,6 +102,26 @@ impl Mods {
     pub fn is_empty(&self) -> bool {
         !self.ctrl && !self.alt && !self.shift
     }
+
+    /// 投影到引擎层的修饰键（`accelmap.conf` 与 GTK 加速键字符串在引擎层）。
+    pub fn to_accel(self) -> pigment_engine::accelmap::Mods {
+        pigment_engine::accelmap::Mods {
+            ctrl: self.ctrl,
+            shift: self.shift,
+            alt: self.alt,
+        }
+    }
+}
+
+/// 引擎层修饰键 → 应用层修饰键（字段名与顺序一致）。
+impl From<pigment_engine::accelmap::Mods> for Mods {
+    fn from(m: pigment_engine::accelmap::Mods) -> Self {
+        Mods {
+            ctrl: m.ctrl,
+            alt: m.alt,
+            shift: m.shift,
+        }
+    }
 }
 
 /// 一条加速键：`<accelerator key="z" modifiers="GDK_CONTROL_MASK"/>`。
@@ -116,32 +136,19 @@ pub struct Accel {
 impl Accel {
     /// 加速键在界面上显示的文字 —— 复刻 `Gtk.accelerator_get_label()`。
     ///
-    /// 规则是量出来的（本机 GTK 3.24.20 实测，105 条加速键的全部取值见
-    /// `tests/fixtures/accel_labels.tsv`，单测逐条比对）：
-    /// - 修饰键顺序 **Shift → Ctrl → Alt**，用 `+` 连接
-    ///   （`<Control><Shift>s` → `Shift+Ctrl+S`，GTK 3 就是这个顺序）；
-    /// - 单字母**一律大写**（`f` → `F`，与是否按了 Shift 无关）；
-    /// - 名字里含下划线的功能键把下划线换成空格（`Page_Up` → `Page Up`）；
-    /// - GTK 有一张特殊显示名表：`backslash` → `Backslash`（**不是** `\`）、
-    ///   `space` → `Space`、方向键 → `←` 等；
-    /// - 其余可打印字符用字符本身（`grave` → `` ` ``、`period` → `.`、
-    ///   `comma` → `,`）。
+    /// 规则（连同 105 条加速键的 GTK 真值门禁、以及 GTK 的 `key_labels[]`
+    /// 特例）在引擎的 [`pigment_engine::accelmap::label`]；这里只做
+    /// "本表 → 引擎"的投影，别再抄一遍规则。
+    ///
+    /// - 修饰键顺序 **Shift → Ctrl → Alt**（`<Shift><Control>s` → `Shift+Ctrl+S`）；
+    /// - 单字母一律大写（`f` → `F`），`Page_Up` → `Page Up`；
+    /// - GTK 的特例表：`backslash` → `Backslash`、`space` → `Space`、
+    ///   `BackSpace` → `Backspace`、`KP_Add` → `+`。
     pub fn label(&self) -> String {
-        let mut parts: Vec<String> = Vec::new();
-        if self.mods.shift {
-            parts.push("Shift".into());
-        }
-        if self.mods.ctrl {
-            parts.push("Ctrl".into());
-        }
-        if self.mods.alt {
-            parts.push("Alt".into());
-        }
-        parts.push(key_label(self.key));
-        parts.join("+")
+        pigment_engine::accelmap::label(self.key, self.mods.to_accel())
     }
 
-    /// GDK 键名 → egui 键位（**技术栈适配**，手写映射表）。
+    /// GDK 键名 → egui 键位（**技术栈适配**，手写映射表 —— 见 [`KEY_NAMES`]）。
     ///
     /// `resources.xml` 实际用到的 GDK 键名是一组固定的小集合（字母、`F1`-`F12`、
     /// `Delete/Home/End/Page_Up/Page_Down/Tab/Up/Down/Left/Right/Menu`、
@@ -149,92 +156,16 @@ impl Accel {
     /// 新增时不会静默漏掉。
     ///
     /// 三处**必须知道**的 egui 行为（都读过 `egui-0.37`/`egui-winit` 源码确认）：
-    /// - egui 的 `Key` 取自 winit 的**逻辑键**（`egui-winit/src/lib.rs:1113,1128`：
-    ///   `logical_key.or(physical_key)`），所以 `Shift+=` 会报成 `Key::Plus`
-    ///   而不是 `Key::Equals`；小键盘 `+` 也报成 `Key::Plus`。
+    /// - egui 的 `Key` 取自 winit 的**逻辑键**（`egui-winit` 的 `Key::from_name`），
+    ///   认不出的字符回落到**物理键**，所以 `Shift+=` 会报成 `Key::Plus`、
+    ///   `Shift+,` 报成 `Key::Comma`（`<` 不在 egui 的表里）。
     /// - **egui 不区分小键盘数字键**（`KeyCode::Numpad4 → Key::Num4`），
     ///   而 GDK 的 `KP_4/KP_5/KP_6` 在源码里绑的是旋转/重置旋转。
     ///   本应用选**槽位数字键**（`0`-`9`，源码里是 `Context0N`）—— 因此
     ///   `KP_4/KP_5/KP_6` 无法映射（见 [`UNMAPPABLE_GDK_KEYS`]）。
     /// - GDK 的 `Menu` 键（上下文菜单键）在 egui 里没有键位。
     pub fn egui_key(&self) -> Option<egui::Key> {
-        Some(match self.key {
-            "a" => egui::Key::A,
-            "b" => egui::Key::B,
-            "c" => egui::Key::C,
-            "d" => egui::Key::D,
-            "e" => egui::Key::E,
-            "f" => egui::Key::F,
-            "g" => egui::Key::G,
-            "h" => egui::Key::H,
-            "i" => egui::Key::I,
-            "j" => egui::Key::J,
-            "k" => egui::Key::K,
-            "l" => egui::Key::L,
-            "m" => egui::Key::M,
-            "n" => egui::Key::N,
-            "o" => egui::Key::O,
-            "p" => egui::Key::P,
-            "q" => egui::Key::Q,
-            "r" => egui::Key::R,
-            "s" => egui::Key::S,
-            "t" => egui::Key::T,
-            "u" => egui::Key::U,
-            "v" => egui::Key::V,
-            "w" => egui::Key::W,
-            "x" => egui::Key::X,
-            "y" => egui::Key::Y,
-            "z" => egui::Key::Z,
-            "0" => egui::Key::Num0,
-            "1" => egui::Key::Num1,
-            "2" => egui::Key::Num2,
-            "3" => egui::Key::Num3,
-            "4" => egui::Key::Num4,
-            "5" => egui::Key::Num5,
-            "6" => egui::Key::Num6,
-            "7" => egui::Key::Num7,
-            "8" => egui::Key::Num8,
-            "9" => egui::Key::Num9,
-            "F1" => egui::Key::F1,
-            "F2" => egui::Key::F2,
-            "F3" => egui::Key::F3,
-            "F4" => egui::Key::F4,
-            "F5" => egui::Key::F5,
-            "F6" => egui::Key::F6,
-            "F7" => egui::Key::F7,
-            "F8" => egui::Key::F8,
-            "F9" => egui::Key::F9,
-            "F10" => egui::Key::F10,
-            "F11" => egui::Key::F11,
-            "F12" => egui::Key::F12,
-            "Delete" => egui::Key::Delete,
-            "BackSpace" => egui::Key::Backspace,
-            "Home" => egui::Key::Home,
-            "End" => egui::Key::End,
-            "Page_Up" => egui::Key::PageUp,
-            "Page_Down" => egui::Key::PageDown,
-            "Tab" => egui::Key::Tab,
-            "Up" => egui::Key::ArrowUp,
-            "Down" => egui::Key::ArrowDown,
-            "Left" => egui::Key::ArrowLeft,
-            "Right" => egui::Key::ArrowRight,
-            // ---- 标点键：名字与字符不对应，逐个列出 ----
-            "comma" => egui::Key::Comma,
-            "period" => egui::Key::Period,
-            "grave" => egui::Key::Backtick,
-            "backslash" => egui::Key::Backslash,
-            "bracketleft" => egui::Key::OpenBracket,
-            "bracketright" => egui::Key::CloseBracket,
-            "minus" | "KP_Subtract" => egui::Key::Minus,
-            "equal" => egui::Key::Equals,
-            "plus" | "KP_Add" => egui::Key::Plus,
-            // `<` / `>` / `|` 在 US 布局上是 Shift 组合键，egui 侧对应主键位
-            "less" => egui::Key::Comma,
-            "greater" => egui::Key::Period,
-            "bar" => egui::Key::Pipe,
-            // 无对应物：见 [`UNMAPPABLE_GDK_KEYS`]
-            _ => return None,
-        })
+        egui_key_for(self.key)
     }
 
     /// egui 侧的**实测**绑定：`(键位, egui 会报的修饰键)`。
@@ -242,20 +173,13 @@ impl Accel {
     /// 与 [`Accel::mods`] 的差别只在一处，但那处是硬差异：**GDK 不把"被消费掉的
     /// Shift"计入修饰键**（`keyboard.py:127-133` 明确要减掉 `consumed_modifiers`），
     /// egui 却照实报 `shift=true`。所以 `+`（Shift+=）、`<`（Shift+,）、
-    /// `>`（Shift+.）、`|`（Shift+\）这几个键，在 egui 侧要多带一位 Shift
-    /// 才能与 `comma` / `period` 这类裸标点区分开。
+    /// `>`（Shift+.）、`|`（Shift+\）这些键，在 egui 侧要多带一位 Shift
+    /// 才能与 `comma` / `period` 这类裸标点区分开 —— 展开成数据就是
+    /// [`KEY_NAMES`] 里的 `needs_shift` 列。
     pub fn egui_binding(&self) -> Option<(egui::Key, Mods)> {
-        let key = self.egui_key()?;
-        let mut mods = self.mods;
-        if SHIFTED_SYMBOL_KEYS.contains(&self.key) {
-            mods.shift = true;
-        }
-        Some((key, mods))
+        egui_binding_for(self.key, self.mods)
     }
 }
-
-/// GDK 里需要按 Shift 才打得出来的符号键 —— 见 [`Accel::egui_binding`]。
-const SHIFTED_SYMBOL_KEYS: &[&str] = &["plus", "less", "greater", "bar"];
 
 /// 明确**无法映射**到 egui 键位的 GDK 键名（单测断言时按字典序比较）。
 ///
@@ -265,84 +189,255 @@ const SHIFTED_SYMBOL_KEYS: &[&str] = &["plus", "less", "greater", "bar"];
 /// - `Menu`：上下文菜单键，egui 没有这个键位。
 pub const UNMAPPABLE_GDK_KEYS: &[&str] = &["KP_4", "KP_5", "KP_6", "Menu"];
 
-/// 键名的**显示文字** —— 对应 GTK `gtkaccelgroup.c` 的取名字规则。
+/// 一条键位的**双向**映射：GDK 键值名 ⇄ egui 键位（**技术栈适配**表）。
 ///
-/// 规则是按本机 GTK 3.24.20 实测出来的（不是推导出来的），顺序为：
+/// 三列：
+/// - `name`：`gdk_keyval_name()` 的拼写（`accelmap.conf` 里写的就是它）
+/// - `key`：egui 的键位
+/// - `needs_shift`：这个**字符**在美国布局上是不是要按 Shift 才打得出来
+///   （`!` `?` `{` `<` … 是，`,` `.` `;` 不是）
 ///
-/// 1. **特殊显示名表优先**：`backslash` → `Backslash`（**不是** `\`）、
-///    `space` → `Space`、`ISO_Left_Tab` → `Left Tab`。
-/// 2. 单字符键值（字母）**一律大写** —— 与是否按 Shift 无关，实测 `f` → `F`。
-///    对应 GTK 内部先做 `gdk_keyval_to_upper()` 再取字符。
-/// 3. 其余**可打印 ASCII 标点**显示字符本身：`period` → `.`、`grave` → `` ` ``、
-///    `bracketright` → `]`、`bar` → `|`……（`backslash` 是这条的唯一例外，
-///    因为第 1 条先命中）。
-/// 4. 剩下的用键名，下划线换空格：`Page_Up` → `Page Up`、
-///    `Page_Down` → `Page Down`；`F1`、`Delete`、`Home`、`End`、`Tab`、
-///    `Left/Right/Up/Down` 原样。
-pub fn key_label(gdk_key: &str) -> String {
-    // 1. GTK 的特殊名表
-    if let Some((_, label)) = SPECIAL_KEY_LABELS.iter().find(|(k, _)| *k == gdk_key) {
-        return (*label).to_string();
-    }
-    // 2/4. 单字符：字母大写，标点原样
-    if gdk_key.chars().count() == 1 {
-        return gdk_key.to_ascii_uppercase();
-    }
-    // 3. 可打印 ASCII 标点的键名 → 字符本身
-    if let Some((_, c)) = ASCII_PUNCT_NAMES.iter().find(|(k, _)| *k == gdk_key) {
-        return (*c).to_string();
-    }
-    gdk_key.replace('_', " ")
+/// `needs_shift` 是"GDK 的 consumed_modifiers"这条规则展开成数据的结果：
+/// 按 Shift+, 时 GDK 给出的键值是 `less`、修饰键**没有** Shift（Shift 被"消费"
+/// 成字符了，`keyboard.py:127-133`），而 egui 报的是 `Key::Comma` + `shift=true`
+/// （`<` 不在 egui 的 `Key::from_name` 表里，回落物理键）。所以同一个物理组合
+/// 在两边要差一位 Shift —— 查表时补上/去掉，见
+/// [`egui_binding_for`] 与 [`capture_accel`]。
+///
+/// 同一个 egui 键位可以出现两次（`minus` / `underscore` 都是 `Key::Minus`），
+/// 靠 `needs_shift` 区分，正好对应 GDK 的两个键值。
+struct KeyName {
+    name: &'static str,
+    key: egui::Key,
+    needs_shift: bool,
 }
 
-/// GTK 为这几个键值准备了专门的显示名（优先于"显示字符本身"）。
+/// 键名 ⇄ egui 键位的全部映射（**唯一的**两张表合一）。
 ///
-/// 本项目的加速键只用到前两项，但把 `ISO_Left_Tab` 一并记着 —— 它是
-/// `_` → 空格规则的产物（`Left Tab`），实测确认，免得以后误以为是笔误。
-const SPECIAL_KEY_LABELS: &[(&str, &str)] = &[
-    ("space", "Space"),
-    ("backslash", "Backslash"),
-    ("ISO_Left_Tab", "Left Tab"),
+/// 覆盖范围是"源码用到的 GDK 键名"（`resources.xml` 105 条 + `document.py` 的
+/// 20 条槽位键）加上"捕获流程能产出的一切"（[`capture_accel`] 从 egui 键位
+/// 反推 GDK 名）。单测逐项断言：本表里每个 `name` 都被真 GTK 接受
+/// （fixture `crates/pigment-engine/tests/fixtures/accel_names.tsv`），
+/// 且捕获 → 查表能原路返回。
+const KEY_NAMES: &[KeyName] = &[
+    // ---- 字母（26）----
+    kn("a", egui::Key::A, false),
+    kn("b", egui::Key::B, false),
+    kn("c", egui::Key::C, false),
+    kn("d", egui::Key::D, false),
+    kn("e", egui::Key::E, false),
+    kn("f", egui::Key::F, false),
+    kn("g", egui::Key::G, false),
+    kn("h", egui::Key::H, false),
+    kn("i", egui::Key::I, false),
+    kn("j", egui::Key::J, false),
+    kn("k", egui::Key::K, false),
+    kn("l", egui::Key::L, false),
+    kn("m", egui::Key::M, false),
+    kn("n", egui::Key::N, false),
+    kn("o", egui::Key::O, false),
+    kn("p", egui::Key::P, false),
+    kn("q", egui::Key::Q, false),
+    kn("r", egui::Key::R, false),
+    kn("s", egui::Key::S, false),
+    kn("t", egui::Key::T, false),
+    kn("u", egui::Key::U, false),
+    kn("v", egui::Key::V, false),
+    kn("w", egui::Key::W, false),
+    kn("x", egui::Key::X, false),
+    kn("y", egui::Key::Y, false),
+    kn("z", egui::Key::Z, false),
+    // ---- 数字（10）----
+    kn("0", egui::Key::Num0, false),
+    kn("1", egui::Key::Num1, false),
+    kn("2", egui::Key::Num2, false),
+    kn("3", egui::Key::Num3, false),
+    kn("4", egui::Key::Num4, false),
+    kn("5", egui::Key::Num5, false),
+    kn("6", egui::Key::Num6, false),
+    kn("7", egui::Key::Num7, false),
+    kn("8", egui::Key::Num8, false),
+    kn("9", egui::Key::Num9, false),
+    // ---- 功能键（egui 有 F1-F35）----
+    kn("F1", egui::Key::F1, false),
+    kn("F2", egui::Key::F2, false),
+    kn("F3", egui::Key::F3, false),
+    kn("F4", egui::Key::F4, false),
+    kn("F5", egui::Key::F5, false),
+    kn("F6", egui::Key::F6, false),
+    kn("F7", egui::Key::F7, false),
+    kn("F8", egui::Key::F8, false),
+    kn("F9", egui::Key::F9, false),
+    kn("F10", egui::Key::F10, false),
+    kn("F11", egui::Key::F11, false),
+    kn("F12", egui::Key::F12, false),
+    kn("F13", egui::Key::F13, false),
+    kn("F14", egui::Key::F14, false),
+    kn("F15", egui::Key::F15, false),
+    kn("F16", egui::Key::F16, false),
+    kn("F17", egui::Key::F17, false),
+    kn("F18", egui::Key::F18, false),
+    kn("F19", egui::Key::F19, false),
+    kn("F20", egui::Key::F20, false),
+    kn("F21", egui::Key::F21, false),
+    kn("F22", egui::Key::F22, false),
+    kn("F23", egui::Key::F23, false),
+    kn("F24", egui::Key::F24, false),
+    kn("F25", egui::Key::F25, false),
+    kn("F26", egui::Key::F26, false),
+    kn("F27", egui::Key::F27, false),
+    kn("F28", egui::Key::F28, false),
+    kn("F29", egui::Key::F29, false),
+    kn("F30", egui::Key::F30, false),
+    kn("F31", egui::Key::F31, false),
+    kn("F32", egui::Key::F32, false),
+    kn("F33", egui::Key::F33, false),
+    kn("F34", egui::Key::F34, false),
+    kn("F35", egui::Key::F35, false),
+    // ---- 编辑/导航键 ----
+    kn("Escape", egui::Key::Escape, false),
+    kn("Tab", egui::Key::Tab, false),
+    kn("BackSpace", egui::Key::Backspace, false),
+    kn("Return", egui::Key::Enter, false),
+    kn("space", egui::Key::Space, false),
+    kn("Insert", egui::Key::Insert, false),
+    kn("Delete", egui::Key::Delete, false),
+    kn("Home", egui::Key::Home, false),
+    kn("End", egui::Key::End, false),
+    kn("Page_Up", egui::Key::PageUp, false),
+    kn("Page_Down", egui::Key::PageDown, false),
+    kn("Left", egui::Key::ArrowLeft, false),
+    kn("Right", egui::Key::ArrowRight, false),
+    kn("Up", egui::Key::ArrowUp, false),
+    kn("Down", egui::Key::ArrowDown, false),
+    // ---- 不需要 Shift 的标点（美国布局）----
+    kn("comma", egui::Key::Comma, false),
+    kn("period", egui::Key::Period, false),
+    kn("slash", egui::Key::Slash, false),
+    kn("backslash", egui::Key::Backslash, false),
+    kn("minus", egui::Key::Minus, false),
+    kn("equal", egui::Key::Equals, false),
+    kn("semicolon", egui::Key::Semicolon, false),
+    kn("apostrophe", egui::Key::Quote, false),
+    kn("grave", egui::Key::Backtick, false),
+    kn("bracketleft", egui::Key::OpenBracket, false),
+    kn("bracketright", egui::Key::CloseBracket, false),
+    // ---- 小键盘：egui 与主键盘合并，只在"读文件"方向能区分 ----
+    // `KP_Add` / `KP_Subtract` 与 `plus` / `minus` 撞在同一个 egui 键位上，
+    // 靠 Shift 位分开（`KP_Add` 不带 Shift，`plus` 带），见 [`capture_accel`]。
+    kn("KP_Add", egui::Key::Plus, false),
+    kn("KP_Subtract", egui::Key::Minus, false),
+    // ---- 需要 Shift 的标点（美国布局）：GDK 的键值本身是"Shift 后的字符" ----
+    kn("exclam", egui::Key::Num1, true),
+    kn("at", egui::Key::Num2, true),
+    kn("numbersign", egui::Key::Num3, true),
+    kn("dollar", egui::Key::Num4, true),
+    kn("percent", egui::Key::Num5, true),
+    kn("asciicircum", egui::Key::Num6, true),
+    kn("ampersand", egui::Key::Num7, true),
+    kn("asterisk", egui::Key::Num8, true),
+    kn("parenleft", egui::Key::Num9, true),
+    kn("parenright", egui::Key::Num0, true),
+    kn("underscore", egui::Key::Minus, true),
+    kn("plus", egui::Key::Plus, true),
+    kn("braceleft", egui::Key::OpenBracket, true),
+    kn("braceright", egui::Key::CloseBracket, true),
+    kn("bar", egui::Key::Pipe, true),
+    kn("colon", egui::Key::Semicolon, true),
+    kn("quotedbl", egui::Key::Quote, true),
+    kn("less", egui::Key::Comma, true),
+    kn("greater", egui::Key::Period, true),
+    kn("question", egui::Key::Slash, true),
+    kn("asciitilde", egui::Key::Backtick, true),
 ];
 
-/// GDK 里对应**可打印 ASCII 字符**的键名（`gdk_keyval_name()` 的名字）→ 字符。
+const fn kn(name: &'static str, key: egui::Key, needs_shift: bool) -> KeyName {
+    KeyName {
+        name,
+        key,
+        needs_shift,
+    }
+}
+
+/// GDK 键名 → egui 键位（无对应物时 `None`，见 [`UNMAPPABLE_GDK_KEYS`]）。
+pub fn egui_key_for(name: &str) -> Option<egui::Key> {
+    KEY_NAMES.iter().find(|e| e.name == name).map(|e| e.key)
+}
+
+/// GDK 键名 + 修饰键 → egui 侧的 `(键位, 修饰键)`。
 ///
-/// GTK 对落在 0x21..=0x7e 的键值显示字符本身，而 GDK 的键名是单词形式，
-/// 所以这张表就是把两者对起来。`space`（0x20）与 `backslash`（0x5c）不在此表，
-/// 它们在 [`SPECIAL_KEY_LABELS`] 里。
-const ASCII_PUNCT_NAMES: &[(&str, char)] = &[
-    ("exclam", '!'),
-    ("quotedbl", '"'),
-    ("numbersign", '#'),
-    ("dollar", '$'),
-    ("percent", '%'),
-    ("ampersand", '&'),
-    ("apostrophe", '\''),
-    ("parenleft", '('),
-    ("parenright", ')'),
-    ("asterisk", '*'),
-    ("plus", '+'),
-    ("comma", ','),
-    ("minus", '-'),
-    ("period", '.'),
-    ("slash", '/'),
-    ("colon", ':'),
-    ("semicolon", ';'),
-    ("less", '<'),
-    ("equal", '='),
-    ("greater", '>'),
-    ("question", '?'),
-    ("at", '@'),
-    ("bracketleft", '['),
-    ("bracketright", ']'),
-    ("asciicircum", '^'),
-    ("underscore", '_'),
-    ("grave", '`'),
-    ("braceleft", '{'),
-    ("bar", '|'),
-    ("braceright", '}'),
-    ("asciitilde", '~'),
-];
+/// 这就是 [`Accel::egui_binding`] 的实现：`needs_shift` 的键要多带一位 Shift
+/// （原因见 [`KeyName`] 的文档）。
+pub fn egui_binding_for(name: &str, mods: Mods) -> Option<(egui::Key, Mods)> {
+    let entry = KEY_NAMES.iter().find(|e| e.name == name)?;
+    let mut mods = mods;
+    if entry.needs_shift {
+        mods.shift = true;
+    }
+    Some((entry.key, mods))
+}
+
+/// egui 键位（+ 是否按着 Shift）→ GDK 键名 —— [`capture_accel`] 的底层。
+///
+/// 返回值是 `(键名, 是否把 Shift 交给 GDK 消费)`：
+/// - 该键位在本表里有一条 `needs_shift` 与 Shift 状态**相同**的记录 → 用它的名字，
+///   且 Shift 已被消费（`capture_accel` 会清掉 SHIFT 位）；
+/// - 否则退回该键位的另一条记录（字母、功能键只有 `needs_shift=false` 那条），
+///   Shift 保留。
+pub fn gdk_name_for_egui(key: egui::Key, shift: bool) -> Option<(&'static str, bool)> {
+    if let Some(e) = KEY_NAMES
+        .iter()
+        .find(|e| e.key == key && e.needs_shift == shift)
+    {
+        return Some((e.name, e.needs_shift));
+    }
+    if shift {
+        // 字母/功能键/方向键：Shift 不被消费，键名不变、修饰键保留
+        return KEY_NAMES
+            .iter()
+            .find(|e| e.key == key && !e.needs_shift)
+            .map(|e| (e.name, false));
+    }
+    None
+}
+
+/// 这个 egui 键位是不是**修饰键本身**（不参与捕获）。
+///
+/// 对应 `gui/accelmap.py:469` 的 `if event.is_modifier: return False`：
+/// GTK 的 `Gdk.EventKey.is_modifier` 就是在问这个；egui 没有 `is_modifier`，
+/// 只能按 `Key` 变体判断（`egui-winit` 会把修饰键映射成这些变体）。
+pub fn is_modifier_key(key: egui::Key) -> bool {
+    matches!(
+        key,
+        egui::Key::ShiftLeft
+            | egui::Key::ShiftRight
+            | egui::Key::ControlLeft
+            | egui::Key::ControlRight
+            | egui::Key::AltLeft
+            | egui::Key::AltRight
+            | egui::Key::SuperLeft
+            | egui::Key::SuperRight
+    )
+}
+
+/// 捕获到的按键 → 加速键（**技术栈适配**：GTK 的 `gtk_accel_group` 捕获逻辑的替身）。
+///
+/// 对应 `gui/accelmap.py:482-503`（"Stolen from GTK 2.24's gtkmenu.c"）：
+/// 1. 键值小写化、`mods = state & default_mod_mask & ~consumed_modifiers`
+///    —— 在 egui 侧就是 [`gdk_name_for_egui`] 的 `needs_shift` 处理：
+///    Shift+, 得到的键是 `less`、修饰键里**没有** Shift；
+/// 2. 修饰键只留 Ctrl/Alt/Shift（egui 也没有别的位可留）。
+///
+/// 返回 `None` 表示这个键位没有 GDK 名字（egui 的浏览器键、媒体键等），
+/// 调用方要给出提示而不是悄悄丢。
+pub fn capture_accel(key: egui::Key, mods: Mods) -> Option<(&'static str, Mods)> {
+    let (name, shift_consumed) = gdk_name_for_egui(key, mods.shift)?;
+    let mut mods = mods;
+    if shift_consumed {
+        mods.shift = false;
+    }
+    Some((name, mods))
+}
 
 /// 一条动作定义。字段与 `resources.xml` 的属性一一对应。
 #[derive(Clone, Copy, Debug)]
@@ -706,8 +801,18 @@ impl Bound {
 /// 2. `resources.xml` 的加速键
 /// 3. 代码里的硬编码兜底键（**逆序**：源码说同键绑两次时后一个生效）
 ///
+/// 这是**默认表**的查表（`resources.xml` + `document.py` 注册的键）。运行时
+/// 应用还要叠一层用户覆盖（`accelmap.conf`），那条链路在
+/// [`crate::shell::accelmap::AccelMap::lookup`] —— 它先查覆盖层，再查
+/// [`lookup_menu`]，最后查 [`lookup_fallback`]，顺序与源码的两张表一致。
+///
 /// 应用本地扩展键不在这个顺序里 —— 它们走 [`lookup_app`]，由调用方先查。
 pub fn lookup(key: egui::Key, mods: Mods) -> Option<Bound> {
+    lookup_menu(key, mods).or_else(|| lookup_fallback(key, mods))
+}
+
+/// 菜单级（`keymap`，优先级 1）：槽位键 + `resources.xml` 的加速键。
+pub fn lookup_menu(key: egui::Key, mods: Mods) -> Option<Bound> {
     // 1. 槽位键：`0`-`9` 恢复、`Ctrl+0`-`9` 存入
     if mods.alt == false && mods.shift == false {
         if let Some(n) = digit_of(key) {
@@ -722,8 +827,11 @@ pub fn lookup(key: egui::Key, mods: Mods) -> Option<Bound> {
     {
         return Some(Bound::Action(a.id));
     }
+    None
+}
 
-    // 3. 硬编码兜底键（逆序：源码"后绑定的生效"）
+/// 硬编码兜底（`keymap2`，优先级 2）—— 逆序：源码"后绑定的生效"。
+pub fn lookup_fallback(key: egui::Key, mods: Mods) -> Option<Bound> {
     for d in EXTRA_ACCELS.iter().rev() {
         if matches(d.accel, key, mods) {
             return Some(match (d.action, d.behavior) {
@@ -853,7 +961,10 @@ pub fn lookup_app(key: egui::Key, mods: Mods) -> Option<&'static AppKey> {
 ///
 /// 槽位动作名总共只有 `2 * NUM_CONTEXT_SLOTS` 个，首次用到时一次性 intern
 /// 成静态串（不用 `Box::leak`：那个写法每按一次键就漏一小块）。
-fn context_action_name(slot: usize, store: bool) -> &'static str {
+///
+/// B6-2 的默认表（`shell::accelmap::build_rows`）也用这个函数拿槽位动作名，
+/// 所以它是 `pub(crate)`。
+pub(crate) fn context_action_name(slot: usize, store: bool) -> &'static str {
     static NAMES: OnceLock<[String; NUM_CONTEXT_SLOTS * 2]> = OnceLock::new();
     let names = NAMES.get_or_init(|| {
         std::array::from_fn(|i| {

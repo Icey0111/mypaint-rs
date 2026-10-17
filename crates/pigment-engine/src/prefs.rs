@@ -120,6 +120,11 @@ pub const KEY_SYMMETRY_LINE_ALPHA: &str = "symmetry.line_alpha";
 /// 画框颜色（RGBA）—— `gui/userconfig.py:92`（默认 `(0.12, 0.12, 0.12, 0.92)`）；
 /// 读取处 `gui/framewindow.py:502-505` / `:826`，写回处 `:618`。
 pub const KEY_FRAME_COLOR_RGBA: &str = "frame.color_rgba";
+/// 是否禁用硬编码兜底键位 —— **默认表里没有这个键**（软键）：读取处
+/// `gui/keyboard.py:159-160` 的 `fallbacks_disabled()`（`.get(..., False)`），
+/// 复选框在偏好对话框的 "Keys" 页签（`gui/preferenceswindow.glade:451-466`，
+/// 初值见 `gui/preferenceswindow.py:151`，写回见 `:265`）。
+pub const KEY_DISABLE_FALLBACKS: &str = "keyboard.disable_fallbacks";
 
 /// 平台分支 —— `gui/userconfig.py:54` 的 `sys.platform == "win32"`。
 ///

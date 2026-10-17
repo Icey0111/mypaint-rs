@@ -156,6 +156,15 @@ pub struct PigmentApp {
     /// 退出时 `save_gui_config` 写回（`:624-628`）。类型与路径规则在
     /// `pigment_engine::prefs`。
     pub(crate) prefs: Prefs,
+    // ---- 加速键映射（B6-2）----
+    /// 加速键表：默认表（`resources.xml` + `document.py` 的槽位键）+ 用户覆盖
+    /// （`accelmap.conf`，`gui/application.py:417` 载入 / `:625` 保存）。
+    ///
+    /// 查表入口是 [`crate::shell::accelmap::AccelMap::lookup`]（`handle_keys`
+    /// 用它，取代了原来直接调 `actions::lookup`）。
+    pub(crate) accel_map: crate::shell::accelmap::AccelMap,
+    /// "Keys" 编辑器窗口的状态（B6-2；偏好对话框外壳属 B6-3）。
+    pub(crate) key_editor: crate::shell::accelmap::KeyEditorState,
     // ---- 暂存区（B5）----
     /// 暂存区：**第二份文档** + 独立模式栈 + 独立视图。
     ///
@@ -541,6 +550,11 @@ impl PigmentApp {
         let mut app = Self {
             doc: Document::new(),
             prefs,
+            // 加速键：先建默认表再加载用户覆盖（`gui/application.py:417` 的
+            // 顺序：GTK 先注册 `resources.xml`/`document.py` 的绑定，
+            // 之后才 `Gtk.AccelMap.load()`）
+            accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
+            key_editor: Default::default(),
             scratch,
             scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),
             scratch_was_added: false,
@@ -602,6 +616,9 @@ impl PigmentApp {
         // `ModeStack::set_freehand_config`）。走 `apply_settings` 是为了让
         // 启动与偏好对话框 ACCEPT 用同一条路径（`application.py:487`/`:514-522`）。
         app.apply_settings();
+        // 载入用户按键覆盖 —— `gui/application.py:417`。放在 `apply_settings`
+        // 之后：与源码一致（那时动作表/槽位键都注册完了）。
+        app.load_accel_map();
         // 启动时载回上次的暂存页（`application.py:474-486`）：偏好
         // `scratchpad.last_opened_scratchpad` 有就用它，没有就写回 autosave 路径。
         app.scratch.startup_page(&mut app.prefs);
@@ -628,8 +645,8 @@ impl PigmentApp {
     /// 保存配置 —— `Application.save_gui_config()`（`gui/application.py:624-628`）。
     ///
     /// 源码三件事，逐条对应：
-    /// 1. `Gtk.AccelMap.save(<conf>/accelmap.conf)`（`:625`）—— 按键编辑器属
-    ///    **B6-2**，这里没有可写的加速键表（记账）；
+    /// 1. `Gtk.AccelMap.save(<conf>/accelmap.conf)`（`:625`）—— B6-2 已接线，
+    ///    见 [`PigmentApp::save_accel_map`]；
     /// 2. `preferences["workspace.layout"] = wkspace.get_layout()`（`:626-627`）——
     ///    窗口/停靠布局的序列化属 **B6-3**（`shell/dock.rs` 的记账）；
     /// 3. `save_settings()`（`:628`）—— 本方法做的就是把当前状态写回偏好再落盘。
@@ -637,6 +654,8 @@ impl PigmentApp {
     /// 调用点：退出（`quit_cb`，`drawwindow.py:688-690`；eframe 侧是
     /// [`eframe::App::on_exit`]）与偏好对话框 ACCEPT（`preferenceswindow.py:130`）。
     pub(crate) fn save_gui_config(&mut self) {
+        // 1. 按键表整表落盘（与 `:625` 同一位置）
+        self.save_accel_map();
         // 颜色管理器的五条键（源码"改动即写"，这里是保存时整份同步，见
         // `ColorManager::store_prefs` 的说明）
         self.color_manager.store_prefs(&mut self.prefs);
@@ -1426,6 +1445,11 @@ impl PigmentApp {
         if ctx.text_edit_focused() {
             return;
         }
+        // 按键捕获对话框开着时，键事件归捕获流程（`shell::accelmap`），
+        // 不能顺手触发一次快捷键 —— 对应 GTK 那边"对话框是模态的"。
+        if self.key_editor.capture.is_some() {
+            return;
+        }
         let events: Vec<(egui::Key, actions::Mods)> = ctx.input(|i| {
             i.events
                 .iter()
@@ -1457,7 +1481,13 @@ impl PigmentApp {
                 return;
             }
         }
-        match actions::lookup(key, mods) {
+        // 查表走 `AccelMap`（默认表 + `accelmap.conf` 的用户覆盖 + 兜底），
+        // 对应 `gui/keyboard.py:139-142` 的两级查找。兜底键可以被偏好关掉
+        // （`keyboard.py:159-160` 的 `fallbacks_disabled()`）。
+        let allow_fallbacks = !self
+            .prefs
+            .bool_or(pigment_engine::prefs::KEY_DISABLE_FALLBACKS, false);
+        match self.accel_map.lookup(key, mods, allow_fallbacks) {
             Some(actions::Bound::Action(id)) | Some(actions::Bound::ExtraAction(id)) => {
                 self.run_action(id, ctx, now);
             }
@@ -1616,6 +1646,8 @@ impl PigmentApp {
             "SymmetryActive" | "FrameToggle" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
+            // ---- 偏好（B6-2 只开了 "Keys" 页签）----
+            "PreferencesWindow" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
             "ContextRestoreColor" => true,
             _ => actions::parse_context_action(id).is_some(),
@@ -2120,6 +2152,16 @@ impl PigmentApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(self.fullscreen));
             }
             "Quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            // ---- 偏好（B6-2 只做 "Keys" 页签）----
+            // `PreferencesWindow`（`resources.xml:1330-1335`，label
+            // "Edit Preferences"，handler `toggle_window_cb`）开的是偏好对话框；
+            // 对话框整体属 B6-3，这里先只打开其中的 accelmap 编辑器
+            // （`gui/preferenceswindow.glade:439` 把 `AccelMapEditor` 放在
+            // "Keys" 页签里，页签标题见 `:489`）。
+            "PreferencesWindow" => {
+                self.key_editor.open = true;
+                ctx.request_repaint();
+            }
             // ---- 笔刷快捷键是否连颜色一起还原（`ContextRestoreColor`，按键 `）----
             // 源码 `context_toggle_color_cb`（`document.py:1721-1724`）只是写偏好
             // `misc.context_restores_color`；开关由管理器持有（默认 True，
@@ -2245,6 +2287,10 @@ impl eframe::App for PigmentApp {
 
         // 文件路径弹层放最后画（浮在最上层）。它打开时输入框会拿到键盘焦点，
         // 于是 `handle_keys` 的 `text_edit_focused()` 早退会顺带挡住所有快捷键。
+        //
+        // "Keys" 编辑器（B6-2）在它之前：编辑器里的捕获对话框也是 `Modal`，
+        // 两个弹层不会同时存在（捕获时 `handle_keys` 直接早退）。
+        self.keybindings_window(&ctx);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();
