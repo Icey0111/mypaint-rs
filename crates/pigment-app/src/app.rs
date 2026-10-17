@@ -1610,23 +1610,11 @@ impl PigmentApp {
                 true
             }
             "RaiseLayerInStack" | "LowerLayerInStack" => {
-                // 同层内的兄弟间换位（`_bubble_layer` 的跨组分支未移植）
+                // `_update_layer_bubble_actions`（document.py:1393-1405）：
+                // 组内恒可（冒泡会出组），根层看端点。
                 let ls = self.doc.layers();
                 let path = ls.current_path().to_vec();
-                let (idx, parent) = match path.split_last() {
-                    Some((last, rest)) => (*last, rest.to_vec()),
-                    None => return false,
-                };
-                let count = if parent.is_empty() {
-                    ls.len()
-                } else {
-                    ls.layer_at(&parent).map(|l| l.child_count()).unwrap_or(0)
-                };
-                if id == "RaiseLayerInStack" {
-                    idx > 0
-                } else {
-                    idx + 1 < count
-                }
+                ls.can_bubble(&path, id == "RaiseLayerInStack")
             }
             "MergeLayerDown" => {
                 // `get_merge_down_target` 的判据（tree.py:2003）：下一个兄弟存在、

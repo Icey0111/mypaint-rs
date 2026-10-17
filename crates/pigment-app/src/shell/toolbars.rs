@@ -130,6 +130,120 @@ fn lookup_png(name: &str) -> Option<&'static [u8]> {
     ICONS.iter().find(|(n, _)| *n == name).map(|(_, b)| *b)
 }
 
+/// 水印用的**带 1px 黑描边**图标（`drawutils.py:291-367` 的
+/// `load_symbolic_icon(..., outline=(0,0,0,1))`）。
+///
+/// GTK 的做法不是给图形描边，而是：图形缩小到 `size-2`（水印传 18 →
+/// 图形 16），画布 `size`，把**黑色、alpha=1/3** 的同一图形在周围 8 个
+/// 偏移各盖一次，再把正常颜色的图形放到 `(1,1)`。这样黑边只从图形外缘
+/// 露出来，且与图形 alpha 相乘（半透明边缘的描边也半透明）。
+///
+/// 图标 PNG 是 24×24（`build.rs` 栅格化尺寸），这里重采样到 16×16；
+/// 上游是按矢量在 16px 渲染，曲线细节可能差 1px，属技术栈适配。
+pub fn outlined_icon_texture(
+    ctx: &egui::Context,
+    cache: &mut IconCache,
+    name: &str,
+) -> Option<egui::TextureHandle> {
+    let key: &'static str = leak(&format!("outlined-icon-{name}"));
+    if let Some(t) = cache.get(key) {
+        return Some(t.clone());
+    }
+    let resolved = if lookup_png(name).is_some() {
+        name.to_string()
+    } else {
+        format!("{name}-symbolic")
+    };
+    let bytes = lookup_png(&resolved)?;
+    let img = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let base = image::imageops::resize(&img, 16, 16, image::imageops::FilterType::Lanczos3);
+    let pixels = outlined_icon_pixels(&base);
+    let t = ctx.load_texture(
+        key,
+        egui::ColorImage {
+            size: [18, 18],
+            source_size: egui::Vec2::new(18.0, 18.0),
+            pixels,
+        },
+        egui::TextureOptions::LINEAR,
+    );
+    cache.insert(key, t.clone());
+    Some(t)
+}
+
+/// `outlined_icon_texture` 的像素部分：16×16 图形 → 18×18 黑描边成品。
+fn outlined_icon_pixels(base: &image::RgbaImage) -> Vec<egui::Color32> {
+    const SIZE: usize = 18;
+    const ICON: i32 = 16;
+    // 直通 alpha 的 f32 RGBA 累加缓冲。
+    let mut buf = vec![[0.0f32; 4]; SIZE * SIZE];
+
+    fn over(dst: &mut [f32; 4], rgb: [f32; 3], sa: f32) {
+        if sa <= 0.0 {
+            return;
+        }
+        let da = dst[3];
+        let out_a = sa + da * (1.0 - sa);
+        if out_a <= 0.0 {
+            return;
+        }
+        for c in 0..3 {
+            dst[c] = (rgb[c] * sa + dst[c] * da * (1.0 - sa)) / out_a;
+        }
+        dst[3] = out_a;
+    }
+
+    const OFFSETS: [(i32, i32); 8] = [
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+        (-1, 0),
+        (1, 0),
+        (-1, 1),
+        (0, 1),
+        (1, 1),
+    ];
+
+    // 第一遍：8 个偏移的黑描边，alpha = 图形 alpha / 3（`outline[3] /= 3.0`）。
+    for y in 0..ICON {
+        for x in 0..ICON {
+            let a = base.get_pixel(x as u32, y as u32)[3] as f32 / 255.0;
+            if a <= 0.0 {
+                continue;
+            }
+            for (dx, dy) in OFFSETS {
+                let (px, py) = (x + 1 + dx, y + 1 + dy);
+                if px >= 0 && py >= 0 && (px as usize) < SIZE && (py as usize) < SIZE {
+                    let dst = &mut buf[py as usize * SIZE + px as usize];
+                    over(dst, [0.0, 0.0, 0.0], a / 3.0);
+                }
+            }
+        }
+    }
+    // 第二遍：正常颜色（symbolic 前景 215）的图形放在 (1,1)。
+    for y in 0..ICON {
+        for x in 0..ICON {
+            let a = base.get_pixel(x as u32, y as u32)[3] as f32 / 255.0;
+            if a <= 0.0 {
+                continue;
+            }
+            let dst = &mut buf[(y + 1) as usize * SIZE + (x + 1) as usize];
+            over(dst, [215.0 / 255.0; 3], a);
+        }
+    }
+
+    buf.into_iter()
+        .map(|p| {
+            egui::Color32::from_rgba_unmultiplied(
+                (p[0] * 255.0).round() as u8,
+                (p[1] * 255.0).round() as u8,
+                (p[2] * 255.0).round() as u8,
+                (p[3] * 255.0).round() as u8,
+            )
+        })
+        .collect()
+}
+
 /// 图标文件是否存在（精确名；单测用）。
 #[cfg(test)]
 pub fn icon_png_exists(name: &str) -> bool {
@@ -407,5 +521,33 @@ mod tests {
         assert!(read[2], "toolbar1_edit 类型不对 → 出厂值 true");
         assert_eq!(&read[3..], &DEFAULT_FRAGMENTS[3..], "其余保持出厂值");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 水印描边：16px 图形 → 18px，外缘 1px 黑（alpha 1/3），图形本身放在 (1,1)。
+    #[test]
+    fn outlined_icon_adds_a_one_pixel_black_rim() {
+        let mut base = image::RgbaImage::new(16, 16);
+        for y in 6..10 {
+            for x in 6..10 {
+                base.put_pixel(x, y, image::Rgba([200, 200, 200, 255]));
+            }
+        }
+        let px = outlined_icon_pixels(&base);
+        assert_eq!(px.len(), 18 * 18);
+
+        let at = |x: usize, y: usize| px[y * 18 + x];
+        // 图形中心：白（symbolic 前景 215）不透明。
+        assert_eq!(at(8 + 1, 8 + 1), egui::Color32::from_rgba_unmultiplied(215, 215, 215, 255));
+        // 图形左缘外一像素：黑描边，alpha 由 1~2 次 1/3 叠加（50% 边缘）。
+        let rim = at(6, 10);
+        assert_eq!((rim.r(), rim.g(), rim.b()), (0, 0, 0), "描边是黑");
+        assert!(
+            (85..=170).contains(&rim.a()),
+            "单次描边 alpha=255/3、重叠可到 ~2/3，实得 {}",
+            rim.a()
+        );
+        // 远离图形处保持透明。
+        assert_eq!(at(0, 0).a(), 0);
+        assert_eq!(at(17, 17).a(), 0);
     }
 }

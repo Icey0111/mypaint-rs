@@ -426,9 +426,12 @@ impl PigmentApp {
             egui::Stroke::new(1.0, egui::Color32::from_white_alpha(26)),
             egui::StrokeKind::Middle,
         );
-        // 水印：icon_size = 16 + 2（描边留白），居中，alpha 255/6
+        // 水印：icon_size = 16 + 2（描边留白），居中，alpha 255/6。
+        // 黑描边照 `drawutils.load_symbolic_icon(outline=(0,0,0,1))`。
         let icon_name = if row.is_group { ICON_GROUP } else { ICON_PAINTING };
-        if let Some(icon) = icon_texture(&ctx, &mut self.icon_cache, icon_name) {
+        if let Some(icon) =
+            crate::shell::toolbars::outlined_icon_texture(&ctx, &mut self.icon_cache, icon_name)
+        {
             let r = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
             ui.painter().image(
                 icon.id(),

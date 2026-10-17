@@ -850,9 +850,9 @@ impl Command for DuplicateLayer {
 
 /// `BubbleLayerUp` / `BubbleLayerDown`（`lib/command.py:1226/1240`）。
 ///
-/// "Up" = 朝栈顶（同层内 index 0 方向）。**只在与当前层同级的兄弟之间换位**；
-/// 跨组边界的冒泡（`tree.py:1830 _bubble_layer` 的出组/入组分支）未移植，
-/// 组间移动走 `RestackLayer`（面板拖动）。
+/// "Up" = 朝栈顶（同层内 index 0 方向）。完整照搬 `tree.py:1380 _bubble_layer`：
+/// 同栈内换位、到端点**出组**、相邻兄弟是组时**入组**。
+/// 撤销 = 反方向再冒一次（源码如此，两端语义对称）。
 pub struct BubbleLayer {
     id: u64,
     up: bool,
@@ -866,32 +866,12 @@ impl BubbleLayer {
         Self { id, up: false }
     }
 
-    /// 与相邻兄弟换位；`up = true` 朝栈顶。返回是否真的动了。
+    /// `_bubble_layer`；`up = true` 朝栈顶。返回是否真的动了。
     fn swap(&self, ctx: &mut DocContext<'_>, up: bool) -> bool {
         let Some(path) = ctx.layers.path_of_id(self.id) else {
             return false;
         };
-        let Some((index, parent)) = path.split_last() else {
-            return false;
-        };
-        let (index, parent) = (*index, parent.to_vec());
-        let count = if parent.is_empty() {
-            ctx.layers.len()
-        } else {
-            ctx.layers
-                .layer_at(&parent)
-                .map(|l| l.child_count())
-                .unwrap_or(0)
-        };
-        let target = if up {
-            index.checked_sub(1)
-        } else {
-            Some(index + 1).filter(|t| *t < count)
-        };
-        let Some(target) = target else {
-            return false; // 已在端点
-        };
-        let moved = ctx.layers.swap_siblings(&parent, index, target);
+        let moved = ctx.layers.bubble_layer(&path, up);
         if moved {
             ctx.layers.set_current_by_id(self.id);
         }
@@ -1778,6 +1758,51 @@ mod tests {
         let before = stack.undo_len();
         assert!(!stack.do_command(Box::new(BubbleLayer::up(top)), &mut ctx(&mut st, &mut t)));
         assert_eq!(stack.undo_len(), before, "取消的命令不入栈");
+    }
+
+    /// 跨组冒泡：出组/入组后，`undo` 用反方向冒泡必须精确还原结构。
+    #[test]
+    fn bubble_layer_crosses_group_and_undo_restores() {
+        let a = Layer::new();
+        let mut g = Layer::new_group();
+        let b = Layer::new();
+        let c = Layer::new();
+        g.stack_mut().unwrap().insert(0, b.clone());
+        g.stack_mut().unwrap().insert(1, c.clone());
+        let gid = g.id;
+        let mut st = LayerStack::from_children(vec![a.clone(), g]);
+        let mut t = 0.0;
+        let mut stack = CommandStack::new(8);
+        st.set_current_by_id(b.id);
+
+        // 组内顶层 B 上移 → 出组 [A, B, G[C]]
+        assert!(stack.do_command(
+            Box::new(BubbleLayer::up(b.id)),
+            &mut ctx(&mut st, &mut t)
+        ));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1]));
+        assert_eq!(st.path_of_id(c.id), Some(vec![2, 0]));
+        assert_eq!(st.current_id(), b.id);
+
+        stack.undo(&mut ctx(&mut st, &mut t));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+        assert_eq!(st.path_of_id(c.id), Some(vec![1, 1]));
+        assert_eq!(st.path_of_id(gid), Some(vec![1]));
+        assert_eq!(st.current_id(), b.id);
+
+        // 根层 A 下移 → 入组 [G[A, B, C]]
+        assert!(stack.do_command(
+            Box::new(BubbleLayer::down(a.id)),
+            &mut ctx(&mut st, &mut t)
+        ));
+        assert_eq!(st.path_of_id(a.id), Some(vec![0, 0]));
+        assert_eq!(st.path_of_id(b.id), Some(vec![0, 1]));
+
+        stack.undo(&mut ctx(&mut st, &mut t));
+        assert_eq!(st.path_of_id(a.id), Some(vec![0]));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+        assert_eq!(st.path_of_id(gid), Some(vec![1]));
+        assert_eq!(st.current_id(), a.id);
     }
 
     #[test]

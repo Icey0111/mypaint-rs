@@ -885,6 +885,113 @@ impl LayerStack {
         self.layer_by_id_mut(id).and_then(|l| l.surface_mut())
     }
 
+    /// 层是否在**组内**（`_update_layer_bubble_actions` 的 `deep`）。
+    pub fn is_deep(&self, path: &[usize]) -> bool {
+        path.len() > 1
+    }
+
+    /// 冒泡动作是否可用 —— 逐行照 `document.py:1393-1405` 的
+    /// `_update_layer_bubble_actions`：组内恒可（会出组），根层看端点。
+    pub fn can_bubble(&self, path: &[usize], up: bool) -> bool {
+        let Some((&index, _)) = path.split_last() else {
+            return false;
+        };
+        if self.is_deep(path) {
+            return true;
+        }
+        if up {
+            index > 0
+        } else {
+            index + 1 < self.len()
+        }
+    }
+
+    /// 冒泡一层（`tree.py:1380 _bubble_layer`）：在不破坏树结构的前提下
+    /// 上移/下移。与纯兄弟换位不同，**到组端点时会出组**（插到父组在
+    /// 祖父组里的前/后），相邻兄弟是组时会**入组**（放到该组近端）。
+    ///
+    /// 逆操作就是反方向再冒一次（源码 `BubbleLayerUp.undo` 就是这么写的，
+    /// 两端语义对称）。返回是否真的动了。
+    pub fn bubble_layer(&mut self, path: &[usize], upstack: bool) -> bool {
+        let path = path.to_vec();
+        let Some((&index, parent_path)) = path.split_last() else {
+            return false;
+        };
+        let parent_path = parent_path.to_vec();
+        let Some(count) = self.layers_in(&parent_path).map(|v| v.len()) else {
+            return false;
+        };
+        if index >= count {
+            return false;
+        }
+        let Some(id) = self.layer_at(&path).map(|l| l.id) else {
+            return false;
+        };
+
+        // 已在本栈端点：出组，插到父组在祖父组里的前/后一格。
+        let end_index = if upstack { 0 } else { count - 1 };
+        if index == end_index {
+            if parent_path.is_empty() {
+                return false;
+            }
+            let grandparent_path = &parent_path[..parent_path.len() - 1];
+            let parent_index = *parent_path.last().expect("parent_path 非空");
+            let Some(layer) = self.remove_at(&path) else {
+                return false;
+            };
+            let beyond_parent = parent_index + usize::from(!upstack);
+            let mut insert_path = grandparent_path.to_vec();
+            insert_path.push(beyond_parent);
+            let moved = self.insert_at(&insert_path, layer).is_some();
+            if moved {
+                self.set_current_by_id(id);
+            }
+            return moved;
+        }
+
+        // 同栈内移动：相邻兄弟是组则入组，否则换位。
+        let new_index = if upstack { index - 1 } else { index + 1 };
+        let mut sibling_path = parent_path.clone();
+        sibling_path.push(new_index);
+        if self.layer_at(&sibling_path).is_some_and(|l| l.is_group()) {
+            let Some(sibling_id) = self.layer_at(&sibling_path).map(|l| l.id) else {
+                return false;
+            };
+            let Some(layer) = self.remove_at(&path) else {
+                return false;
+            };
+            let Some(sibling_path) = self.path_of_id(sibling_id) else {
+                // 极端情况：兄弟也随移除失效（正常结构下不会发生）。
+                // 把层放回原位，不算移动。
+                let mut restore = parent_path.clone();
+                restore.push(index);
+                self.insert_at(&restore, layer);
+                self.set_current_by_id(id);
+                return false;
+            };
+            let target_index = if upstack {
+                self.layer_at(&sibling_path)
+                    .map(|l| l.child_count())
+                    .unwrap_or(0)
+            } else {
+                0
+            };
+            let mut insert_path = sibling_path;
+            insert_path.push(target_index);
+            let moved = self.insert_at(&insert_path, layer).is_some();
+            if moved {
+                self.set_current_by_id(id);
+            }
+            return moved;
+        }
+
+        let moved = self.swap_siblings(&parent_path, index, new_index);
+        if moved {
+            self.set_current_by_id(id);
+        }
+        moved
+    }
+
     /// 交换同一父层下的两个兄弟（`BubbleLayerUp/Down` 用；空 `parent` = 根层）。
     ///
     /// 换位是自逆操作，撤销就是再换一次。
@@ -1505,6 +1612,83 @@ mod tests {
         assert!(dst.iter().all(|&v| v == 0), "隐藏组的子层也不能漏出来");
         // branch_visible 对子层为假
         assert!(!st.branch_visible(&[0, 0]));
+    }
+
+    /// `_bubble_layer`（`tree.py:1380`）：同栈换位、端点出组、兄弟是组时入组；
+    /// 反方向冒泡必须精确还原（`BubbleLayerUp.undo` 依赖这一点）。
+    #[test]
+    fn bubble_layer_crosses_group_boundaries() {
+        let a = Layer::new();
+        let mut g = Layer::new_group();
+        let b = Layer::new();
+        let c = Layer::new();
+        let d = Layer::new();
+        let gid = g.id;
+        g.stack_mut().unwrap().layers = vec![b.clone(), c.clone()];
+        let mut st = LayerStack::from_children(vec![a.clone(), g, d.clone()]);
+
+        let ids = |st: &LayerStack| -> Vec<(Vec<usize>, u64)> {
+            st.walk().into_iter().map(|(p, l)| (p, l.id)).collect()
+        };
+
+        // 初始：root [A, G[B, C], D]
+        assert_eq!(
+            ids(&st),
+            vec![
+                (vec![0], a.id),
+                (vec![1], gid),
+                (vec![1, 0], b.id),
+                (vec![1, 1], c.id),
+                (vec![2], d.id),
+            ]
+        );
+
+        // 组内顶层 B 上移 → 出组，插到组前面。
+        assert!(st.bubble_layer(&[1, 0], true));
+        assert_eq!(
+            ids(&st),
+            vec![
+                (vec![0], a.id),
+                (vec![1], b.id),
+                (vec![2], gid),
+                (vec![2, 0], c.id),
+                (vec![3], d.id),
+            ]
+        );
+        assert_eq!(st.current_id(), b.id, "当前层跟着被移动的层");
+        // 反方向还原。
+        let b_path = st.path_of_id(b.id).unwrap();
+        assert!(st.bubble_layer(&b_path, false));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+        assert_eq!(st.path_of_id(c.id), Some(vec![1, 1]));
+
+        // 组内底层 C 下移 → 出组，插到组后面。
+        assert!(st.bubble_layer(&[1, 1], false));
+        assert_eq!(st.path_of_id(c.id), Some(vec![2]));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+        let c_path = st.path_of_id(c.id).unwrap();
+        assert!(st.bubble_layer(&c_path, true));
+        assert_eq!(st.path_of_id(c.id), Some(vec![1, 1]));
+
+        // 根层 A 下移 → 相邻兄弟 G 是组，入组（放到组近端 index 0）。
+        assert!(st.bubble_layer(&[0], false));
+        assert_eq!(st.path_of_id(a.id), Some(vec![0, 0]));
+        assert_eq!(st.path_of_id(b.id), Some(vec![0, 1]));
+        assert_eq!(st.path_of_id(c.id), Some(vec![0, 2]));
+        // 反方向冒泡：从组近端出去，回到组前。
+        let a_path = st.path_of_id(a.id).unwrap();
+        assert!(st.bubble_layer(&a_path, true));
+        assert_eq!(st.path_of_id(a.id), Some(vec![0]));
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+
+        // 端点：根栈顶不能再上、根栈底不能再下；组内两端仍可（会出组）。
+        assert!(!st.can_bubble(&[0], true));
+        assert!(st.can_bubble(&[0], false));
+        assert!(!st.can_bubble(&[3], false));
+        assert!(st.can_bubble(&[1, 0], true));
+        assert!(st.can_bubble(&[1, 0], false));
+        assert!(!st.bubble_layer(&[0], true));
+        assert!(!st.bubble_layer(&[3], false));
     }
 
     /// 树/路径寻址：walk 序 = 组在前、子层紧跟；deepget/deepindex 对得上。

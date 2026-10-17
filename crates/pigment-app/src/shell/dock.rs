@@ -669,7 +669,69 @@ mod tests {
     }
 
     #[test]
-    fn remove_prunes_empty_groups() {        let mut d = DockState::default();
+    fn reveal_switches_to_the_requested_tab() {
+        // Shift+K / Ctrl+K 打开暂存区时必须**切到那一页**（`reveal_tool_widget`
+        // 的 `nb.set_current_page`），只加页签不切页等于用户看不到。
+        let mut d = DockState::default();
+        d.right.push(Group {
+            panels: vec![PanelId::LayersTool, PanelId::ScratchpadTool],
+            active: 0,
+        });
+        d.reveal(PanelId::ScratchpadTool);
+        assert_eq!(d.right[0].active, 1);
+        // 再次 reveal 仍是同一页，不重复添加。
+        d.reveal(PanelId::ScratchpadTool);
+        assert_eq!(d.right[0].panels.len(), 2);
+        assert_eq!(d.right[0].active, 1);
+        // toggle 关闭后重新打开也要激活。
+        d.toggle(PanelId::ScratchpadTool);
+        assert!(!d.is_added(PanelId::ScratchpadTool));
+        d.toggle(PanelId::ScratchpadTool);
+        assert!(d.is_added(PanelId::ScratchpadTool));
+        let g = d
+            .right
+            .iter()
+            .find(|g| g.panels.contains(&PanelId::ScratchpadTool))
+            .unwrap();
+        assert_eq!(g.panels[g.active], PanelId::ScratchpadTool);
+    }
+
+    #[test]
+    fn add_switches_to_the_appended_tab() {
+        // 页数放宽后把新面板追加到已有组时，GTK notebook 会显示新页；
+        // `active` 必须跟着改（否则标签出现但内容区还是旧页）。
+        let mut d = DockState::default();
+        let full = |p: PanelId| Group {
+            panels: vec![p; 3],
+            active: 0,
+        };
+        for _ in 0..MAX_GROUPS_PER_STACK {
+            d.floating.push(full(PanelId::PreviewTool));
+            d.right.push(full(PanelId::PreviewTool));
+        }
+        d.left = vec![
+            Group {
+                panels: vec![PanelId::LayersTool, PanelId::HistoryPanel],
+                active: 0,
+            },
+            full(PanelId::PreviewTool),
+            full(PanelId::PreviewTool),
+        ];
+        d.add(PanelId::ScratchpadTool);
+        assert_eq!(
+            d.left[0].panels,
+            vec![
+                PanelId::LayersTool,
+                PanelId::HistoryPanel,
+                PanelId::ScratchpadTool
+            ]
+        );
+        assert_eq!(d.left[0].active, 2, "追加后切到新页");
+    }
+
+    #[test]
+    fn remove_prunes_empty_groups() {
+        let mut d = DockState::default();
         d.right = vec![
             Group { panels: vec![PanelId::LayersTool], active: 0 },
             Group { panels: vec![PanelId::PreviewTool], active: 0 },
