@@ -781,6 +781,7 @@ impl PigmentApp {
     /// `reset` —— 我们还没有需要"叠在下面"的临时视图模式（平移/缩放仍由 GUI
     /// 直接处理），reset 的观感一致。
     pub(crate) fn switch_mode(&mut self, action: &str, now: f64) {
+        use pigment_engine::mode::fill::FillMode;
         use pigment_engine::mode::freehand::FreehandMode;
         use pigment_engine::mode::line::{LineKind, LineMode};
         let new_mode: Box<dyn pigment_engine::mode::InteractionMode> = match action {
@@ -788,6 +789,8 @@ impl PigmentApp {
             "StraightMode" => Box::new(LineMode::new(LineKind::Straight)),
             "SequenceMode" => Box::new(LineMode::new(LineKind::Sequence)),
             "EllipseMode" => Box::new(LineMode::new(LineKind::Ellipse)),
+            // B3-3：填充（`gui/fill.py:40` 的 FloodFillMode）
+            "FloodFillMode" => Box::new(FillMode::new()),
             _ => return,
         };
         let label = new_mode.name().to_string();
@@ -1055,10 +1058,11 @@ impl PigmentApp {
             }
             "ShowBackgroundToggle" | "BackgroundWindow" => true,
             // ---- 工具模式（B3：无线电动作 + 它们的 Flip 快捷键版本）----
-            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" => true,
-            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode" => {
+            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" | "FloodFillMode" => {
                 true
             }
+            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode"
+            | "FlipFloodFillMode" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -1202,14 +1206,15 @@ impl PigmentApp {
                 self.doc.layers_mut().set_background_visible(v);
                 ctx.request_repaint();
             }
-            // ---- 工具模式切换（B3-1/B3-2）----
+            // ---- 工具模式切换（B3-1/B3-2/B3-3）----
             // `mode_flip_action_activated_cb` / 无线电动作都落到"把模式压栈"上；
             // 本移植直接重置模式栈（不保留之前的临时视图模式）。
-            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" => {
+            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" | "FloodFillMode" => {
                 self.switch_mode(id, now);
                 ctx.request_repaint();
             }
-            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode" => {
+            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode"
+            | "FlipFloodFillMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
                 ctx.request_repaint();

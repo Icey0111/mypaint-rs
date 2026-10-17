@@ -299,7 +299,10 @@ impl PigmentApp {
         let now_ms = ui.input(|i| i.time) * 1000.0;
         let mods = self.pointer_modifiers(ui.ctx());
         if !modal && !space_down {
+            // 本帧是否已经按"拖拽"语义喂过事件（见下面的 click 分支）
+            let mut dispatched_drag = false;
             if response.drag_started_by(egui::PointerButton::Primary) {
+                dispatched_drag = true;
                 // 起笔：重置笔刷引擎状态（源码 `brush.reset()` + 新 stroke）
                 self.stroke_state = pigment_engine::hokusai::BrushState::default();
                 if let Some(pos) = response.interact_pointer_pos() {
@@ -309,6 +312,7 @@ impl PigmentApp {
                 self.stroke_dirty = true;
             }
             if response.dragged_by(egui::PointerButton::Primary) {
+                dispatched_drag = true;
                 if let Some(pos) = response.interact_pointer_pos() {
                     let ev = self.pointer_event(pos, rect, now_ms, 0, mods);
                     self.mode_motion(ev);
@@ -316,6 +320,7 @@ impl PigmentApp {
                 self.stroke_dirty = true;
             }
             if response.drag_stopped_by(egui::PointerButton::Primary) {
+                dispatched_drag = true;
                 if let Some(pos) = response.interact_pointer_pos() {
                     let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
                     self.mode_button_release(ev);
@@ -324,6 +329,33 @@ impl PigmentApp {
                 // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
                 if !self.eraser {
                     self.color_history.push(self.color);
+                }
+            }
+            // 单击（按下即松开、指针几乎没动）：
+            //
+            // egui 的 `Sense::click_and_drag` 会先观望"这是点击还是拖拽"
+            // （`Response::drag_started` 的文档：同时感知 click 时只有指针移动
+            // 一小段之后才算 drag），所以一次干脆的点击**不会**走上面的
+            // drag_started/drag_stopped。但 MyPaint 的 GTK 事件流里
+            // ButtonPress/ButtonRelease 一定成对到达每一个模式
+            // （`gui/mode.py` 的 `button_press_cb`/`button_release_cb`），
+            // 填充工具的单击就是一粒种子 + 一次填充（`gui/fill.py:161-178`）。
+            // 因此这里把"被判定为点击"的那一次补成一对 press/release，
+            // 否则单击填充永远不会触发。
+            //
+            // 上面的拖拽分支与 `clicked_by` 互斥（egui 在判定为拖拽后不置
+            // CLICKED），`dispatched_drag` 只是防御性双保险。
+            if !dispatched_drag && response.clicked_by(egui::PointerButton::Primary) {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    self.stroke_state = pigment_engine::hokusai::BrushState::default();
+                    let press = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_press(press);
+                    let release = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_release(release);
+                    self.stroke_dirty = true;
+                    if !self.eraser {
+                        self.color_history.push(self.color);
+                    }
                 }
             }
         }

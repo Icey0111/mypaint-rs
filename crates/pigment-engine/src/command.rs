@@ -571,6 +571,78 @@ impl Command for Brushwork {
 }
 
 
+/// `FloodFill`（`lib/command.py:561-645`）：在当前层上做一次洪水填充。
+///
+/// 与源码同样的骨架：
+/// - `redo()` 先抓一份目标层快照（`self.snapshot = layers.current.save_snapshot()`，
+///   `command.py:619-620`），再把填充跑进目标层；
+/// - `undo()` 用快照恢复内容，并把快照**清空**（`command.py:643-645`）——
+///   下一次 `redo()` 会重新抓一份，这样"撤销 → 改别的东西 → 重做"不会
+///   拿着一张过期的快照。
+///
+/// 记账差异：
+/// - 未移植 `make_new_layer` 分支（`command.py:601-616`）：新建层 + 填进去 +
+///   `undo` 删层需要"填充命令负责图层增删"的复合语义，本块只做"覆盖当前层"。
+///   构造函数因此不接受 `make_new_layer`；调用方（[`crate::mode::fill`]）在
+///   当前层不可填时干脆不填充。
+/// - 未移植 `status_cb`（进度/取消对话框）与 `sample_merged` / `src_path`
+///   （采样源恒为目标层自身，即 `data.py:1360` 的 `src == dst`）。
+/// - 源码的 `fill_args.framed = doc.get_frame_enabled()`（`command.py:582`）
+///   在这里由调用方折算进 `bbox`（[`crate::Document::fill_bbox`]），所以本命令
+///   不再需要 `framed`。
+pub struct FloodFill {
+    /// 目标层 id（源码持图层对象引用，我们用稳定 id）。
+    target_layer: u64,
+    /// 填充参数（`command.py:581` 的 `self.fill_args`）。
+    fill_args: crate::mode::fill::FillArgs,
+    /// 填充前的快照（`command.py:588` 的 `self.snapshot`；undo 后清空）。
+    snapshot: Option<SurfaceSnapshot>,
+}
+
+impl FloodFill {
+    /// 新建一条填充命令（`FloodFill.__init__`，`command.py:566-589`）。
+    pub fn new(target_layer: u64, fill_args: crate::mode::fill::FillArgs) -> Self {
+        Self {
+            target_layer,
+            fill_args,
+            snapshot: None,
+        }
+    }
+}
+
+impl Command for FloodFill {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        // `command.py:591-623`（去掉 make_new_layer / sample_merged / src_path）
+        let Some(surface) = ctx.layers.surface_by_id(self.target_layer) else {
+            // 目标不是绘画层（组）：无从填充 → 按"取消"处理，不入栈
+            return false;
+        };
+        // 只抓一次快照（`assert self.snapshot is None`，command.py:619）
+        if self.snapshot.is_none() {
+            self.snapshot = Some(surface.save_snapshot());
+        }
+        crate::mode::fill::flood_fill_surface(surface, &self.fill_args);
+        // 源码 `redo()` 没有返回值，等价于"不是取消"→ 一定入栈
+        // （`command.py:70` 的 `completed is False` 判据）。空填充也入栈，
+        // 与源码一致：撤销栈里可能出现一条内容无变化的 Flood Fill。
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        // `command.py:633-645`（只保留覆盖当前层的分支）
+        if let Some(snapshot) = self.snapshot.take() {
+            if let Some(surface) = ctx.layers.surface_by_id(self.target_layer) {
+                surface.load_snapshot(&snapshot);
+            }
+        }
+    }
+
+    fn display_name(&self) -> String {
+        // `display_name = _("Flood Fill")`（`command.py:564`）
+        crate::mode::fill::DISPLAY_NAME.to_string()
+    }
+}
+
 // ---- 图层命令族（`lib/command.py:971-1560`）----
 //
 // 均按图层 id 寻址（等价 MyPaint 持图层对象引用）。属性类命令在 redo 时

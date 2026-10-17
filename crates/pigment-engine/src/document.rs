@@ -456,6 +456,55 @@ impl Document {
         bbox
     }
 
+    // ---- 洪水填充的包围盒（`lib/document.py:1031` 的 `flood_fill`）----
+
+    /// 一次填充的像素包围盒（`Document.flood_fill` 的前半段，
+    /// `lib/document.py:1064-1089`）。
+    ///
+    /// 为什么填充一定要有 bbox：画布是无限的，没有上界就没法开始（源码
+    /// docstring 原话 "Filling an infinite canvas requires limits"）。规则：
+    ///
+    /// 1. 起点是 `get_effective_bbox()`（画框启用 → 画框；否则 → 内容外接框）；
+    /// 2. 起点为空（空白层、且画框没启用）→ **退化成种子所在 tile 的外接框**
+    ///    （`document.py:1067-1079`）。源码注释承认这"有点怪"，但它让空白层上
+    ///    的大面积填充能一次 tile 一次 tile 地长大；
+    /// 3. 画框没启用时，把每个种子点扩进 bbox（`document.py:1080-1082`）——
+    ///    否则在已有内容的边缘外点击就填不动。
+    ///
+    /// 未移植 `view_bbox`（"Limit to View"，`document.py:1083-1088`）：
+    /// `mode::fill` 传的永远是 `None`。
+    pub fn fill_bbox(&self, seeds: &[(i32, i32)]) -> (i32, i32, i32, i32) {
+        let ts = crate::hokusai::tile::TILE_SIZE as i32;
+        let mut rect = if self.frame_enabled {
+            self.frame
+        } else {
+            self.data_bbox()
+        };
+        if rect.2 == 0 || rect.3 == 0 {
+            // `document.py:1068-1079`：tile 对齐的种子外接框
+            let (Some(min_x), Some(max_x), Some(min_y), Some(max_y)) = (
+                seeds.iter().map(|s| s.0).min(),
+                seeds.iter().map(|s| s.0).max(),
+                seeds.iter().map(|s| s.1).min(),
+                seeds.iter().map(|s| s.1).max(),
+            ) else {
+                // 没种子就无从填充；源码这里会因 `min([])` 抛异常
+                return (0, 0, 0, 0);
+            };
+            let x = ts * min_x.div_euclid(ts);
+            let y = ts * min_y.div_euclid(ts);
+            let w = ts * max_x.div_euclid(ts) - x + ts;
+            let h = ts * max_y.div_euclid(ts) - y + ts;
+            return (x, y, w, h);
+        }
+        if !self.frame_enabled {
+            for &(x, y) in seeds {
+                expand_to_include_point(&mut rect, x, y);
+            }
+        }
+        rect
+    }
+
     // ---- 文档 I/O（照搬 `lib/document.py:1432` save / `:1488` load 的分派）----
 
     /// 保存到文件，按扩展名分派（`lib/document.py:1432` 的 `save`）。
@@ -601,6 +650,34 @@ pub enum LoadOutcome {
     Png {
         bbox: (i32, i32, i32, i32),
     },
+}
+
+/// `Rect.expand_to_include_point`（`lib/helpers.py:159-175`）的 `(x, y, w, h)` 版。
+///
+/// 只给 [`Document::fill_bbox`] 用：源码把种子点逐个并进 bbox，空矩形则直接
+/// 变成 1×1。
+fn expand_to_include_point(rect: &mut (i32, i32, i32, i32), x: i32, y: i32) {
+    let (rx, ry, rw, rh) = *rect;
+    if rw == 0 || rh == 0 {
+        *rect = (x, y, 1, 1);
+        return;
+    }
+    let (mut x0, mut y0, mut w, mut h) = (rx, ry, rw, rh);
+    if x < x0 {
+        w += x0 - x;
+        x0 = x;
+    }
+    if y < y0 {
+        h += y0 - y;
+        y0 = y;
+    }
+    if x > x0 + w - 1 {
+        w += x - (x0 + w - 1);
+    }
+    if y > y0 + h - 1 {
+        h += y - (y0 + h - 1);
+    }
+    *rect = (x0, y0, w, h);
 }
 
 #[cfg(test)]
@@ -855,5 +932,44 @@ mod tests {
             after.chunks_exact(4).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255),
             "画布只剩背景层 → 全白"
         );
+    }
+
+    // ---- B3-3：洪水填充的包围盒（`document.py:1064-1089`）----
+
+    /// 空白文档没有内容外接框 → 退化成"种子所在 tile"（`document.py:1067-1079`）。
+    #[test]
+    fn fill_bbox_degrades_to_the_seed_tile_on_a_blank_document() {
+        let doc = Document::new();
+        let ts = crate::hokusai::tile::TILE_SIZE as i32;
+        assert_eq!(doc.data_bbox(), (0, 0, 0, 0));
+        // 单个种子 → 一块 tile
+        assert_eq!(doc.fill_bbox(&[(10, 10)]), (0, 0, ts, ts));
+        // 跨 tile 的种子 → 覆盖两者的外接框
+        assert_eq!(
+            doc.fill_bbox(&[(10, 10), (70, -1)]),
+            (0, -ts, 2 * ts, 2 * ts),
+            "负数种子按向下取整落在 tile -1"
+        );
+    }
+
+    /// 画框启用时直接用画框；否则用内容外接框并把种子并进来。
+    #[test]
+    fn fill_bbox_uses_the_frame_or_expands_to_the_seeds() {
+        let mut doc = Document::new();
+        paint_and_commit(&mut doc, 2.0);
+        let content = doc.data_bbox();
+
+        // 种子在内容里 → bbox 就是内容外接框
+        assert_eq!(doc.fill_bbox(&[(10, 20)]), content);
+
+        // 种子远在内容之外 → 并进来（`document.py:1080-1082`）
+        let far = content.0 + content.2 + 100;
+        let bbox = doc.fill_bbox(&[(far, content.1)]);
+        assert!(bbox.0 + bbox.2 > far, "外接框必须包含远处种子: {bbox:?}");
+
+        // 画框启用 → 只认画框，种子再远也不扩
+        doc.set_frame(0, 0, 30, 40);
+        doc.set_frame_enabled(true);
+        assert_eq!(doc.fill_bbox(&[(far, far)]), (0, 0, 30, 40));
     }
 }

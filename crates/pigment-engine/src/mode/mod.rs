@@ -12,7 +12,9 @@
 //! - `SingleClickMode` / `DragMode` / `OneshotDragMode`（`:919/962/1277`）→
 //!   [`SingleClickMode`]、[`DragMode`]、[`OneshotDragMode`]；
 //! - `ModeStack`（`:1327`）→ [`ModeStack`]；
-//! - `FreehandMode`（`gui/freehand.py`）→ [`freehand::FreehandMode`]。
+//! - `FreehandMode`（`gui/freehand.py`）→ [`freehand::FreehandMode`]；
+//! - `LineModeBase`（`gui/linemode.py`）→ [`line::LineMode`]；
+//! - `FloodFillMode`（`gui/fill.py`）→ [`fill::FillMode`]。
 //!
 //! 记账差异：
 //! - GTK 的 `pointer_grab`/`keyboard_grab`/`grab-broken` 没有对应物：egui 的
@@ -22,6 +24,7 @@
 //! - `GLib.idle_add` 的排队处理改成显式的 [`ModeStack::process_pending`]，
 //!   由 GUI 每帧调用一次（等价于 idle 优先级回调）。
 
+pub mod fill;
 pub mod freehand;
 pub mod line;
 
