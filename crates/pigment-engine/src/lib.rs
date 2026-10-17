@@ -11,6 +11,7 @@ pub mod command;
 pub mod document;
 pub mod fileio;
 pub mod mode;
+pub mod prefs;
 pub mod scratchpad;
 pub mod stroke;
 pub mod zip;
@@ -28,6 +29,7 @@ pub use fileio::{
     compatibility, format_for_path, Compatibility, FileError, Format, OPENRASTER_MEDIA_TYPE,
     OPENRASTER_VERSION,
 };
+pub use prefs::{Platform, Prefs};
 pub use stroke::{Stroke, StrokeEvent, EVENT_FIELDS, STROKE_DATA_VERSION};
 
 pub const ENGINE_INFO: &str = "pigment-engine 0.1.0 (hokusai 0.3 + pigment-surface)";

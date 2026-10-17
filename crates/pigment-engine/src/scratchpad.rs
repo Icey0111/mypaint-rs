@@ -76,6 +76,9 @@ pub const DEFAULT_NAME: &str = "scratchpad_default.ora";
 /// 默认格式的扩展名。`userconfig.py:89` 的 `saving.default_format` 出厂值是
 /// `"openraster"`，`filehandling.py:598-602` 把它映射到 `_SaveFormat.ORA`，
 /// `:1411` 再取 `saveformats[ORA][1]` = `".ora"`。
+///
+/// 运行期取扩展名用 [`crate::prefs::save_extension`]（B6-1）；
+/// 这里保留的是「没有偏好时」的出厂值。
 pub const DEFAULT_EXT: &str = ".ora";
 /// 链接式暂存页的文件名前缀 —— `filehandling.py:1371` / `:1467` 的 `_md5`。
 pub const MD5_PREFIX: &str = "_md5";
@@ -351,9 +354,9 @@ pub fn list_scratchpads(dir: &Path) -> Vec<PathBuf> {
 /// 最近修改的暂存页（`special/` 也算）。
 ///
 /// **源码没有这个函数**：它靠偏好 `scratchpad.last_opened_scratchpad`
-/// （`application.py:393-397`、`:474-486`）记住"上次那张"，
-/// 偏好系统属 B6。这里按 mtime 取最新，是给"没有偏好时也要有个落点"用的
-/// **本项目辅助**（`mtime` 相同则按路径串倒序取，保证确定性）。
+/// （`application.py:393-397`、`:474-486`）记住"上次那张"（B6-1 起由
+/// `pigment-app` 的 `Scratchpad::startup_page` 读那条键）。这里按 mtime 取最新，
+/// 是给"偏好里没有落点"时的开发期辅助（`mtime` 相同则按路径串倒序取，保证确定性）。
 pub fn newest_scratchpad(dir: &Path) -> Option<PathBuf> {
     let mut files: Vec<(std::time::SystemTime, String, PathBuf)> = list_scratchpads(dir)
         .into_iter()

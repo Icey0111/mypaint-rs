@@ -162,8 +162,9 @@ impl std::error::Error for PaletteLoadError {}
 ///
 /// 源码是一个普通的 `dict`（键 `name` / `columns` / `entries`），`entries` 里
 /// 每项要么是 `None`（空槽），要么是 `(hex 串, 名字或 None)` 二元组。
-/// Rust 里用一个具名结构体表达，语义逐项对应；JSON 的编码/解码留给偏好系统
-/// （B6），本块不引入序列化依赖。
+/// Rust 里用一个具名结构体表达，语义逐项对应；JSON 的编码/解码就是
+/// [`SimplePaletteDict::to_json`] / [`SimplePaletteDict::from_json`]
+/// （B6-1 接上偏好系统时补的，对应源码 `json.dumps`/`json.loads` 的那层）。
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct SimplePaletteDict {
     /// `simple["name"]`
@@ -172,6 +173,68 @@ pub struct SimplePaletteDict {
     pub columns: i64,
     /// `simple["entries"]`
     pub entries: Vec<Option<(String, Option<String>)>>,
+}
+
+impl SimplePaletteDict {
+    /// 编码成 JSON —— `palette.py:831-844` 的 `to_simple_dict()` 结果
+    /// 经 `json.dumps` 之后的形态。
+    ///
+    /// 空槽写 `null`，有颜色的格写 `[hex, 名字或 null]`（源码是 Python
+    /// 二元组，JSON 里就是两元素数组）。
+    pub fn to_json(&self) -> serde_json::Value {
+        let entries: Vec<serde_json::Value> = self
+            .entries
+            .iter()
+            .map(|e| match e {
+                None => serde_json::Value::Null,
+                Some((hex, name)) => serde_json::json!([hex, name]),
+            })
+            .collect();
+        serde_json::json!({
+            "name": self.name,
+            "columns": self.columns,
+            "entries": entries,
+        })
+    }
+
+    /// 从 JSON 解码 —— `palette.py:846-859` 的 `new_from_simple_dict()`。
+    ///
+    /// 源码逐项 `simple.get(key, 默认)`：缺 `name` → `None`、缺 `columns` →
+    /// `set_columns(None)`（**会抛 TypeError**）、缺 `entries` → 空列表。
+    /// 这里把"缺/类型不对"统一按保守值处理（`columns` 缺省 0 = 未指定），
+    /// 不是对象则返回 `None`（调用方回落到默认调色板）。
+    pub fn from_json(simple: &serde_json::Value) -> Option<Self> {
+        let obj = simple.as_object()?;
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let columns = obj.get("columns").and_then(|v| v.as_i64()).unwrap_or(0);
+        let mut entries = Vec::new();
+        for entry in obj
+            .get("entries")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            match entry {
+                serde_json::Value::Null => entries.push(None),
+                serde_json::Value::Array(pair) => {
+                    let hex = pair.first().and_then(|v| v.as_str())?.to_owned();
+                    let name = pair.get(1).and_then(|v| v.as_str()).map(str::to_owned);
+                    entries.push(Some((hex, name)));
+                }
+                // 源码对非 None 的条目不检查形状，会在解包时抛异常；
+                // 这里跳过坏条目（保守，见上）。
+                _ => {}
+            }
+        }
+        Some(Self {
+            name,
+            columns,
+            entries,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------

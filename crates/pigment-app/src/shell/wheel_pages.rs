@@ -53,7 +53,9 @@
 //! - **色轮类型切换 UI**：源码在偏好对话框里调
 //!   `ColorManager.set_wheel_type()`（`adjbases.py:291-315`）。本块把管理器侧
 //!   接好（`ColorManager::set_wheel_type`），但**没有**做切换入口 —— 偏好
-//!   对话框属 B6，届时接一个下拉即可；默认 `"rgb"`（恒等）。
+//!   对话框属 B6-3，届时接一个下拉即可；当前色轮类型本身已从偏好
+//!   `colors.wheels.type` 读入（`ColorManager::from_prefs`，B6-1），
+//!   默认 `"rgb"`（恒等）。
 //! - **`Mood and Accent` 预设 / 色轮上的鼠标 grab / DnD**：见交付记账
 //!   （HCY 轮本身属 B4-4c）。
 

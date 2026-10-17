@@ -1,0 +1,74 @@
+# 由 tests/tools/gen-prefs-defaults.py 从 _mypaint_ref 生成；不要手改。
+# gui/userconfig.py default_configuration() 的完整默认键表（含平台分支）。
+# 源码：gui/userconfig.py:50-140；COMPAT_CONFIG 见 gui/compatconfig.py:36-49。
+header	ref	source:gui/userconfig.py:50-140
+header	docs_dir_win32	C:\Users\test\Documents
+header	docs_dir_linux	-
+count	win32	33
+default	win32	brushmanager.selected_brush	null	null
+default	win32	brushmanager.selected_groups	list	[]
+default	win32	compability_settings	dict	{"1.x": {"pigment_layer_is_default": false, "pigment_on_by_default": false}, "2.x": {"pigment_layer_is_default": true, "pigment_on_by_default": true}}
+default	win32	compat_behavior_when_unknown	str	"unless-pigment-layer-1.x"
+default	win32	default_compatibility_mode	str	"2.x"
+default	win32	display.colorspace	str	"srgb"
+default	win32	display.colorspace_EOTF	float	2.2
+default	win32	document.autosave_backups	bool	true
+default	win32	document.autosave_interval	int	10
+default	win32	frame.color_rgba	list	[0.12, 0.12, 0.12, 0.92]
+default	win32	input.barrel_rotation_offset	float	0.5
+default	win32	input.barrel_rotation_subtract_ascension	bool	true
+default	win32	input.button_mapping	dict	{"<Alt><Shift>Button3": "FrameEditMode", "<Alt>Button3": "ZoomViewMode", "<Control><Shift>Button3": "FrameEditMode", "<Control>Button3": "ZoomViewMode", "<Shift>Button3": "RotateViewMode", "Button2": "ShowPopupMenu", "Button3": "PanViewMode"}
+default	win32	input.device_mode	str	"screen"
+default	win32	input.global_pressure_mapping	list	[[0.0, 1.0], [1.0, 0.0]]
+default	win32	input.use_barrel_rotation	bool	true
+default	win32	misc.context_restores_color	bool	true
+default	win32	saving.default_format	str	"openraster"
+default	win32	saving.scrap_prefix	str	"C:\\Users\\test\\Documents\\MyPaint\\scrap"
+default	win32	scratchpad.last_opened_scratchpad	str	""
+default	win32	ui.dark_theme_variant	bool	true
+default	win32	ui.feedback.last_pos	bool	false
+default	win32	ui.feedback.scale	bool	false
+default	win32	ui.hide_menubar_in_fullscreen	bool	true
+default	win32	ui.hide_subwindows_in_fullscreen	bool	true
+default	win32	ui.hide_toolbar_in_fullscreen	bool	true
+default	win32	ui.parts	dict	{"main_toolbar": true, "menubar": true}
+default	win32	ui.rendered_tile_cache_size	int	16384
+default	win32	ui.toolbar_icon_size	str	"large"
+default	win32	ui.toolbar_items	dict	{"toolbar1_blendmodes": false, "toolbar1_edit": true, "toolbar1_file": true, "toolbar1_linemodes": true, "toolbar1_scrap": false, "toolbar1_view_manips": false, "toolbar1_view_modes": true, "toolbar1_view_resets": true}
+default	win32	view.default_zoom	float	1.0
+default	win32	view.real_alpha_checks	bool	true
+default	win32	workspace.layout	dict	{"autohide": true, "position": {"h": -100, "w": -50, "x": 50, "y": 32}}
+count	linux	33
+default	linux	brushmanager.selected_brush	null	null
+default	linux	brushmanager.selected_groups	list	[]
+default	linux	compability_settings	dict	{"1.x": {"pigment_layer_is_default": false, "pigment_on_by_default": false}, "2.x": {"pigment_layer_is_default": true, "pigment_on_by_default": true}}
+default	linux	compat_behavior_when_unknown	str	"unless-pigment-layer-1.x"
+default	linux	default_compatibility_mode	str	"2.x"
+default	linux	display.colorspace	str	"srgb"
+default	linux	display.colorspace_EOTF	float	2.2
+default	linux	document.autosave_backups	bool	true
+default	linux	document.autosave_interval	int	10
+default	linux	frame.color_rgba	list	[0.12, 0.12, 0.12, 0.92]
+default	linux	input.barrel_rotation_offset	float	0.5
+default	linux	input.barrel_rotation_subtract_ascension	bool	true
+default	linux	input.button_mapping	dict	{"<Alt><Shift>Button2": "FrameEditMode", "<Alt>Button2": "ZoomViewMode", "<Control><Shift>Button2": "FrameEditMode", "<Control>Button2": "ZoomViewMode", "<Shift>Button2": "RotateViewMode", "Button2": "PanViewMode", "Button3": "ShowPopupMenu"}
+default	linux	input.device_mode	str	"screen"
+default	linux	input.global_pressure_mapping	list	[[0.0, 1.0], [1.0, 0.0]]
+default	linux	input.use_barrel_rotation	bool	true
+default	linux	misc.context_restores_color	bool	true
+default	linux	saving.default_format	str	"openraster"
+default	linux	saving.scrap_prefix	str	"~/MyPaint/scrap"
+default	linux	scratchpad.last_opened_scratchpad	str	""
+default	linux	ui.dark_theme_variant	bool	true
+default	linux	ui.feedback.last_pos	bool	false
+default	linux	ui.feedback.scale	bool	false
+default	linux	ui.hide_menubar_in_fullscreen	bool	true
+default	linux	ui.hide_subwindows_in_fullscreen	bool	true
+default	linux	ui.hide_toolbar_in_fullscreen	bool	true
+default	linux	ui.parts	dict	{"main_toolbar": true, "menubar": true}
+default	linux	ui.rendered_tile_cache_size	int	16384
+default	linux	ui.toolbar_icon_size	str	"large"
+default	linux	ui.toolbar_items	dict	{"toolbar1_blendmodes": false, "toolbar1_edit": true, "toolbar1_file": true, "toolbar1_linemodes": true, "toolbar1_scrap": false, "toolbar1_view_manips": false, "toolbar1_view_modes": true, "toolbar1_view_resets": true}
+default	linux	view.default_zoom	float	1.0
+default	linux	view.real_alpha_checks	bool	true
+default	linux	workspace.layout	dict	{"autohide": true, "position": {"h": -100, "w": -50, "x": 50, "y": 32}}

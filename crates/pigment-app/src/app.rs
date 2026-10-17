@@ -54,6 +54,12 @@
 //! 自己的 `ModeStack`、自己的 `View` 与自己的显存缓存，但**共享**这一份
 //! `brush`/`color_manager` —— 语义与源码的 `app.scratchpad_doc`
 //! （`gui/application.py:361-369`）一致，细节见 [`crate::scratch`] 的模块文档。
+//!
+//! 用户偏好（B6-1）：[`PigmentApp::prefs`] 就是源码的 `app.preferences`
+//! （`gui/application.py:280`）。启动时 `Prefs::load`（默认表 + `settings.json`
+//! 浅覆盖，`:524-539`），退出时 [`PigmentApp::save_gui_config`] 写回
+//! （`:624-628`）；`settings.json` 的路径、默认键表、未知键保留都在
+//! `pigment_engine::prefs`。
 
 use std::sync::{Arc, Mutex};
 
@@ -62,6 +68,8 @@ use eframe::egui;
 use pigment_engine::brushlib::NUM_BRUSHKEYS;
 use pigment_engine::color::{BrushStep, Color, ColorAction, ColorManager};
 use pigment_engine::hokusai::{Brush, BrushSetting, BrushState};
+use pigment_engine::mode::freehand::FreehandConfig;
+use pigment_engine::prefs::{self, Prefs};
 use pigment_engine::{CommandUpdate, Document};
 
 use crate::brushes::BrushPanel;
@@ -141,6 +149,13 @@ pub(crate) fn color_swatch(
 pub struct PigmentApp {
     /// 文档模型（画布表面 + 撤销栈），对应 MyPaint 的 `app.doc.model`。
     pub(crate) doc: Document,
+    // ---- 用户偏好（B6-1）----
+    /// 用户偏好 —— `app.preferences`（`gui/application.py:280` 的 `ObservableDict`）。
+    ///
+    /// 启动时 `Prefs::load`（默认表 + `settings.json` 浅覆盖，`application.py:524-539`），
+    /// 退出时 `save_gui_config` 写回（`:624-628`）。类型与路径规则在
+    /// `pigment_engine::prefs`。
+    pub(crate) prefs: Prefs,
     // ---- 暂存区（B5）----
     /// 暂存区：**第二份文档** + 独立模式栈 + 独立视图。
     ///
@@ -213,8 +228,11 @@ pub struct PigmentApp {
     /// 事件时间戳，这里用"应用启动以来的毫秒"并把倒退夹住
     /// （`DrawingState::queue_motion` 里还有一层夹逼）。
     pub(crate) pending_pointer_time: f64,
-    /// 模式层的可配置项（假压力/假旋转/桶旋转/隐藏光标；
-    /// `gui/userconfig.py` 的默认值，B6 起接偏好系统）。
+    /// 模式层的可配置项（假压力/假旋转/隐藏光标）。
+    ///
+    /// 启动与偏好变化时由 [`ModePrefs::from_prefs`] 从 [`PigmentApp::prefs`] 重推
+    /// （见 [`PigmentApp::apply_settings`]）；桶旋转那三个键不在这里，它们进
+    /// `FreehandConfig` 并广播给两条模式栈。
     pub(crate) mode_prefs: ModePrefs,
     pub(crate) view: View,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
@@ -257,7 +275,8 @@ pub struct PigmentApp {
     /// 图标纹理缓存（`shell::toolbars::IconCache`）。
     pub(crate) icon_cache: crate::shell::toolbars::IconCache,
     /// toolbar1 的 8 个片段开关（偏好 `ui.toolbar_items`，出厂默认见
-    /// `userconfig.py:76-85`）。持久化属 B6。
+    /// `userconfig.py:76-85`）。启动时由 [`crate::shell::toolbars::fragments_from_prefs`]
+    /// 从偏好读入；运行期开关仍走片段菜单的动作（写回偏好属 B6-3）。
     pub(crate) toolbar_fragments: [bool; 8],
     // ---- 图层面板（B2-5）----
     /// 缩略图缓存：layer id → (失效键, 纹理)。键变了才重渲染
@@ -285,15 +304,21 @@ pub struct PigmentApp {
 
 /// 模式层的可配置项（`gui/userconfig.py` + `app.fakepressure/fakerotation`）。
 ///
-/// B6 引入偏好系统前先放这几个默认值（源码默认值见 `userconfig.py:61-67`
-/// 与 `application.py:299-300`）。
+/// 三个字段的来源不同，别一律当偏好：
+/// - `hide_cursor_while_painting` 是**软键** `ui.hide_cursor_while_painting`
+///   （默认表里没有，`gui/freehand.py:280` / `preferenceswindow.py:202` 都用
+///   `.get(key, False)` 读）；
+/// - `fakepressure` / `fakerotation` 在源码里**不是偏好项**：`Application.__init__`
+///   写死 0.5（`application.py:299-300`），之后由假输入滑条改
+///   （`freehand.py:697-716`），不进 `settings.json`。所以这里读偏好也仍是 0.5，
+///   等 B6-3 把假输入滑条接上再变成运行期状态。
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModePrefs {
     /// 鼠标/无压感设备的假压力（默认 0.5）。
     pub fakepressure: f32,
     /// 假桶旋转（默认 0.5）。
     pub fakerotation: f32,
-    /// 画的时候隐藏系统光标（默认 false）。
+    /// 画的时候隐藏系统光标（软键，默认 false）。
     pub hide_cursor_while_painting: bool,
 }
 
@@ -303,6 +328,21 @@ impl Default for ModePrefs {
             fakepressure: 0.5,
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
+        }
+    }
+}
+
+impl ModePrefs {
+    /// 从偏好读 —— 三个字段里只有隐藏光标是偏好项（见类型文档）。
+    ///
+    /// 与 [`FreehandConfig::from_prefs`] 共用同一处读取，保证喂给模式上下文的
+    /// 假输入（`ctx.fakepressure` 等）和喂给模式对象的桶旋转配置不会打架。
+    pub(crate) fn from_prefs(prefs: &Prefs) -> Self {
+        let cfg = FreehandConfig::from_prefs(prefs);
+        Self {
+            fakepressure: cfg.fakepressure,
+            fakerotation: cfg.fakerotation,
+            hide_cursor_while_painting: cfg.hide_cursor_while_painting,
         }
     }
 }
@@ -335,6 +375,9 @@ impl Default for ModePrefs {
     pub(crate) struct FilePrompt {
         pub(crate) action: FileAction,
         path: String,
+        /// 提交时补的扩展名（带点，如 `".ora"`）—— 文档/暂存页取偏好
+        /// `saving.default_format`（`filehandling.py:1408-1411`），导出恒为 `.png`。
+        ext: &'static str,
         /// 上一次的错误（校验失败时显示，不关闭弹层）。
         error: Option<String>,
         /// 是否还没抢过键盘焦点。
@@ -345,13 +388,19 @@ impl Default for ModePrefs {
     }
 
     impl FilePrompt {
-        pub(crate) fn new(action: FileAction, seed: Option<&std::path::Path>) -> Self {
+        pub(crate) fn new(
+            action: FileAction,
+            seed: Option<&std::path::Path>,
+            doc_ext: &'static str,
+        ) -> Self {
+            let ext = action_extension(action, doc_ext);
             let path = seed
                 .map(|p| p.display().to_string())
-                .unwrap_or_else(|| default_document_path(action));
+                .unwrap_or_else(|| default_document_path(ext));
             Self {
                 action,
                 path,
+                ext,
                 error: None,
                 want_focus: true,
             }
@@ -381,17 +430,24 @@ fn abspath(p: &str) -> std::path::PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// 某个动作补扩展名时用的后缀。
+///
+/// 导出恒 `.png`（`Export` 走 PNG）；其余（另存为 / 暂存页另存为）用偏好
+/// `saving.default_format` 映射出来的扩展名 —— 源码 `save_autoincrement_file`
+/// 就是这么取扩展名的（`filehandling.py:1408-1411`，映射表 `:598-602`）。
+fn action_extension(action: FileAction, doc_ext: &'static str) -> &'static str {
+    match action {
+        FileAction::Export => ".png",
+        _ => doc_ext,
+    }
+}
+
 /// 弹层里给的路径要按动作补扩展名。
 ///
 /// MyPaint 靠文件对话框的过滤器自动补扩展名（`save_as_dialog` 的
 /// `set_current_name`）；我们没有对话框，就按动作给个默认后缀。
-fn with_default_extension(action: FileAction, p: &str) -> String {
-    let ext = match action {
-        FileAction::Export => "png",
-        // 暂存页/文档的默认格式都是 `.ora`（`saving.default_format`
-        // 的出厂值 openraster，`userconfig.py:89`）
-        _ => "ora",
-    };
+fn with_default_extension(action: FileAction, p: &str, doc_ext: &'static str) -> String {
+    let ext = action_extension(action, doc_ext).trim_start_matches('.');
     let path = std::path::Path::new(p);
     match path.extension() {
         Some(_) => p.to_string(),
@@ -401,11 +457,8 @@ fn with_default_extension(action: FileAction, p: &str) -> String {
 
 /// 弹层的默认文件名（照 `save_as_dialog` 的 `suggested_filename`；
 /// 没有当前文件时 MyPaint 用文档名 "Untitled"，我们用 "untitled"）。
-fn default_document_path(action: FileAction) -> String {
-    let ext = match action {
-        FileAction::Export => "png",
-        _ => "ora",
-    };
+fn default_document_path(ext: &str) -> String {
+    let ext = ext.trim_start_matches('.');
     std::env::current_dir()
         .map(|d| d.join(format!("untitled.{ext}")).display().to_string())
         .unwrap_or_else(|_| format!("untitled.{ext}"))
@@ -453,23 +506,42 @@ impl PigmentApp {
             pigment_engine::brushlib::default_brush()
         });
 
-        let color_manager = ColorManager::new();
+        // ---- 用户偏好（B6-1）：启动时载入（`application.py:279-281`）----
+        // 源码在 `Application.__init__` 里建好配置目录（`:228-231`）再
+        // `load_settings()`。`Prefs::load` 走的是同一套默认表 + 浅覆盖。
+        let config_path = prefs::settings_path();
+        if let Some(dir) = config_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                eprintln!("配置目录建不出来（{}）：{e}", dir.display());
+            }
+        }
+        let prefs = Prefs::load(config_path);
+        let mode_prefs = ModePrefs::from_prefs(&prefs);
+        // 片段开关从偏好 `ui.toolbar_items` 读（`userconfig.py:76-85`）；
+        // 在 `prefs` 被移进结构体之前算好。
+        let toolbar_fragments = crate::shell::toolbars::fragments_from_prefs(&prefs);
+
+        // 当前色/历史/调色板/色轮类型都从偏好来（`adjbases.py:121-147`）
+        let color_manager = ColorManager::from_prefs(&prefs);
         let brushkeys = seed_brushkeys(&brushes);
         let brush_name = brushes
             .selected_entry()
             .map(|e| e.mypaint_name())
             .unwrap_or_else(|| "Unknown Brush".to_string());
+        // 暂存区目录（`filehandling.py:1431-1438`）与启动页（`application.py:474-486`）
+        let scratch = {
+            // 源码在启动时建好数据子目录（`application.py:232-236`），
+            // 保存前还会再兜底建一次（`filehandling.py:1363-1366`）。
+            let dir = pigment_engine::scratchpad::default_dir();
+            if let Err(e) = pigment_engine::scratchpad::ensure_dir(&dir) {
+                eprintln!("暂存区目录建不出来（{}）：{e}", dir.display());
+            }
+            crate::scratch::Scratchpad::new(dir)
+        };
         let mut app = Self {
             doc: Document::new(),
-            scratch: {
-                // 源码在启动时建好数据子目录（`application.py:228-236`），
-                // 保存前还会再兜底建一次（`filehandling.py:1363-1366`）。
-                let dir = pigment_engine::scratchpad::default_dir();
-                if let Err(e) = pigment_engine::scratchpad::ensure_dir(&dir) {
-                    eprintln!("暂存区目录建不出来（{}）：{e}", dir.display());
-                }
-                crate::scratch::Scratchpad::new(dir)
-            },
+            prefs,
+            scratch,
             scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),
             scratch_was_added: false,
             brushes,
@@ -491,7 +563,7 @@ impl PigmentApp {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
             }),
             pending_pointer_time: 0.0,
-            mode_prefs: ModePrefs::default(),
+            mode_prefs,
             view: View::default(),
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
@@ -500,7 +572,7 @@ impl PigmentApp {
             stroke_dirty: false,
             fullscreen: false,
             icon_cache: Default::default(),
-            toolbar_fragments: crate::shell::toolbars::DEFAULT_FRAGMENTS,
+            toolbar_fragments,
             layer_thumbs: std::collections::HashMap::new(),
             layer_rename: None,
             rename_buf: String::new(),
@@ -526,11 +598,58 @@ impl PigmentApp {
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
         };
         app.derive_active();
-        // 启动时载回上次的暂存页（`application.py:474-486`）。
-        // 偏好 `scratchpad.last_opened_scratchpad` 属 B6，所以这里按它的默认值
-        // （`autosave.ora`，`application.py:393-397`）找。
-        app.scratch.open_at_startup();
+        // 桶旋转配置推给两条模式栈（源码是每事件现读偏好；见
+        // `ModeStack::set_freehand_config`）。走 `apply_settings` 是为了让
+        // 启动与偏好对话框 ACCEPT 用同一条路径（`application.py:487`/`:514-522`）。
+        app.apply_settings();
+        // 启动时载回上次的暂存页（`application.py:474-486`）：偏好
+        // `scratchpad.last_opened_scratchpad` 有就用它，没有就写回 autosave 路径。
+        app.scratch.startup_page(&mut app.prefs);
         app
+    }
+
+    /// 应用当前偏好 —— `Application.apply_settings()`（`gui/application.py:514-522`）
+    /// 的数据侧。
+    ///
+    /// 源码三步（`_apply_pressure_mapping_settings` / `_apply_button_mapping_settings`
+    /// / `_apply_autosave_settings`）依赖压力曲线、按键映射与自动备份三个子系统，
+    /// 本移植都还没有（B6-2 / B6-3 记账），所以这里只做本块真正消费得到的部分：
+    /// 把假输入/隐藏光标与桶旋转配置重推给模式层。
+    ///
+    /// 调用点：启动（`new`）与偏好对话框 ACCEPT（`preferenceswindow.py:128-132`，
+    /// 对话框本身属 B6-3）。
+    pub(crate) fn apply_settings(&mut self) {
+        self.mode_prefs = ModePrefs::from_prefs(&self.prefs);
+        let cfg = FreehandConfig::from_prefs(&self.prefs);
+        self.modes.set_freehand_config(cfg);
+        self.scratch.modes.set_freehand_config(cfg);
+    }
+
+    /// 保存配置 —— `Application.save_gui_config()`（`gui/application.py:624-628`）。
+    ///
+    /// 源码三件事，逐条对应：
+    /// 1. `Gtk.AccelMap.save(<conf>/accelmap.conf)`（`:625`）—— 按键编辑器属
+    ///    **B6-2**，这里没有可写的加速键表（记账）；
+    /// 2. `preferences["workspace.layout"] = wkspace.get_layout()`（`:626-627`）——
+    ///    窗口/停靠布局的序列化属 **B6-3**（`shell/dock.rs` 的记账）；
+    /// 3. `save_settings()`（`:628`）—— 本方法做的就是把当前状态写回偏好再落盘。
+    ///
+    /// 调用点：退出（`quit_cb`，`drawwindow.py:688-690`；eframe 侧是
+    /// [`eframe::App::on_exit`]）与偏好对话框 ACCEPT（`preferenceswindow.py:130`）。
+    pub(crate) fn save_gui_config(&mut self) {
+        // 颜色管理器的五条键（源码"改动即写"，这里是保存时整份同步，见
+        // `ColorManager::store_prefs` 的说明）
+        self.color_manager.store_prefs(&mut self.prefs);
+        // 暂存页路径（源码在 open/save 时写，`filehandling.py:965-974`/`:1034-1036`；
+        // 这里在保存配置时同步，效果一致、崩溃前不落盘 —— 记账）
+        let scratch_path = abspath(&self.scratch.path.to_string_lossy());
+        self.prefs.set_str(
+            prefs::KEY_LAST_OPENED_SCRATCHPAD,
+            scratch_path.display().to_string(),
+        );
+        if let Err(e) = self.prefs.save() {
+            eprintln!("保存偏好失败（{}）：{e}", self.prefs.path().display());
+        }
     }
 
     /// 由 `base_brush` + 覆盖项推导出实际作画笔刷。
@@ -726,9 +845,25 @@ impl PigmentApp {
         }
     }
 
+    /// 当前默认保存扩展名（带点）—— 偏好 `saving.default_format`。
+    ///
+    /// 出厂 `"openraster"` → `".ora"`（`userconfig.py:89` +
+    /// `filehandling.py:598-602`/`:1408-1411`）。
+    pub(crate) fn save_extension(&self) -> &'static str {
+        prefs::save_extension(&self.prefs)
+    }
+
+    /// 建一个文件弹层，扩展名按当前偏好（`saving.default_format`）。
+    fn new_file_prompt(
+        &self,
+        action: FileAction,
+        seed: Option<&std::path::Path>,
+    ) -> FilePrompt {
+        FilePrompt::new(action, seed, self.save_extension())
+    }
+
     /// 处理弹层提交。
-    fn apply_file_prompt(&mut self, now: f64) {
-        let Some(prompt) = self.file_prompt.take() else {
+    fn apply_file_prompt(&mut self, now: f64) {        let Some(prompt) = self.file_prompt.take() else {
             return;
         };
         let raw = prompt.path.trim();
@@ -743,7 +878,7 @@ impl PigmentApp {
         let candidate = if matches!(action, FileAction::Open | FileAction::ScratchpadOpen) {
             raw.to_string()
         } else {
-            with_default_extension(action, raw)
+            with_default_extension(action, raw, prompt.ext)
         };
         let path = abspath(&candidate);
         match action {
@@ -814,7 +949,8 @@ impl PigmentApp {
         match self.current_file.clone() {
             Some(p) => self.save_to_path(&p, false, now),
             None => {
-                self.file_prompt = Some(FilePrompt::new(FileAction::SaveAs, None));
+                let prompt = self.new_file_prompt(FileAction::SaveAs, None);
+                self.file_prompt = Some(prompt);
             }
         }
     }
@@ -1550,16 +1686,18 @@ impl PigmentApp {
                 self.new_document(now);
                 ctx.request_repaint();
             }
-            "Open" => self.file_prompt = Some(FilePrompt::new(FileAction::Open, None)),
+            "Open" => {
+                let prompt = self.new_file_prompt(FileAction::Open, None);
+                self.file_prompt = Some(prompt);
+            }
             "Save" => {
                 self.save_command(now);
                 ctx.request_repaint();
             }
             "SaveAs" => {
-                self.file_prompt = Some(FilePrompt::new(
-                    FileAction::SaveAs,
-                    self.current_file.as_deref(),
-                ));
+                let prompt =
+                    self.new_file_prompt(FileAction::SaveAs, self.current_file.as_deref());
+                self.file_prompt = Some(prompt);
             }
             "Export" => {
                 // 建议名 = 当前文件名换 .png（照 `save_as_dialog` 的 suggested_filename）
@@ -1567,7 +1705,8 @@ impl PigmentApp {
                     .current_file
                     .as_ref()
                     .map(|p| p.with_extension("png"));
-                self.file_prompt = Some(FilePrompt::new(FileAction::Export, seed.as_deref()));
+                let prompt = self.new_file_prompt(FileAction::Export, seed.as_deref());
+                self.file_prompt = Some(prompt);
             }
             // ---- 撤销栈（`gui/document.py:552-558`）----
             "Undo" => {
@@ -1901,10 +2040,11 @@ impl PigmentApp {
                 if let Err(e) = self.scratch.save() {
                     self.set_status(format!("暂存区保存失败：{e}"), now);
                 }
-                self.file_prompt = Some(FilePrompt::new(
+                let prompt = self.new_file_prompt(
                     FileAction::ScratchpadOpen,
                     Some(&self.scratch.path),
-                ));
+                );
+                self.file_prompt = Some(prompt);
             }
             "ScratchSaveNow" => {
                 // `save_current_scratchpad_cb`（drawwindow.py:642-643）
@@ -1925,10 +2065,11 @@ impl PigmentApp {
             "ScratchSaveAs" => {
                 // `save_as_scratchpad_cb`（drawwindow.py:631-632）
                 self.flush_scratch_stroke();
-                self.file_prompt = Some(FilePrompt::new(
+                let prompt = self.new_file_prompt(
                     FileAction::ScratchpadSaveAs,
                     Some(&self.scratch.path),
-                ));
+                );
+                self.file_prompt = Some(prompt);
             }
             "ScratchRevert" => {
                 // `revert_current_scratchpad_cb`（drawwindow.py:634-640）
@@ -2108,5 +2249,138 @@ impl eframe::App for PigmentApp {
         if self.file_prompt.is_some() {
             ctx.request_repaint();
         }
+    }
+
+    /// 退出时保存配置 —— `quit_cb` 里的 `app.save_gui_config()`
+    /// （`gui/drawwindow.py:688-690`）。
+    ///
+    /// 源码在 `quit_cb` 的**确认对话框之前**保存（`:690`），即使最后取消了退出
+    /// 也写盘；eframe 侧 `on_exit` 在窗口真正关闭时调用一次，语义相当。
+    fn on_exit(&mut self) {
+        self.save_gui_config();
+    }
+}
+// 测试：偏好接线的纯函数侧（B6-1）。PigmentApp 本体要 GPU，构造不了；
+// 这里只测不需要 eframe 的那几层。
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 一份"什么都没有"的偏好：默认表 + 全部出厂值，不读真实 settings.json。
+    fn fresh_prefs(tag: &str) -> Prefs {
+        let mut p = std::env::temp_dir();
+        p.push(format!("pigment-app-prefs-{}-{tag}.json", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        Prefs::load(p)
+    }
+
+    #[test]
+    fn mode_prefs_reads_hide_cursor_from_the_prefs() {
+        // gui/freehand.py:280 / preferenceswindow.py:202：软键，默认 false
+        let mut prefs = fresh_prefs("cursor");
+        assert!(!ModePrefs::from_prefs(&prefs).hide_cursor_while_painting);
+        prefs.set_bool(prefs::KEY_HIDE_CURSOR_WHILE_PAINTING, true);
+        let mp = ModePrefs::from_prefs(&prefs);
+        assert!(mp.hide_cursor_while_painting);
+        // 假输入不是偏好项（application.py:299-300 写死 0.5）
+        assert!((mp.fakepressure - 0.5).abs() < 1e-6);
+        assert!((mp.fakerotation - 0.5).abs() < 1e-6);
+        let _ = std::fs::remove_file(prefs.path());
+    }
+
+    #[test]
+    fn mode_prefs_ignores_a_type_error_and_keeps_the_source_default() {
+        // 类型不对 → 回落 false（源码 .get(key, False) 的保守版）。
+        // 直接从磁盘读一份坏 settings.json（app 侧没有 serde_json 依赖）。
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-app-badprefs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        std::fs::write(&path, r#"{"ui.hide_cursor_while_painting": "yes"}"#).unwrap();
+        let prefs = Prefs::load(&path);
+        assert!(!ModePrefs::from_prefs(&prefs).hide_cursor_while_painting);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_extension_follows_saving_default_format() {
+        // userconfig.py:89（出厂 openraster）+ filehandling.py:598-602
+        let mut prefs = fresh_prefs("ext");
+        assert_eq!(prefs::save_extension(&prefs), ".ora");
+        prefs.set_str(prefs::KEY_SAVING_DEFAULT_FORMAT, "png-solid");
+        assert_eq!(prefs::save_extension(&prefs), ".png");
+        prefs.set_str(prefs::KEY_SAVING_DEFAULT_FORMAT, "jpeg-90%");
+        assert_eq!(prefs::save_extension(&prefs), ".jpg");
+        let _ = std::fs::remove_file(prefs.path());
+    }
+
+    #[test]
+    fn file_prompt_default_name_uses_the_document_extension() {
+        // 默认文件名 + 提交时补扩展名都跟偏好走（导出恒 .png）
+        let prompt = FilePrompt::new(FileAction::SaveAs, None, ".png");
+        assert!(prompt.path.replace('\\', "/").ends_with("untitled.png"), "{}", prompt.path);
+        assert_eq!(prompt.ext, ".png");
+        let prompt = FilePrompt::new(FileAction::Export, None, ".ora");
+        assert!(prompt.path.replace('\\', "/").ends_with("untitled.png"), "导出恒 png");
+        assert_eq!(prompt.ext, ".png");
+
+        // 有 seed 就原样用 seed 的路径
+        let seed = std::path::Path::new(r"D:\paint\a.ora");
+        let prompt = FilePrompt::new(FileAction::SaveAs, Some(seed), ".png");
+        assert_eq!(prompt.path, r"D:\paint\a.ora");
+    }
+
+    #[test]
+    fn submit_extends_only_when_there_is_no_extension() {
+        // 有扩展名就尊重用户写的（`.jpg` / `.ora` 都不改）
+        assert_eq!(
+            with_default_extension(FileAction::SaveAs, "noext", ".png"),
+            "noext.png"
+        );
+        assert_eq!(
+            with_default_extension(FileAction::SaveAs, "mine.ora", ".png"),
+            "mine.ora"
+        );
+        assert_eq!(
+            with_default_extension(FileAction::Export, "shot", ".ora"),
+            "shot.png",
+            "导出恒 .png（Export 走 PNG，不看 saving.default_format）"
+        );
+        assert_eq!(action_extension(FileAction::Export, ".ora"), ".png");
+        assert_eq!(action_extension(FileAction::ScratchpadSaveAs, ".jpeg"), ".jpeg");
+    }
+
+    #[test]
+    fn save_gui_config_writes_the_color_and_scratchpad_keys() {
+        // application.py:624-628 的数据侧：颜色五条键 + 暂存页路径
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-app-savecfg-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut prefs = Prefs::load(dir.join("settings.json"));
+        // 拿不到 PigmentApp，就分别验证两段的输入/输出：颜色管理器写回 + 路径写入
+        let mgr = ColorManager::new();
+        mgr.store_prefs(&mut prefs);
+        assert_eq!(
+            prefs.get_str(pigment_engine::color::PREFS_KEY_CURRENT_COLOR),
+            Some("#003153")
+        );
+        prefs.set_str(prefs::KEY_LAST_OPENED_SCRATCHPAD, r"D:\scrap\page.ora");
+        prefs.save().unwrap();
+        let reloaded = Prefs::load(dir.join("settings.json"));
+        assert_eq!(
+            reloaded.str_or(prefs::KEY_LAST_OPENED_SCRATCHPAD, ""),
+            r"D:\scrap\page.ora"
+        );
+        assert_eq!(
+            reloaded.get_str(pigment_engine::color::PREFS_KEY_CURRENT_COLOR),
+            Some("#003153")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

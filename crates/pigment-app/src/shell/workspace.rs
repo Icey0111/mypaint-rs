@@ -532,6 +532,7 @@ impl PigmentApp {
             rect,
             &self.view,
             &self.doc,
+            crate::shell::overlays::OverlayStyle::from_prefs(&self.prefs),
         );
 
         // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----

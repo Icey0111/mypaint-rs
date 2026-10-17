@@ -312,6 +312,15 @@ pub trait InteractionMode {
         false
     }
 
+    /// 收下应用推来的自由手绘配置（偏好热更新的通道）。
+    ///
+    /// 源码的自由手绘模式在**每个事件**里现读 `tdw.app.preferences`
+    /// （`gui/freehand.py:461-478`、`:280`），所以没有这个"推送"步骤；
+    /// Rust 侧把配置缓存在 [`freehand::FreehandMode`] 里，必须由
+    /// [`ModeStack::set_freehand_config`] 在启动/偏好变化时重推。
+    /// 其余模式没有这类配置，默认什么都不做。
+    fn set_freehand_config(&mut self, _config: freehand::FreehandConfig) {}
+
     /// 是否是"一键式拖拽模式"（`OneshotDragMode`，`mode.py:1277`）。
     ///
     /// 源码用 `isinstance(mode, OneshotDragMode)` 判断（`mode.py:1298-1300`），
@@ -695,6 +704,17 @@ impl ModeStack {
     /// 栈里是否有某个模式（按 `name()` 比较；调试/测试用）。
     pub fn names(&self) -> Vec<&'static str> {
         self.stack.iter().map(|m| m.name()).collect()
+    }
+
+    /// 把自由手绘配置推给栈里**所有**模式（偏好热更新）。
+    ///
+    /// 源码每个事件都现读 `app.preferences`（`gui/freehand.py:461-478`），
+    /// 改偏好立刻生效；本移植的配置缓存在模式对象上，所以偏好一变就必须
+    /// 重推一次。默认模式与"被压上来又弹回去"的模式都在栈里，一次遍历覆盖。
+    pub fn set_freehand_config(&mut self, config: freehand::FreehandConfig) {
+        for mode in &mut self.stack {
+            mode.set_freehand_config(config);
+        }
     }
 
     /// 压入一个模式：先 `leave()` 旧栈顶，再 `enter()` 新模式（`push`）。

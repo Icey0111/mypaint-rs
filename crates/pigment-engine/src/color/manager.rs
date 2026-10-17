@@ -16,17 +16,13 @@
 //! 第 3 条的触发时机留在应用层（`pigment-app` 的笔画结束钩子），
 //! 因为它依赖 GUI 事件流而不是颜色模型。
 //!
-//! ## 没有移植的部分（记账）
+//! ## 与源码的对应关系
 //!
-//! - **偏好持久化**：源码从 `prefs["colors.current"]` / `prefs["colors.history"]`
-//!   读、写回（`adjbases.py:121-131`、`:258-263`）。本移植还没有偏好系统
-//!   （B6），所以 [`ColorManager::new`] 只按 `_DEFAULT_HIST` 播种，当前色取历史
-//!   末项（照 `adjbases.py:129-131` 的 `col_hex = hist_hex[-1]` 那支）。
-//!   键名常量照抄下来，等偏好系统到位直接接。
-//! - **调色板的偏好存取**：`_palette` 本身已由 B4-4a 接上（[`ColorManager::palette`]，
-//!   启动时按 `adjbases.py:139-147` 载入默认 `.gpl`），但
-//!   `prefs["colors.palette"]` 的读写（`adjbases.py:139-141`/`:354-357`）
-//!   随偏好系统一起归 B6。
+//! - **偏好持久化（B6-1）**：源码从 `prefs["colors.current"]` /
+//!   `prefs["colors.history"]` 读、写回（`adjbases.py:121-131`、`:216`、
+//!   `:258-263`），色轮类型见 `:133-136`/`:307`，调色板见 `:139-147`/`:354-357`。
+//!   这里对应 [`ColorManager::from_prefs`]（启动读）与
+//!   [`ColorManager::store_prefs`]（保存时整份写回）。
 //! - **adjuster 通知**：`color_updated` / `color_history_updated`
 //!   （`lib/observable.py` 的 `@event`）是给 GUI 控件用的；egui 是立即模式，
 //!   控件每帧读管理器即可（`pigment-app` 的 `shell/` 就是这么做的）。
@@ -40,8 +36,9 @@
 
 use super::adjust::{ColorAction, CONTEXT_RESTORES_COLOR_DEFAULT};
 use super::model::{colors_match, Color, HsvColor, RgbColor, UIColor};
-use super::palette::Palette;
+use super::palette::{Palette, SimplePaletteDict};
 use super::wheels::{distort_hue, undistort_hue, HueRange, WheelType};
+use crate::prefs::Prefs;
 
 /// 颜色历史长度 —— `adjbases.py:79` 的 `_HIST_LEN = 5`。
 pub const HIST_LEN: usize = 5;
@@ -61,6 +58,11 @@ pub const PREFS_KEY_COLOR_HISTORY: &str = "colors.history";
 ///
 /// 值见 [`WheelType`]（`"rgb"` / `"ryb"` / `"rygb"`，`adjbases.py:80-95`）。
 pub const PREFS_KEY_WHEEL_TYPE: &str = super::wheels::PREFS_KEY_WHEEL_TYPE;
+/// 偏好键：当前调色板 —— `adjbases.py:48` 的 `PREFS_PALETTE_DICT_KEY`。
+///
+/// 值是调色板的"简单字典"（`palette.py:831-859`，见 [`SimplePaletteDict`]），
+/// 不是 `.gpl` 文本。
+pub const PREFS_KEY_PALETTE: &str = "colors.palette";
 /// 偏好键：恢复笔刷槽位时是否连颜色一起还原
 /// （`gui/userconfig.py:93` `misc.context_restores_color`）。
 pub const PREFS_KEY_CONTEXT_RESTORES_COLOR: &str = "misc.context_restores_color";
@@ -111,7 +113,8 @@ impl ColorManager {
     /// 按源码的启动路径初始化：历史 = `_DEFAULT_HIST`，当前色 = 历史末项，
     /// 调色板 = 默认 `.gpl`。
     ///
-    /// 对应 `adjbases.py:121-147`（只是没有偏好字典可读，见模块文档）。
+    /// 对应 `adjbases.py:121-147` 的"没有偏好"那一档；有偏好时用
+    /// [`ColorManager::from_prefs`]（B6-1 起应用启动走那条）。
     pub fn new() -> Self {
         let hist = hist_from_hex(&DEFAULT_HIST_HEX);
         // hist_hex[-1]
@@ -121,12 +124,93 @@ impl ColorManager {
             hist,
             context_restores_color: CONTEXT_RESTORES_COLOR_DEFAULT,
             // `adjbases.py:134-136`：`prefs.get(PREFS_KEY_WHEEL_TYPE, "rgb")`
-            // 以及 `_HUE_DISTORTION_TABLES[wheel_type]`。没有偏好系统（B6），
-            // 走默认那一支。
+            // 以及 `_HUE_DISTORTION_TABLES[wheel_type]`。没有偏好时走默认那一支。
             wheel_type: WheelType::DEFAULT,
             // `adjbases.py:139-147`：没有偏好就加载默认调色板文件
             palette: Palette::mypaint_default(),
         }
+    }
+
+    /// 从用户偏好初始化 —— `ColorManager.__init__` 的 `adjbases.py:121-147`。
+    ///
+    /// 逐段对应：
+    /// - `:122-125` 历史 = `_DEFAULT_HIST + prefs[colors.history]`，再裁到 5；
+    /// - `:128-131` 当前色 = `prefs[colors.current]`，缺失时取历史**末项**；
+    /// - `:133-136` 色轮类型 = `prefs[colors.wheels.type]`（缺失 `"rgb"`）；
+    /// - `:139-147` 调色板 = `prefs[colors.palette]` 的简单字典，
+    ///   缺失时载入 `<datapath>/palettes/MyPaint_Default.gpl`（内嵌版）；
+    /// - `:93`（`userconfig.py`）`misc.context_restores_color`。
+    ///
+    /// 源码读不到期望类型时会抛异常（`new_from_hex_str` 对非串、
+    /// `_HUE_DISTORTION_TABLES[未知名字]` 的 `KeyError`）；这里按最保守的
+    /// "当作没有偏好"处理（跳过坏历史项 / 未知色轮名退回 `rgb` /
+    /// 坏调色板退回默认 `.gpl`）。
+    pub fn from_prefs(prefs: &Prefs) -> Self {
+        // `:122-125`
+        let mut hist = hist_from_hex(&DEFAULT_HIST_HEX);
+        if let Some(arr) = prefs.get_array(PREFS_KEY_COLOR_HISTORY) {
+            for v in arr {
+                if let Some(s) = v.as_str() {
+                    hist.push(Color::Rgb(RgbColor::new_from_hex_str(s)));
+                }
+            }
+        }
+        while hist.len() > HIST_LEN {
+            hist.remove(0);
+        }
+        // `:128-131`
+        let color = match prefs.get_str(PREFS_KEY_CURRENT_COLOR) {
+            Some(s) => Color::Rgb(RgbColor::new_from_hex_str(s)),
+            None => *hist.last().expect("_DEFAULT_HIST 非空"),
+        };
+        // `:133-136`
+        let wheel_type =
+            WheelType::from_name(prefs.str_or(PREFS_KEY_WHEEL_TYPE, WheelType::DEFAULT.name()))
+                .unwrap_or(WheelType::DEFAULT);
+        // `:139-147`
+        let palette = match prefs.get(PREFS_KEY_PALETTE) {
+            Some(v) => SimplePaletteDict::from_json(v)
+                .map(|simple| Palette::from_simple_dict(&simple))
+                .unwrap_or_else(Palette::mypaint_default),
+            None => Palette::mypaint_default(),
+        };
+        Self {
+            color,
+            hist,
+            // `misc.context_restores_color`（`userconfig.py:93` 默认 True）
+            context_restores_color: prefs
+                .bool_or(PREFS_KEY_CONTEXT_RESTORES_COLOR, CONTEXT_RESTORES_COLOR_DEFAULT),
+            wheel_type,
+            palette,
+        }
+    }
+
+    /// 把当前状态写回偏好 —— 源码"改动即写"那几处的收拢版。
+    ///
+    /// | 写到哪 | 源码 |
+    /// |---|---|
+    /// | `colors.current` | `set_color()`，`adjbases.py:216` |
+    /// | `colors.history` | `push_history()`，`:258-263` |
+    /// | `colors.wheels.type` | `set_wheel_type()`，`:307` |
+    /// | `colors.palette` | `_palette_changed_cb()`，`:354-357` |
+    /// | `misc.context_restores_color` | `document.py:1721-1724` |
+    ///
+    /// **时机差异（记账）**：源码在每次改动时立刻写进共享 dict；这里由
+    /// 应用层在保存配置（`save_gui_config`，`application.py:624-628`）时
+    /// 统一调用一次。落盘内容一致，但崩溃前不会保住最后一次颜色/调色板改动。
+    pub fn store_prefs(&self, prefs: &mut Prefs) {
+        prefs.set_str(PREFS_KEY_CURRENT_COLOR, self.color.to_hex_str());
+        let hist = self.history_hex();
+        prefs.set_str_array(
+            PREFS_KEY_COLOR_HISTORY,
+            hist.iter().map(String::as_str),
+        );
+        prefs.set_str(PREFS_KEY_WHEEL_TYPE, self.wheel_type_name());
+        prefs.set(PREFS_KEY_PALETTE, self.palette.to_simple_dict().to_json());
+        prefs.set_bool(
+            PREFS_KEY_CONTEXT_RESTORES_COLOR,
+            self.context_restores_color,
+        );
     }
 
     // ---- 当前色（`adjbases.py:202-226`）----

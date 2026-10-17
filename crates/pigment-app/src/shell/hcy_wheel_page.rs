@@ -66,8 +66,9 @@
 //!    HSV 轮页同一处置）。
 //! 3. **主题色**：`_get_mask_fg()` / `_get_mask_bg()`（`:246-258`）读 GTK 主题的
 //!    前景/背景色，这里用 `ui.visuals()` 的 `text_color` / `panel_fill`。
-//! 4. **`get_prefs()` 持久化**（`:43-44` 的两个偏好键）：偏好系统属 B6，
-//!    本页的遮罩只在本次运行内有效（键名在引擎里保留）。
+//! 4. **`get_prefs()` 持久化**（`:43-44` 的两个偏好键
+//!    `colors.hcywheel.mask.gamuts` / `...mask.active`）：偏好系统已由 B6-1
+//!    提供，但本页的读写未接（记账），遮罩只在本次运行内有效（键名在引擎里保留）。
 
 use eframe::egui;
 use pigment_engine::color::{

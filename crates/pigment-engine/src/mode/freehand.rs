@@ -25,12 +25,21 @@ use std::collections::VecDeque;
 
 /// 自由手绘的可配置项（`gui/userconfig.py` 的默认值 + `app.fakepressure`）。
 ///
-/// B6 引入偏好系统前先作为结构体字段存在；GUI 每次喂事件时填。
+/// 源码每个事件都从 `tdw.app.preferences` **现读**这几个键
+/// （`freehand.py:461-478` 的 `input.barrel_rotation_offset` /
+/// `input.barrel_rotation_subtract_ascension` / `input.use_barrel_rotation`、
+/// `:280` 的 `ui.hide_cursor_while_painting`）以及 `app.fakepressure` /
+/// `app.fakerotation`（`application.py:299-300`）。Rust 侧把这些缓存成配置，
+/// 由应用在启动/偏好变化时用 [`FreehandConfig::from_prefs`] 重推
+/// （[`super::ModeStack::set_freehand_config`]）。
 #[derive(Clone, Copy, Debug)]
 pub struct FreehandConfig {
     /// `app.fakepressure`（`application.py:299`）。
+    ///
+    /// **不是偏好项**：源码在 `Application.__init__` 里写死 0.5，之后由
+    /// `FakeInputMode` 的滑条改（`freehand.py:697-706`），不进 `settings.json`。
     pub fakepressure: f32,
-    /// `app.fakerotation`（`application.py:300`）。
+    /// `app.fakerotation`（`application.py:300`），同上，不是偏好项。
     pub fakerotation: f32,
     /// `input.barrel_rotation_offset`（默认 0.5）。
     pub barrel_rotation_offset: f32,
@@ -38,7 +47,7 @@ pub struct FreehandConfig {
     pub use_barrel_rotation: bool,
     /// `input.barrel_rotation_subtract_ascension`（默认 true）。
     pub barrel_rotation_subtract_ascension: bool,
-    /// `ui.hide_cursor_while_painting`（默认 false）。
+    /// `ui.hide_cursor_while_painting`（软键，默认 false）。
     pub hide_cursor_while_painting: bool,
 }
 
@@ -51,6 +60,37 @@ impl Default for FreehandConfig {
             use_barrel_rotation: true,
             barrel_rotation_subtract_ascension: true,
             hide_cursor_while_painting: false,
+        }
+    }
+}
+
+impl FreehandConfig {
+    /// 从偏好读这几个键 —— 默认值取 `gui/userconfig.py:65-67` 与
+    /// `gui/freehand.py:280`（`ui.hide_cursor_while_painting` 是软键，
+    /// 默认 `false`）。
+    ///
+    /// 假压力/假旋转照源码**不读偏好**（`application.py:299-300` 是写死的
+    /// 运行期状态），这里固定 0.5，等 B6-3 的假输入滑条接上后再由
+    /// `app.fakepressure`/`fakerotation` 覆盖。
+    pub fn from_prefs(prefs: &crate::prefs::Prefs) -> Self {
+        use crate::prefs::{
+            KEY_BARREL_ROTATION_OFFSET, KEY_BARREL_ROTATION_SUBTRACT_ASCENSION,
+            KEY_HIDE_CURSOR_WHILE_PAINTING, KEY_USE_BARREL_ROTATION,
+        };
+        Self {
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            // `freehand.py:461`：`prefs.get("input.barrel_rotation_offset")`
+            barrel_rotation_offset: prefs
+                .f64_or(KEY_BARREL_ROTATION_OFFSET, 0.5) as f32,
+            // `freehand.py:475-477`
+            use_barrel_rotation: prefs.bool_or(KEY_USE_BARREL_ROTATION, true),
+            // `freehand.py:467-469`
+            barrel_rotation_subtract_ascension: prefs
+                .bool_or(KEY_BARREL_ROTATION_SUBTRACT_ASCENSION, true),
+            // `freehand.py:280`
+            hide_cursor_while_painting: prefs
+                .bool_or(KEY_HIDE_CURSOR_WHILE_PAINTING, false),
         }
     }
 }
@@ -346,6 +386,19 @@ impl FreehandMode {
         self.hiding_cursor
     }
 
+    /// 换配置（偏好热更新）—— 见 [`FreehandConfig`] 的说明。
+    ///
+    /// 源码每个事件都现读 `tdw.app.preferences`，所以"改偏好立刻生效"；
+    /// 本移植把配置缓存在模式里，由
+    /// [`super::ModeStack::set_freehand_config`] 在偏好变化时重推。
+    pub fn set_freehand_config(&mut self, config: FreehandConfig) {
+        self.config = config;
+        // 光标标志也要按新配置重算（源码 `:280` 是每次 motion 现算的）。
+        if !config.hide_cursor_while_painting {
+            self.hiding_cursor = false;
+        }
+    }
+
     /// 图形光标位置（`tdw.set_last_painting_pos` 的等价物）：最后一次
     /// 有效压力的模型坐标。
     #[inline]
@@ -551,6 +604,11 @@ impl InteractionMode for FreehandMode {
 
     fn is_painting(&self) -> bool {
         self.brushwork.is_active()
+    }
+
+    /// 收下偏好推来的配置（`ModeStack::set_freehand_config`）。
+    fn set_freehand_config(&mut self, config: FreehandConfig) {
+        FreehandMode::set_freehand_config(self, config);
     }
 
     fn enter(&mut self, _ctx: &mut ModeContext<'_>) {

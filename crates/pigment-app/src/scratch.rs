@@ -43,6 +43,7 @@ use std::path::{Path, PathBuf};
 
 use pigment_engine::hokusai::{Brush, BrushState};
 use pigment_engine::mode::{ModeContext, ModeStack};
+use pigment_engine::prefs::{self, Prefs};
 use pigment_engine::scratchpad as files;
 use pigment_engine::{Document, FileError};
 
@@ -113,8 +114,9 @@ pub(crate) struct Scratchpad {
     pub(crate) dir: PathBuf,
     /// 当前暂存页的路径（`app.scratchpad_filename`）。
     ///
-    /// 初值 = `autosave.ora`：源码里偏好 `scratchpad.last_opened_scratchpad`
-    /// 缺失时就是这个值（`application.py:393-397`）。偏好系统属 B6。
+    /// 初值 = `autosave.ora`；启动时若偏好 `scratchpad.last_opened_scratchpad`
+    /// 里有路径就用它（[`Scratchpad::startup_page`]，
+    /// `gui/application.py:393-397` / `:474-486`）。
     pub(crate) path: PathBuf,
     /// 下一帧强制重传显存（换文档/撤销后残留 tile 的清理）。
     pub(crate) force_resync: bool,
@@ -178,7 +180,8 @@ impl Scratchpad {
     /// 视图复位 —— `document.py:976` 的 `self.app.scratchpad_doc.reset_view(True, True, True)`。
     ///
     /// 源码那三个 True = 居中 / 复位缩放 / 复位旋转，缩放取偏好
-    /// `view.default_zoom`（`document.py:339-340`，出厂 1.0，B6 才接偏好）。
+    /// `view.default_zoom`（`document.py:339-340`，出厂 1.0）。复位缩放的偏好
+    /// 接线未做（记账：B6-1 只接了暂存页路径 `scratchpad.last_opened_scratchpad`）。
     /// 另外暂存区的 TDW 是 `scroll_on_allocate = False`
     /// （`application.py:367`），所以不做"加载后居中"那一步。
     pub(crate) fn reset_view(&mut self) {
@@ -199,27 +202,43 @@ impl Scratchpad {
         Ok(())
     }
 
-    /// 启动时载回上次的暂存页 —— `application.py:474-486` 的 `_at_application_start`：
+    /// 启动时载回上次的暂存页 —— `gui/application.py:393-397` + `:474-486`。
     ///
-    /// ```python
-    /// autosave_name = self.preferences["scratchpad.last_opened_scratchpad"]
-    /// if not autosave_name:
-    ///     autosave_name = self.filehandler.get_scratchpad_autosave()
-    ///     ...
-    /// if os.path.isfile(autosave_name):
-    ///     self.filehandler.open_scratchpad(autosave_name)
-    /// ```
+    /// 源码两步：
+    /// 1. `__init__` 里（`:393-397`）—— 偏好 `scratchpad.last_opened_scratchpad`
+    ///    缺失/为空就写回 `get_scratchpad_autosave()`（`autosave.ora`），再把它
+    ///    记成 `app.scratchpad_filename`；
+    /// 2. `_at_application_start` 里（`:474-486`）—— 读同一个键，文件存在就
+    ///    `open_scratchpad()`（成功时把**绝对路径**写回偏好，`filehandling.py:965-974`）。
     ///
-    /// 偏好系统属 B6，所以这里只走"偏好缺失"那条分支：路径本来就是
-    /// `autosave.ora`，文件在就载入。载入失败不致命（源码对 `open_scratchpad`
-    /// 的异常也仅是弹窗），返回是否真的载入了。
-    pub(crate) fn open_at_startup(&mut self) -> bool {
+    /// 返回是否真的载入了一份暂存页。
+    pub(crate) fn startup_page(&mut self, prefs: &mut Prefs) -> bool {
+        // `:393-397`
+        let mut name = prefs
+            .str_or(prefs::KEY_LAST_OPENED_SCRATCHPAD, "")
+            .to_string();
+        if name.is_empty() {
+            let autosave = abspath(&files::autosave_path(&self.dir));
+            name = autosave.display().to_string();
+            prefs.set_str(prefs::KEY_LAST_OPENED_SCRATCHPAD, name.clone());
+        }
+        self.path = PathBuf::from(&name);
+        // `:481-485`
         let path = self.path.clone();
         if !path.is_file() {
             return false;
         }
         match self.open(&path) {
-            Ok(()) => true,
+            Ok(()) => {
+                // `open_scratchpad` 成功时写回绝对路径（`filehandling.py:965-974`）
+                let abs = abspath(&self.path);
+                self.path = abs.clone();
+                prefs.set_str(
+                    prefs::KEY_LAST_OPENED_SCRATCHPAD,
+                    abs.display().to_string(),
+                );
+                true
+            }
             Err(e) => {
                 eprintln!("暂存区载入失败（{}）：{e}", path.display());
                 false
@@ -386,6 +405,11 @@ mod tests {
     use super::*;
 
     use pigment_engine::hokusai::BrushSetting;
+
+    /// 一份"什么都没有"的偏好（默认表 + 全部默认值，不读真实 settings.json）。
+    fn fresh_prefs(dir: &Path) -> Prefs {
+        Prefs::load(dir.join("no-settings.json"))
+    }
 
     /// 每个测试一个干净目录。
     fn tmpdir(tag: &str) -> PathBuf {
@@ -623,8 +647,8 @@ mod tests {
     }
 
     #[test]
-    fn startup_loads_the_autosave_when_it_exists() {
-        // application.py:474-486：启动时若 autosave 在盘上就载入
+    fn startup_page_loads_the_autosave_and_writes_the_pref_back() {
+        // application.py:393-397（偏好缺省 → 写回 autosave 路径）+ :474-486（载入）
         let dir = tmpdir("startup");
         // 先造一份 autosave
         {
@@ -633,18 +657,62 @@ mod tests {
             sp.stroke(inputs(&brush), STROKE);
             sp.save().unwrap();
         }
-        // 再模拟一次启动
+        // 再模拟一次启动（偏好里还没有这条键）
+        let mut prefs = fresh_prefs(&dir);
         let mut booted = Scratchpad::new(dir.clone());
         assert!(!booted.doc.layers().has_paint_at(0, 0));
-        booted.open_at_startup();
-        assert!(booted.doc.layers().has_paint_at(0, 0), "启动时载回 autosave");
+        assert!(booted.startup_page(&mut prefs), "启动时载回 autosave");
+        assert!(booted.doc.layers().has_paint_at(0, 0));
         assert_eq!(booted.path, dir.join("autosave.ora"));
+        assert_eq!(
+            prefs.str_or(prefs::KEY_LAST_OPENED_SCRATCHPAD, ""),
+            dir.join("autosave.ora").display().to_string(),
+            "偏好缺失时要写回 autosave 的路径（application.py:394-396）"
+        );
 
-        // 没有文件时保持空白，不报错
+        // 没有文件时保持空白，不报错，但偏好照样被写成 autosave 路径
+        let mut prefs = fresh_prefs(&dir);
         let mut blank = Scratchpad::new(dir.join("empty"));
-        blank.open_at_startup();
+        assert!(!blank.startup_page(&mut prefs));
         assert!(!blank.doc.layers().has_paint_at(0, 0));
         assert_eq!(blank.path, dir.join("empty").join("autosave.ora"));
+        assert_eq!(
+            prefs.str_or(prefs::KEY_LAST_OPENED_SCRATCHPAD, ""),
+            dir.join("empty").join("autosave.ora").display().to_string()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn startup_page_honours_the_last_opened_scratchpad_preference() {
+        // application.py:397 + :474-486：偏好里有路径就用它（而不是 autosave）
+        let dir = tmpdir("startup-pref");
+        let mut sp = Scratchpad::new(dir.clone());
+        let brush = test_brush();
+        sp.stroke(inputs(&brush), STROKE);
+        let page = dir.join("my_page.ora");
+        sp.save_as(&page).unwrap();
+
+        // 只放偏好键：启动应当载入 my_page.ora
+        let mut prefs = fresh_prefs(&dir);
+        prefs.set_str(
+            prefs::KEY_LAST_OPENED_SCRATCHPAD,
+            page.display().to_string(),
+        );
+        let mut booted = Scratchpad::new(dir.clone());
+        assert!(booted.startup_page(&mut prefs));
+        assert_eq!(booted.path, page, "当前页就是偏好里的那一页");
+        assert!(booted.doc.layers().has_paint_at(0, 0));
+
+        // 偏好指向不存在的文件：源码不回落（application.py:481），只是不载入
+        let mut prefs = fresh_prefs(&dir);
+        prefs.set_str(
+            prefs::KEY_LAST_OPENED_SCRATCHPAD,
+            dir.join("nope.ora").display().to_string(),
+        );
+        let mut booted = Scratchpad::new(dir.clone());
+        assert!(!booted.startup_page(&mut prefs));
+        assert_eq!(booted.path, dir.join("nope.ora"), "路径保持偏好里的值");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

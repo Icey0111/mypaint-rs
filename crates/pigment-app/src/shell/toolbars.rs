@@ -60,9 +60,9 @@ use icons_generated::ICONS;
 /// 这些动作是运行期注册的 toggle，不在动作表里；序号与
 /// [`FRAGMENT_ITEMS`] 的顺序一致（框架 XML 的 settings 菜单按同一顺序引用）。
 pub struct Fragment {
-    /// 片段开关动作名（`toolbar1_file` 等）。UI 只用 label；这个名字是
-    /// 偏好 `ui.toolbar_items` 的键，B6 持久化时启用。
-    #[allow(dead_code)]
+    /// 片段开关动作名（`toolbar1_file` 等）。UI 只用 label；这个名字同时是
+    /// 偏好 `ui.toolbar_items` 的键（`gui/userconfig.py:76-85`），
+    /// [`fragments_from_prefs`] 用它读回开关状态。
     pub action: &'static str,
     pub label: &'static str,
 }
@@ -84,6 +84,23 @@ pub static FRAGMENTS: &[Fragment] = &[
 /// 出厂默认的片段开关（`gui/userconfig.py:76-85`）：
 /// file / edit / linemodes / view_modes / view_resets 开，其余关。
 pub const DEFAULT_FRAGMENTS: [bool; 8] = [true, false, true, false, true, true, false, true];
+
+/// 从偏好读片段开关 —— 偏好 `ui.toolbar_items`（`gui/userconfig.py:76-85`）。
+///
+/// 源码把 8 个 toggle 动作的状态挂在 `ui.toolbar_items` 这个 dict 里
+/// （`gui/toolbar.py` 的 `MERGEABLE_XML` + `toolbar1_file` 等 toggle 动作）；
+/// 缺失/类型不对就用出厂值（保守，见 `pigment_engine::prefs` 的模块文档）。
+pub fn fragments_from_prefs(prefs: &pigment_engine::prefs::Prefs) -> [bool; 8] {
+    let mut out = DEFAULT_FRAGMENTS;
+    if let Some(obj) = prefs.get_object("ui.toolbar_items") {
+        for (i, frag) in FRAGMENTS.iter().enumerate() {
+            if let Some(v) = obj.get(frag.action).and_then(|v| v.as_bool()) {
+                out[i] = v;
+            }
+        }
+    }
+    out
+}
 
 /// 图标纹理缓存键：图标名（已含 -symbolic 后缀解析）。
 pub type IconCache = std::collections::HashMap<&'static str, egui::TextureHandle>;
@@ -360,5 +377,35 @@ mod tests {
             DEFAULT_FRAGMENTS,
             [true, false, true, false, true, true, false, true]
         );
+    }
+
+    #[test]
+    fn fragments_from_prefs_reads_the_toolbar_items_dict() {
+        // 偏好 `ui.toolbar_items`（userconfig.py:76-85）→ 8 个片段开关。
+        // 先决：没有 settings.json 时就是出厂默认。
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-toolbar-prefs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+        let defaults = fragments_from_prefs(&pigment_engine::prefs::Prefs::load(&path));
+        assert_eq!(defaults, DEFAULT_FRAGMENTS);
+
+        // 用户改了三个开关（含一个非 bool，应回落默认）
+        std::fs::write(
+            &path,
+            r#"{"ui.toolbar_items": {"toolbar1_file": false,
+                                      "toolbar1_scrap": true,
+                                      "toolbar1_edit": "yes"}}"#,
+        )
+        .unwrap();
+        let read = fragments_from_prefs(&pigment_engine::prefs::Prefs::load(&path));
+        assert!(!read[0], "toolbar1_file 被关掉");
+        assert!(read[1], "toolbar1_scrap 被打开");
+        assert!(read[2], "toolbar1_edit 类型不对 → 出厂值 true");
+        assert_eq!(&read[3..], &DEFAULT_FRAGMENTS[3..], "其余保持出厂值");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -19,7 +19,9 @@
 //!   egui 每帧全画，不需要；
 //! - 编辑模式下的交互件（拖拽手柄、删除按钮、活动轴高亮，`symmetry.py:955-1026`
 //!   与 `framewindow.py:837-899`）——对应的两种编辑模式未移植；
-//! - `symmetry.line_alpha` 偏好（`symmetry.py:46-47`），这里固定用默认值 0.333。
+//! - `symmetry.line_alpha` 偏好（`symmetry.py:46-47`）由 [`OverlayStyle`] 读入；
+//!   编辑模式下的透明度滑条（`symmetry.py:455-456`/`:595-597`）随编辑模式一起
+//!   归 B6-3。
 //!
 //! # 为什么自己算几何
 //!
@@ -31,6 +33,7 @@
 //! （`LineType.DIRECTIONAL`）而不是整条直线"这个细节。
 
 use eframe::egui;
+use pigment_engine::prefs::{self, Prefs};
 use pigment_engine::Document;
 use pigment_surface::symmetry::SymmetryType;
 
@@ -41,8 +44,9 @@ use crate::view::View;
 /// 对称轴线宽 —— `gui/style.py:38` `DRAGGABLE_EDGE_WIDTH = 2`。
 const DRAGGABLE_EDGE_WIDTH: f32 = 2.0;
 
-/// 轴线透明度 —— `gui/symmetry.py:46` `_DEFAULT_ALPHA = 0.333`。
-const SYMMETRY_LINE_ALPHA: f32 = 0.333;
+/// 轴线透明度的出厂值 —— `gui/symmetry.py:46` `_DEFAULT_ALPHA = 0.333`
+/// （偏好键 `symmetry.line_alpha` 缺失时用它，`:648-649`）。
+const DEFAULT_SYMMETRY_ALPHA: f32 = 0.333;
 
 /// 虚线参数 —— `gui/symmetry.py:613-616`：
 /// `_DASH_LENGTH = 10`、`_DASH_GAP = 7`、
@@ -67,12 +71,55 @@ const CONTRASTING_K: f32 = 0.333;
 /// 画框描边宽度 —— `gui/framewindow.py:665` `OUTLINE_WIDTH = 1`。
 const FRAME_OUTLINE_WIDTH: f32 = 1.0;
 
-/// 画框颜色（遮罩 + 边线）—— `gui/userconfig.py:92`
+/// 画框颜色（遮罩 + 边线）的出厂值 —— `gui/userconfig.py:92`
 /// `"frame.color_rgba": (0.12, 0.12, 0.12, 0.92)`。
+const DEFAULT_FRAME_RGBA: [f32; 4] = [0.12, 0.12, 0.12, 0.92];
+
+/// 覆盖层的外观偏好（B6-1）。
 ///
-/// 源码把它存在偏好里并由「Edit Frame」面板的颜色按钮改（`framewindow.py:614-619`）；
-/// 本移植没有偏好系统，固定用出厂值（记账）。
-const FRAME_RGBA: [f32; 4] = [0.12, 0.12, 0.12, 0.92];
+/// 两处都有源码：对称轴线透明度读 `symmetry.line_alpha`（`symmetry.py:46-47`
+/// 的软键，默认 `_DEFAULT_ALPHA = 0.333`，读取处 `:648-649`），画框颜色读
+/// `frame.color_rgba`（`userconfig.py:92` 的默认键，读取处
+/// `framewindow.py:502-505` / `:826`，并把每个通道夹到 `[0, 1]`）。
+///
+/// egui 是立即模式，每帧现算一次即可（源码在 `SymmetryOverlay.__init__`
+/// 里读一次、`FrameOverlay.paint` 里每帧读一次，见 `:648` / `:826`）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct OverlayStyle {
+    /// 对称轴线整体透明度（乘法，`symmetry.py:1024-1025`）。
+    pub(crate) symmetry_line_alpha: f32,
+    /// 画框颜色 RGBA（已夹到 `[0, 1]`）。
+    pub(crate) frame_rgba: [f32; 4],
+}
+
+impl Default for OverlayStyle {
+    fn default() -> Self {
+        Self {
+            symmetry_line_alpha: DEFAULT_SYMMETRY_ALPHA,
+            frame_rgba: DEFAULT_FRAME_RGBA,
+        }
+    }
+}
+
+impl OverlayStyle {
+    /// 从用户偏好读（缺失/类型不对就取出厂值，见模块文档的保守原则）。
+    pub(crate) fn from_prefs(prefs: &Prefs) -> Self {
+        let mut style = Self::default();
+        // `symmetry.py:648-649`：`float(prefs.get(key, _DEFAULT_ALPHA))`
+        style.symmetry_line_alpha = prefs
+            .f64_or(prefs::KEY_SYMMETRY_LINE_ALPHA, DEFAULT_SYMMETRY_ALPHA as f64)
+            as f32;
+        // `framewindow.py:502-505`：`[min(max(c, 0), 1) for c in color_rgba]`
+        if let Some(arr) = prefs.get_array(prefs::KEY_FRAME_COLOR_RGBA) {
+            for (i, v) in arr.iter().take(4).enumerate() {
+                if let Some(f) = v.as_f64() {
+                    style.frame_rgba[i] = (f as f32).clamp(0.0, 1.0);
+                }
+            }
+        }
+        style
+    }
+}
 
 /// 画布覆盖层（顺序 = 绘制顺序）。
 ///
@@ -94,16 +141,18 @@ pub(crate) const CANVAS_OVERLAYS: [CanvasOverlay; 2] =
 ///
 /// `rect` 是画布在窗口里的矩形（egui 点），`view` 是"画布局部坐标 ↔ 模型坐标"
 /// 的变换（见 [`View`]）；两者合起来才等价源码的 `display_to_model`。
+/// `style` 是外观偏好（[`OverlayStyle::from_prefs`]）。
 pub(crate) fn paint_canvas_overlays(
     painter: &egui::Painter,
     rect: egui::Rect,
     view: &View,
     doc: &Document,
+    style: OverlayStyle,
 ) {
     for overlay in CANVAS_OVERLAYS {
         match overlay {
-            CanvasOverlay::Frame => paint_frame(painter, rect, view, doc),
-            CanvasOverlay::Symmetry => paint_symmetry(painter, rect, view, doc),
+            CanvasOverlay::Frame => paint_frame(painter, rect, view, doc, style),
+            CanvasOverlay::Symmetry => paint_symmetry(painter, rect, view, doc, style),
         }
     }
 }
@@ -116,13 +165,20 @@ pub(crate) fn paint_canvas_overlays(
 /// 1. 用**偶数填充规则**把画框**外面**涂上 `frame.color_rgba`
 ///    （`:814-830`：外框是视口矩形、内框是画框四角，`FILL_RULE_EVEN_ODD`）；
 /// 2. 再把那条内框路径描 1px（`:842-845`，非编辑模式只有这一句）。
-fn paint_frame(painter: &egui::Painter, rect: egui::Rect, view: &View, doc: &Document) {
+fn paint_frame(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &View,
+    doc: &Document,
+    style: OverlayStyle,
+) {
     // `:811-812`：没启用就什么都不画
     if !doc.get_frame_enabled() {
         return;
     }
     let frame = frame_display_rect(rect, view, doc.get_frame());
-    let color = color32(FRAME_RGBA[0], FRAME_RGBA[1], FRAME_RGBA[2], FRAME_RGBA[3]);
+    let c = style.frame_rgba;
+    let color = color32(c[0], c[1], c[2], c[3]);
     // 画框外遮罩（即使填充规则）
     for mask in outside_rects(rect, frame) {
         if mask.width() > 0.0 && mask.height() > 0.0 {
@@ -191,9 +247,19 @@ fn outside_rects(canvas: egui::Rect, frame: egui::Rect) -> Vec<egui::Rect> {
 /// 源码的绘制分两遍虚线：同一个虚线段各用
 /// `_LINE_COLS[0]` / `_LINE_COLS[1]` 描一次，第二遍的 dash 偏移正好落进第一遍
 /// 的空隙里（`:1007-1016`），最后整体乘 `line_alpha`（`:1024-1025`）。
-fn paint_symmetry(painter: &egui::Painter, rect: egui::Rect, view: &View, doc: &Document) {
+fn paint_symmetry(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &View,
+    doc: &Document,
+    style: OverlayStyle,
+) {
     // `:953`：只在对称开启时画
     if !doc.symmetry_active() {
+        return;
+    }
+    // `:882` / `:990`：透明度为 0（或负）时整层不画
+    if style.symmetry_line_alpha <= 0.0 {
         return;
     }
     let (cx, cy) = doc.symmetry_center();
@@ -214,7 +280,7 @@ fn paint_symmetry(painter: &egui::Painter, rect: egui::Rect, view: &View, doc: &
         let [sx, sy] = view.world_to_screen(p.0, p.1);
         rect.min + egui::vec2(sx.round(), sy.round())
     };
-    let colors = axis_line_colors();
+    let colors = axis_line_colors(style.symmetry_line_alpha);
     for (offs, color) in colors.iter().enumerate() {
         // `:1009-1011`：第二遍的偏移加了 `DASH_LENGTH + DASH_GAP`（= 半个周期），
         // 于是它的实线段正好落进第一遍的空白里 —— 形成双色虚线。
@@ -247,12 +313,15 @@ fn view_corners_model(canvas: egui::Rect, view: &View) -> [(f32, f32); 4] {
 
 /// 两条轴线颜色 —— `symmetry.py:610-612`：
 /// `_LINE_COL1 = gui.style.EDITABLE_ITEM_COLOR`、`_LINE_COL2 = _LINE_COL1.to_contrasting()`。
-fn axis_line_colors() -> [egui::Color32; 2] {
+///
+/// `alpha` 是偏好 `symmetry.line_alpha`（`symmetry.py:989-990` / `:1024-1025`：
+/// 两遍虚线都乘同一个 `line_alpha`）。
+fn axis_line_colors(alpha: f32) -> [egui::Color32; 2] {
     let c1 = EDITABLE_ITEM_RGB;
     let c2 = contrasting(c1, CONTRASTING_K);
     [
-        color32(c1[0], c1[1], c1[2], SYMMETRY_LINE_ALPHA),
-        color32(c2[0], c2[1], c2[2], SYMMETRY_LINE_ALPHA),
+        color32(c1[0], c1[1], c1[2], alpha),
+        color32(c2[0], c2[1], c2[2], alpha),
     ]
 }
 
@@ -517,7 +586,13 @@ mod tests {
                 .frame(egui::Frame::NONE)
                 .show(ctx, |ui| {
                     if paint {
-                        paint_canvas_overlays(&ui.painter().with_clip_rect(rect), rect, &view, doc);
+                        paint_canvas_overlays(
+                            &ui.painter().with_clip_rect(rect),
+                            rect,
+                            &view,
+                            doc,
+                            OverlayStyle::default(),
+                        );
                     }
                 });
         });
@@ -525,6 +600,43 @@ mod tests {
         // （epaint 在 Drop 里会因此 panic）。
         output.textures_delta.clear();
         output.shapes.len()
+    }
+
+    /// 外观偏好：默认值 = 源码出厂值；`symmetry.line_alpha` 与
+    /// `frame.color_rgba` 从偏好来，且画框颜色每通道夹到 `[0, 1]`
+    /// （`symmetry.py:46-47`、`framewindow.py:502-505`）。
+    #[test]
+    fn overlay_style_reads_prefs_and_clamps_the_frame_color() {
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-overlay-prefs-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.json");
+
+        // 没有文件 → 全部出厂值
+        let style = OverlayStyle::from_prefs(&Prefs::load(&path));
+        assert_eq!(style, OverlayStyle::default());
+        assert!((style.symmetry_line_alpha - 0.333).abs() < 1e-6);
+        assert_eq!(style.frame_rgba, [0.12, 0.12, 0.12, 0.92]);
+
+        // 有偏好 → 用它；越界的通道被夹住
+        std::fs::write(
+            &path,
+            r#"{"symmetry.line_alpha": 0.5,
+                "frame.color_rgba": [1.5, -0.5, 0.25, 0.5]}"#,
+        )
+        .unwrap();
+        let style = OverlayStyle::from_prefs(&Prefs::load(&path));
+        assert!((style.symmetry_line_alpha - 0.5).abs() < 1e-6);
+        assert_eq!(style.frame_rgba, [1.0, 0.0, 0.25, 0.5]);
+
+        // 类型不对（数组太短/元素不是数）→ 缺的通道保持出厂值
+        std::fs::write(&path, r#"{"frame.color_rgba": ["x", 0.5]}"#).unwrap();
+        let style = OverlayStyle::from_prefs(&Prefs::load(&path));
+        assert_eq!(style.frame_rgba, [0.12, 0.5, 0.12, 0.92]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 对称关闭时覆盖层**一个图形都不加**；开启后画出虚线轴（两遍颜色）。

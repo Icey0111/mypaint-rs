@@ -58,7 +58,8 @@
 //!   （滑条自身的按下/拖动/滚轮已接，弯曲记账）。
 //! - `adjbases.py:640-656` / `sliders.py:166-305` 的 `get_background_validity()`：
 //!   缓存重绘令牌；egui 每帧重画，没有这份缓存。
-//! - `adjbases.py:414-419` 的 `get_prefs()`：偏好系统属 B6。
+//! - `adjbases.py:414-419` 的 `get_prefs()`：偏好系统已由 B6-1 提供
+//!   （`pigment_engine::prefs::Prefs`），但本页不读不写它（记账）。
 
 use eframe::egui;
 use pigment_engine::color::{
