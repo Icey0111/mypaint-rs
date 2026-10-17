@@ -644,6 +644,19 @@ impl Prefs {
     }
 
     /// 取字符串，回落。
+    /// `input.button_mapping` 的 `(键串, 动作)` 列表（只保留字符串值）。
+    ///
+    /// 键串形如 `<Control><Shift>Button2`；解析在应用的
+    /// `shell::button_mapping`（引擎不依赖 egui）。
+    pub fn button_mapping_pairs(&self) -> Vec<(String, String)> {
+        let Some(Value::Object(map)) = self.get("input.button_mapping") else {
+            return Vec::new();
+        };
+        map.iter()
+            .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+            .collect()
+    }
+
     pub fn str_or<'a>(&'a self, key: &str, fallback: &'a str) -> &'a str {
         self.get_str(key).unwrap_or(fallback)
     }

@@ -950,24 +950,6 @@ pub static APP_KEYS: &[AppKey] = &[
         },
         note: "下一支笔刷，理由同 `pigment:prev-brush`（裸 `.` 在源码里是 ZoomIn）。",
     },
-    AppKey {
-        id: "pigment:brush-resize",
-        accel: Accel {
-            key: "r",
-            mods: Mods {
-                ctrl: true,
-                alt: false,
-                shift: true,
-            },
-        },
-        note: "笔刷尺寸拖拽（`gui/brushmanip.py` 的 `BrushResizeMode`）。源码里\
-               这个模式**没有加速键、也没有 GtkAction**：它只通过\
-               `input.button_mapping` 的 `mode_class` 处理器进入\
-               （`document.py:765-772`）。本应用的 `ButtonMappingEditor` 还没\
-               移植，所以先用一个源码没占的键让这个能力可用；接上按钮映射后\
-               应撤掉。`r` 的裸/Ctrl/Alt/Shift 分别是取色与三个变体，\
-               Ctrl+Shift 是空的。",
-    },
 ];
 
 /// 查应用本地扩展键。
@@ -1054,13 +1036,9 @@ mod tests {
     }
 
     #[test]
-    fn app_keys_include_brush_resize_and_do_not_shadow_source_accels() {
-        // `BrushResizeMode` 在源码里只经按钮映射进入，没有加速键（见 APP_KEYS
-        // 的 note）；本应用暂用 `Ctrl+Shift+R`，且不能与源码键表串台。
-        assert_eq!(
-            lookup_app(egui::Key::R, CTRL_SHIFT).map(|k| k.id),
-            Some("pigment:brush-resize")
-        );
+    fn app_keys_do_not_shadow_source_accels() {
+        // `BrushResizeMode` 现在只经 `input.button_mapping` 进入（源码同样没有
+        // 加速键）；这里仍守住"应用扩展键不能与源码键表串台"。
         assert_eq!(lookup(egui::Key::R, CTRL_SHIFT), None);
         // 表内不能有重复键位（先到先得会悄悄吃掉后一条）
         let mut seen = HashSet::new();

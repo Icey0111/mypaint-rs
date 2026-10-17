@@ -45,6 +45,45 @@ pub const ZOOM_MAX: f32 = 64.0;
 /// （"Stepwise panning amount: proportion of the canvas size"）。
 pub const PAN_STEP: f32 = 0.2;
 
+// ---- 滚轮规则（`gui/mode.py:433-585` 的 `ScrollableModeMixin`）----
+//
+// 源码的 `_PIXELS_PER_SMOOTH_SCROLL_UNIT = 25.0` 把 GTK 平滑滚动单位换成
+// 屏幕像素；egui 的 `smooth_scroll_delta` 是"点"，鼠标滚轮一格约 50 点，
+// 所以这里把 50 点当作源码的一个平滑单位（技术栈换算，测试固定）。
+
+/// egui 平滑滚动点 / 源码平滑单位（一格滚轮 ≈ 50 点）。
+pub const WHEEL_POINTS_PER_UNIT: f32 = 50.0;
+/// `mode.py:442` 的 `_PIXELS_PER_SMOOTH_SCROLL_UNIT = 25.0`。
+pub const WHEEL_PIXELS_PER_UNIT: f32 = 25.0;
+/// 源码平滑缩放：`exp(dy / 100)`，其中 `dy` 已乘 25 → `exp(单位 * 0.25)`。
+pub const WHEEL_ZOOM_EXP_PER_UNIT: f32 = 0.25;
+
+/// 平滑滚动点 → 源码平滑单位。
+pub fn wheel_units(delta: f32) -> f32 {
+    delta / WHEEL_POINTS_PER_UNIT
+}
+
+/// 平滑缩放倍率（`mode.py:514-526`）。`delta_y > 0`（向上滚）放大。
+pub fn wheel_zoom_factor(delta_y: f32) -> f32 {
+    (wheel_units(delta_y) * WHEEL_ZOOM_EXP_PER_UNIT).exp()
+}
+
+/// 平滑平移的屏幕像素位移（`mode.py:564-568` + `tdw.scroll` 的取反）。
+pub fn wheel_pan_delta(delta_x: f32, delta_y: f32) -> [f32; 2] {
+    [
+        -wheel_units(delta_x) * WHEEL_PIXELS_PER_UNIT,
+        wheel_units(delta_y) * WHEEL_PIXELS_PER_UNIT,
+    ]
+}
+
+/// Ctrl/Alt 反转缩放与平移（`mode.py:481-488`）。
+///
+/// `default_pan` 来自设备设置（源码 `ScrollAction`；本项目用偏好
+/// `input.scroll_action`，默认 `zoom`）。返回 true 表示本次按平移处理。
+pub fn wheel_action_is_pan(default_pan: bool, ctrl: bool, alt: bool) -> bool {
+    default_pan ^ (ctrl || alt)
+}
+
 /// 无限画布的 2D 视图。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct View {
@@ -361,6 +400,36 @@ mod tests {
         let (x, y) = mul(100.0, 0.0);
         assert!((x + 1.0).abs() < 1e-5);
         assert!((y - (1.0 - 200.0 / 600.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn wheel_zoom_matches_the_source_smooth_formula() {
+        // 一格（50 点）向上 → exp(0.25) ≈ 1.284；向下 → exp(-0.25) ≈ 0.779
+        assert!((wheel_zoom_factor(50.0) - 0.25f32.exp()).abs() < 1e-5);
+        assert!((wheel_zoom_factor(-50.0) - (-0.25f32).exp()).abs() < 1e-5);
+        assert_eq!(wheel_zoom_factor(0.0), 1.0);
+    }
+
+    #[test]
+    fn wheel_pan_uses_25_pixels_per_unit_and_inverts() {
+        // 向上滚（+y）→ 内容下移（+y）；向右滚（+x）→ 内容左移（-x）
+        let [dx, dy] = wheel_pan_delta(50.0, 50.0);
+        assert!((dx + WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
+        assert!((dy - WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
+        let [dx, dy] = wheel_pan_delta(-100.0, -50.0);
+        assert!((dx - 2.0 * WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
+        assert!((dy + WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
+    }
+
+    #[test]
+    fn ctrl_or_alt_flips_zoom_and_pan() {
+        // 默认 zoom：不按修饰键 = 缩放；Ctrl 或 Alt = 平移
+        assert!(!wheel_action_is_pan(false, false, false));
+        assert!(wheel_action_is_pan(false, true, false));
+        assert!(wheel_action_is_pan(false, false, true));
+        // 默认 pan（设备设置）：反过来
+        assert!(wheel_action_is_pan(true, false, false));
+        assert!(!wheel_action_is_pan(true, true, false));
     }
 
     #[test]

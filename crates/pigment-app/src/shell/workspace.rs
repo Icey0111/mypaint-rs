@@ -24,7 +24,7 @@ use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::{Brush, BrushSetting};
 use pigment_surface::LayerStack;
 
-use crate::app::PigmentApp;
+use crate::app::{PigmentApp, ViewTool};
 use crate::gpu::{TileRenderer, TileUpload};
 use crate::view::View;
 
@@ -1091,30 +1091,14 @@ impl PigmentApp {
         // 只能拿到上一帧的值 —— 与源码用"最后一次指针事件"同构）
         self.canvas_rect = Some(rect);
 
-        // ---- 平移 ----
-        let pan_delta = if response.dragged_by(egui::PointerButton::Middle)
-            || response.dragged_by(egui::PointerButton::Secondary)
-        {
-            response.drag_delta()
-        } else {
-            let space = ui.input(|i| i.key_down(egui::Key::Space));
-            if space && response.dragged_by(egui::PointerButton::Primary) {
-                response.drag_delta()
-            } else {
-                egui::Vec2::ZERO
-            }
-        };
-        if pan_delta != egui::Vec2::ZERO {
-            self.view.pan(pan_delta.x, pan_delta.y);
-        }
-
-        // ---- 缩放（以光标为锚点）----
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 && response.hovered() {
-            if let Some(pos) = response.hover_pos() {
-                let local = pos - rect.min;
-                let factor = (scroll * 0.002).exp();
-                self.view.zoom_at(local.x, local.y, factor);
+        // ---- 滚轮（`ScrollableModeMixin.scroll_cb`）----
+        // 默认缩放、Ctrl/Alt 反转平移；Shift 走阶梯/离散步进。
+        if response.hovered() {
+            let (delta, imods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
+            if delta != egui::Vec2::ZERO {
+                if let Some(pos) = response.hover_pos() {
+                    self.apply_canvas_wheel(rect, pos, imods, delta);
+                }
             }
         }
 
@@ -1132,14 +1116,70 @@ impl PigmentApp {
         let now_ms = ui.input(|i| i.time) * 1000.0;
         let mods = self.pointer_modifiers(ui.ctx());
 
+        // ---- 指针按钮映射（`input.button_mapping`）----
+        // 默认 Windows：中键弹菜单、右键平移；Shift 旋转、Ctrl/Alt 缩放、
+        // Ctrl/Alt+Shift 进 FrameEditMode（`userconfig.py:127-139`）。
+        let imods = ui.input(|i| i.modifiers);
+        for (btn, gdk_button) in [
+            (egui::PointerButton::Middle, 2u32),
+            (egui::PointerButton::Secondary, 3u32),
+        ] {
+            let started = response.drag_started_by(btn) || response.clicked_by(btn);
+            if !started {
+                continue;
+            }
+            let Some(action) = self.mapped_button_action(
+                gdk_button,
+                imods.ctrl,
+                imods.shift,
+                imods.alt,
+            ) else {
+                continue;
+            };
+            let tool = match action.as_str() {
+                "PanViewMode" => Some(ViewTool::Pan),
+                "ZoomViewMode" => Some(ViewTool::Zoom),
+                "RotateViewMode" => Some(ViewTool::Rotate),
+                _ => None,
+            };
+            if let Some(tool) = tool {
+                self.view_tool = Some(tool);
+                self.view_drag_button = btn;
+                self.view_drag_prev = None;
+            } else if action == "ShowPopupMenu" {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    self.popup_menu = Some(pos);
+                    self.popup_opened = now_ms / 1000.0;
+                }
+            } else if action == "FrameEditMode" {
+                let mode: Box<dyn pigment_engine::mode::InteractionMode> =
+                    Box::new(pigment_engine::mode::frameedit::FrameEditMode::new());
+                self.with_mode(|modes, ctx| modes.push(mode, ctx));
+                self.mapped_mode_button = Some(btn);
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_press(ev);
+                }
+            } else if action == "BrushResizeMode" {
+                self.begin_brush_resize(now_ms / 1000.0);
+            }
+        }
+
+        // 空格 + 左键 = 临时抓手平移（源码把 space 当假 Button2）。
+        if space_down && response.dragged_by(egui::PointerButton::Primary) {
+            let d = response.drag_delta();
+            self.view.pan(d.x, d.y);
+        }
+
         // ---- 视图操纵工具（`gui/viewmanip.py` 的三个 Oneshot）----
         // 源码是压栈模式，拖拽结束后 pop 回原工具；这里用一次性 view_tool 状态。
         let view_gesture = self.view_tool.is_some();
         if view_gesture {
-            if response.drag_started_by(egui::PointerButton::Primary) {
+            let btn = self.view_drag_button;
+            if response.drag_started_by(btn) {
                 self.view_drag_prev = response.interact_pointer_pos().map(|p| egui::pos2(p.x - rect.min.x, p.y - rect.min.y));
             }
-            if response.dragged_by(egui::PointerButton::Primary) {
+            if response.dragged_by(btn) {
                 if let Some(pos) = response.interact_pointer_pos() {
                     let local = egui::pos2(pos.x - rect.min.x, pos.y - rect.min.y);
                     if let Some(prev) = self.view_drag_prev {
@@ -1151,18 +1191,38 @@ impl PigmentApp {
                     self.view_drag_prev = Some(local);
                 }
             }
-            if response.drag_stopped_by(egui::PointerButton::Primary)
-                || response.clicked_by(egui::PointerButton::Primary)
-            {
+            if response.drag_stopped_by(btn) || response.clicked_by(btn) {
                 self.view_tool = None;
                 self.view_drag_prev = None;
+                self.view_drag_button = egui::PointerButton::Primary;
                 let top = self.modes.top();
                 let text = format!("{}: {}", top.name(), top.usage());
                 self.set_status(text, now_ms / 1000.0);
             }
         }
 
-        if !modal && !space_down && !view_gesture {
+        // ---- 按钮映射压栈的临时模式（FrameEditMode）----
+        let mut mapped_mode_active = false;
+        if let Some(btn) = self.mapped_mode_button {
+            mapped_mode_active = true;
+            let down = ui.input(|i| i.pointer.button_down(btn));
+            if down {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    let ev = self.pointer_event(pos, rect, now_ms, 0, mods);
+                    self.mode_motion(ev);
+                }
+            } else {
+                if let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+                    let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_release(ev);
+                }
+                self.mapped_mode_button = None;
+                self.finish_oneshot(mods, now_ms / 1000.0);
+                ui.ctx().request_repaint();
+            }
+        }
+
+        if !modal && !space_down && !view_gesture && !mapped_mode_active {
             // 本帧是否已经按"拖拽"语义喂过事件（见下面的 click 分支）
             let mut dispatched_drag = false;
             if response.drag_started_by(egui::PointerButton::Primary) {

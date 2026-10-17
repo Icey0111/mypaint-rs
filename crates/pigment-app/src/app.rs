@@ -376,8 +376,19 @@ pub struct PigmentApp {
     /// `FreehandConfig` 并广播给两条模式栈。
     pub(crate) mode_prefs: ModePrefs,
     pub(crate) view: View,
+    /// Shift 约束滚动时累积的平滑滚动点（`ScrollableModeMixin.__total_dx/dy`）。
+    pub(crate) wheel_accum: egui::Vec2,
     /// 正在拖拽的视图工具（`gui/viewmanip.py` 的三个 Oneshot 模式）。
     pub(crate) view_tool: Option<ViewTool>,
+    /// 触发视图手势的鼠标键（按钮映射可能是中键/右键；工具栏进入时是左键）。
+    pub(crate) view_drag_button: egui::PointerButton,
+    /// 鼠标弹出菜单的位置（`Button3 → ShowPopupMenu`）。
+    pub(crate) popup_menu: Option<egui::Pos2>,
+    /// 弹出菜单打开时刻（秒），用于区分"打开它的那一次点击"。
+    pub(crate) popup_opened: f64,
+    /// 由按钮映射压栈的临时模式（如 `Ctrl+Shift+Button3 → FrameEditMode`）：
+    /// 记录触发它的鼠标键，之后把该键的按下/移动/松开翻译成主键事件。
+    pub(crate) mapped_mode_button: Option<egui::PointerButton>,
     /// 视图工具上一帧的指针位置（画布局部坐标，逐帧增量用）。
     pub(crate) view_drag_prev: Option<egui::Pos2>,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
@@ -763,7 +774,12 @@ impl PigmentApp {
             pending_pointer_time: 0.0,
             mode_prefs,
             view: View::default(),
+            wheel_accum: egui::Vec2::ZERO,
             view_tool: None,
+            view_drag_button: egui::PointerButton::Primary,
+            popup_menu: None,
+            popup_opened: 0.0,
+            mapped_mode_button: None,
             view_drag_prev: None,
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
@@ -1551,6 +1567,8 @@ impl PigmentApp {
     /// （默认 [`FreehandMode`]）负责排队、插值、`brushwork` 的原子提交。
     /// 当前层不可画时模式自己不画（`get_paintable`），所以这里无需特判。
     pub(crate) fn mode_button_press(&mut self, ev: pigment_engine::mode::PointerEvent) -> bool {
+        // `ScrollableModeMixin.button_press_cb` 重置平滑滚动累积。
+        self.wheel_accum = egui::Vec2::ZERO;
         self.pending_pointer_time = self.pending_pointer_time.max(ev.time_ms);
         let mut handled = false;
         self.with_mode(|modes, ctx| {
@@ -1573,6 +1591,8 @@ impl PigmentApp {
 
     /// 指针松开（`button_release_cb`）。
     pub(crate) fn mode_button_release(&mut self, ev: pigment_engine::mode::PointerEvent) -> bool {
+        // `ScrollableModeMixin.button_release_cb` 同样重置累积。
+        self.wheel_accum = egui::Vec2::ZERO;
         self.pending_pointer_time = self.pending_pointer_time.max(ev.time_ms);
         let mut handled = false;
         self.with_mode(|modes, ctx| {
@@ -1690,8 +1710,140 @@ impl PigmentApp {
     /// 进入视图操纵工具（`viewmanip.py` 的三个 Oneshot 模式；画布拖拽结束后
     /// 自动回到原绘画工具）。源码是压栈模式，这里用一次性手势状态实现，
     /// 因为画布平移/缩放/旋转本来就在 `shell/workspace.rs` 里直接改 `View`。
+    /// 解析当前 `input.button_mapping` 并匹配 `(button, modifiers)`。
+    pub(crate) fn mapped_button_action(
+        &self,
+        button: u32,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<String> {
+        let pairs = self.prefs.button_mapping_pairs();
+        let bindings = crate::shell::button_mapping::parse_mapping(
+            pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())),
+        );
+        crate::shell::button_mapping::resolve(&bindings, button, ctrl, shift, alt)
+            .map(str::to_string)
+    }
+
+    /// 鼠标弹出主菜单（`ShowPopupMenu`，`resources.xml:1311-1316` 的
+    /// `popupmenu_show_cb`）。这里是精简版：列出最常用的顶层动作。
+    #[allow(deprecated)] // egui 0.37 的 Id::new 只是被 IdSalt 取代，稳定 id 仍可用
+    pub(crate) fn popup_menu(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(pos) = self.popup_menu else {
+            return;
+        };
+        let mut close = false;
+        let mut action: Option<&'static str> = None;
+        egui::Area::new(egui::Id::new("main-popup-menu-v1"))
+            .fixed_pos(pos)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    for (label, id) in [
+                        ("Freehand", "FreehandMode"),
+                        ("Eraser", "BlendModeEraser"),
+                        ("Brush Settings Editor", "BrushEditorWindow"),
+                        ("Background Chooser", "BackgroundWindow"),
+                        ("Preferences", "PreferencesWindow"),
+                        ("Reset View", "ResetView"),
+                        ("Fullscreen", "Fullscreen"),
+                    ] {
+                        if ui.button(label).clicked() {
+                            action = Some(id);
+                            close = true;
+                        }
+                    }
+                });
+            });
+        if let Some(id) = action {
+            self.run_action(id, ctx, now);
+        }
+        let clicked_later = ctx.input(|i| i.pointer.any_click()) && now - self.popup_opened > 0.05;
+        if close || clicked_later || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.popup_menu = None;
+        }
+    }
+
+    /// 画布滚轮（`gui/mode.py:463-585` 的 `ScrollableModeMixin.scroll_cb`）。
+    ///
+    /// - 默认缩放，Ctrl/Alt 反转成平移（或设备偏好 `input.scroll_action=pan`
+    ///   时反过来）；
+    /// - 平滑：缩放 `exp(单位*0.25)` 以指针为锚；平移 25px/单位；
+    /// - Shift：按源码的 `constrain_smooth` 累积整数单位，缩放走阶梯、
+    ///   平移走 `PAN_STEP`。
+    pub(crate) fn apply_canvas_wheel(
+        &mut self,
+        rect: egui::Rect,
+        pos: egui::Pos2,
+        modifiers: egui::Modifiers,
+        delta: egui::Vec2,
+    ) {
+        if delta == egui::Vec2::ZERO {
+            return;
+        }
+        let default_pan = self
+            .prefs
+            .str_or("input.scroll_action", "zoom")
+            .eq_ignore_ascii_case("pan");
+        let pan = crate::view::wheel_action_is_pan(default_pan, modifiers.ctrl, modifiers.alt);
+        let local = pos - rect.min;
+        if modifiers.shift {
+            self.wheel_accum += delta;
+            let mut steps_y = crate::view::wheel_units(self.wheel_accum.y).trunc();
+            let mut steps_x = crate::view::wheel_units(self.wheel_accum.x).trunc();
+            if steps_y != 0.0 {
+                self.wheel_accum.y -= steps_y * crate::view::WHEEL_POINTS_PER_UNIT;
+            }
+            if steps_x != 0.0 {
+                self.wheel_accum.x -= steps_x * crate::view::WHEEL_POINTS_PER_UNIT;
+            }
+            let step = rect.width().min(rect.height()) * crate::view::PAN_STEP;
+            while steps_y > 0.0 {
+                steps_y -= 1.0;
+                if pan {
+                    self.view.pan(0.0, step);
+                } else {
+                    let z = self.view.stepped_zoom(true);
+                    self.view.set_zoom_at(z, local.x, local.y);
+                }
+            }
+            while steps_y < 0.0 {
+                steps_y += 1.0;
+                if pan {
+                    self.view.pan(0.0, -step);
+                } else {
+                    let z = self.view.stepped_zoom(false);
+                    self.view.set_zoom_at(z, local.x, local.y);
+                }
+            }
+            while steps_x > 0.0 {
+                steps_x -= 1.0;
+                if pan {
+                    self.view.pan(-step, 0.0);
+                }
+            }
+            while steps_x < 0.0 {
+                steps_x += 1.0;
+                if pan {
+                    self.view.pan(step, 0.0);
+                }
+            }
+        } else {
+            self.wheel_accum = egui::Vec2::ZERO;
+            if pan {
+                let [dx, dy] = crate::view::wheel_pan_delta(delta.x, delta.y);
+                self.view.pan(dx, dy);
+            } else {
+                let factor = crate::view::wheel_zoom_factor(delta.y);
+                self.view.zoom_at(local.x, local.y, factor);
+            }
+        }
+    }
+
     pub(crate) fn start_view_tool(&mut self, tool: ViewTool, now: f64) {
         self.view_tool = Some(tool);
+        self.view_drag_button = egui::PointerButton::Primary;
         self.view_drag_prev = None;
         let (name, usage) = match tool {
             ViewTool::Pan => ("Scroll View", "Drag the canvas view"),
@@ -1707,8 +1859,8 @@ impl PigmentApp {
     /// **压栈**进入的（`document.py:765-772`），拖完由
     /// `OneshotDragMode.drag_stop_cb` 弹回原模式。这里照搬压栈/弹栈：
     /// - `ModeStack::push` 保留下面那个模式，所以弹回后仍是原来的画笔/直线；
-    /// - 因为 `ButtonMappingEditor` 还没移植（见路线图），暂由应用本地键
-    ///   `Ctrl+Shift+R` 触发；接上按钮映射后应撤掉这个键。
+    /// - 入口是 `input.button_mapping` 里的 `BrushResizeMode`（用户可把某个
+    ///   鼠标键映射到它）；源码同样没有默认键。
     pub(crate) fn begin_brush_resize(&mut self, now: f64) {
         if self.modes.top().action_name() == Some("BrushResizeMode") {
             return;
@@ -3078,9 +3230,6 @@ fn layout_ink_buttons(
                     self.reload_selected_brush();
                 }
             }
-            // 笔刷尺寸拖拽（`gui/brushmanip.py` 的 `BrushResizeMode`）。
-            // 源码经按钮映射进入，本应用暂用本地键（见 `begin_brush_resize`）。
-            "pigment:brush-resize" => self.begin_brush_resize(now),
             _ => return false,
         }
         true
@@ -3141,6 +3290,7 @@ impl eframe::App for PigmentApp {
         // （`egui::Modal`），与文件弹层不会同时打开（捕获时 `handle_keys` 直接早退）。
         self.preferences_window(&ctx);
         self.background_window(&ctx);
+        self.popup_menu(&ctx, now);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();
