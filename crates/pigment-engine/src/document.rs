@@ -28,6 +28,7 @@
 //! `.jpg`、`strokemap`。
 
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use pigment_surface::layer::{BackgroundImage, LayerContent, LayerMode};
@@ -626,10 +627,40 @@ impl Document {
     /// 把背景重置为默认纸纹（`Document.reset_background`）。
     ///
     /// 新文档/启动时调用；`load_*` 不走这里（背景来自文件）。
+    /// 查找顺序照 `gui/document.py:1327-1377`：用户
+    /// `<user>/backgrounds/default.png` → 内置 fallback 纸纹 → 纯色 `#A8A498`。
     pub fn reset_background(&mut self) {
+        self.reset_background_from(None);
+    }
+
+    /// 带用户数据目录的 `reset_background`（应用启动/新建时传入
+    /// `prefs::config_dir()`；测试可传临时目录）。
+    pub fn reset_background_from(&mut self, user_dir: Option<&Path>) {
+        if let Some(dir) = user_dir {
+            let path = dir.join("backgrounds").join("default.png");
+            if path.is_file() {
+                if let Ok(img) = background_from_file(&path) {
+                    self.layers.set_background_image(img);
+                    return;
+                }
+            }
+        }
         if let Some(paper) = Self::default_paper_background() {
             self.layers.set_background_image(paper);
+        } else {
+            // 源码最后的兜底色（`gui/document.py:1375`）
+            self.layers.set_background_color([0xA8, 0xA4, 0x98]);
         }
+    }
+
+    /// 从图片文件换背景（背景选择窗口的 Pattern 页；
+    /// `gui/backgroundwindow.py:131-135` 的 `set_background`）。
+    ///
+    /// 返回错误字符串给 GUI 显示（源码用 `load_background` 的 errors 列表）。
+    pub fn set_background_from_file(&mut self, path: &Path) -> Result<(), String> {
+        let img = background_from_file(path)?;
+        self.layers.set_background_image(img);
+        Ok(())
     }
 
     /// 用户视角的导出外接框（`lib/document.py:1229` 的 `get_user_bbox()`）。
@@ -1103,6 +1134,78 @@ pub enum LoadOutcome {
     },
 }
 
+/// 背景图单边最大"重复填充"尺寸（`backgroundwindow.py:39` `BLOAT_MAX_SIZE`）。
+const BACKGROUND_BLOAT_MAX_SIZE: u32 = 1024;
+
+/// 读一张背景图并整理成 tile 网格对齐（`backgroundwindow.py:359-481`
+/// 的 `load_background`）：
+///
+/// 1. 解码 PNG/JPEG；带 alpha 的图先合成到**黑底**（源码同样处理，`:410-434`）；
+/// 2. 尺寸不是 64 的整数倍时，先尝试重复平铺到能整除（最多 1024）；
+/// 3. 仍不整除则缩放到 `max(1, w/64)*64`（双线性，源码 `scale_simple`）。
+pub fn background_from_file(path: &Path) -> Result<BackgroundImage, String> {
+    let img = image::open(path)
+        .map_err(|e| format!("无法读取背景图 {}：{e}", path.display()))?
+        .to_rgba8();
+    let (w0, h0) = img.dimensions();
+    if w0 == 0 || h0 == 0 {
+        return Err(format!("背景图 {} 尺寸为 0", path.display()));
+    }
+    let mut img = img;
+    // Flatten：alpha 合成到黑底，输出 alpha 恒 255。
+    for px in img.pixels_mut() {
+        let a = px[3] as u32;
+        px[0] = ((px[0] as u32 * a) / 255) as u8;
+        px[1] = ((px[1] as u32 * a) / 255) as u8;
+        px[2] = ((px[2] as u32 * a) / 255) as u8;
+        px[3] = 255;
+    }
+    let ts = crate::hokusai::tile::TILE_SIZE as u32;
+    let (mut w, mut h) = img.dimensions();
+    if w % ts != 0 || h % ts != 0 {
+        let rx = best_repeats_for_scaling(w, BACKGROUND_BLOAT_MAX_SIZE);
+        let ry = best_repeats_for_scaling(h, BACKGROUND_BLOAT_MAX_SIZE);
+        if rx > 1 || ry > 1 {
+            let mut tiled = image::RgbaImage::new(w * rx, h * ry);
+            for yi in 0..ry {
+                for xi in 0..rx {
+                    image::imageops::replace(&mut tiled, &img, (xi * w) as i64, (yi * h) as i64);
+                }
+            }
+            img = tiled;
+            (w, h) = img.dimensions();
+        }
+        if w % ts != 0 || h % ts != 0 {
+            w = (w / ts).max(1) * ts;
+            h = (h / ts).max(1) * ts;
+            img = image::imageops::resize(&img, w, h, image::imageops::FilterType::Triangle);
+        }
+    }
+    BackgroundImage::from_rgba8(w, h, img.as_raw())
+}
+
+/// `_best_nrepeats_for_scaling`（`backgroundwindow.py:494-508`）。
+fn best_repeats_for_scaling(src_size: u32, max_dest_size: u32) -> u32 {
+    let ts = crate::hokusai::tile::TILE_SIZE as u32;
+    let mut min_remainder = ts;
+    let mut best = 1;
+    let mut n = 0;
+    let mut dest = 0;
+    while dest <= max_dest_size {
+        n += 1;
+        dest += src_size;
+        let remainder = dest % ts;
+        if remainder < min_remainder {
+            best = n;
+            min_remainder = remainder;
+        }
+        if remainder == 0 {
+            break;
+        }
+    }
+    best
+}
+
 /// `Rect.expand_to_include_point`（`lib/helpers.py:159-175`）的 `(x, y, w, h)` 版。
 ///
 /// 只给 [`Document::fill_bbox`] 用：源码把种子点逐个并进 bbox，空矩形则直接
@@ -1497,6 +1600,62 @@ mod tests {
             (0, -ts, 2 * ts, 2 * ts),
             "负数种子按向下取整落在 tile -1"
         );
+    }
+
+    fn bg_tmpdir(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!(
+            "pigment-bg-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    /// 背景图载入：alpha 合成到黑底、尺寸缩放到 64 的整数倍。
+    #[test]
+    fn background_from_file_flattens_alpha_and_fits_the_tile_grid() {
+        let dir = bg_tmpdir("load");
+        let path = dir.join("bg.png");
+        let (w, h) = (100u32, 70u32);
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for p in px.chunks_exact_mut(4) {
+            p.copy_from_slice(&[200, 100, 50, 128]);
+        }
+        pigment_surface::png::write_rgba8_png(&path, px, w, h).unwrap();
+        let img = background_from_file(&path).unwrap();
+        assert_eq!(img.width() % 64, 0, "宽要落在 tile 网格上");
+        assert_eq!(img.height() % 64, 0, "高要落在 tile 网格上");
+        assert!(img.width() >= 64 && img.height() >= 64);
+        assert_eq!(img.rgba8()[3], 255, "alpha 必须被压平");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `reset_background_from` 优先用 `<user>/backgrounds/default.png`
+    /// （`gui/document.py:1332-1344`）。
+    #[test]
+    fn reset_background_prefers_the_user_default() {
+        let dir = bg_tmpdir("default");
+        let bgs = dir.join("backgrounds");
+        std::fs::create_dir_all(&bgs).unwrap();
+        let path = bgs.join("default.png");
+        let px = vec![[10u8, 20, 30, 255]; 64 * 64].concat();
+        pigment_surface::png::write_rgba8_png(&path, px, 64, 64).unwrap();
+
+        let mut doc = Document::new();
+        doc.reset_background_from(Some(&dir));
+        let img = doc.layers().background_image().expect("载入用户背景");
+        assert_eq!(img.average_rgb(), [10, 20, 30]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn set_background_from_file_reports_missing_files() {
+        let mut doc = Document::new();
+        let err = doc
+            .set_background_from_file(std::path::Path::new("definitely-missing-bg.png"))
+            .unwrap_err();
+        assert!(err.contains("无法读取背景图"), "{err}");
     }
 
     /// "Limit to View"（`document.py:1083-1088`）：包含→取视口，相交→取交集，

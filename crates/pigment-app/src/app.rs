@@ -277,6 +277,8 @@ pub struct PigmentApp {
     /// 偏好窗口的界面状态 —— `gui/preferenceswindow.py` 那个
     /// `windowing.Dialog`（当前页签 / 是否可见 / 状态文字）。
     pub(crate) prefs_window: crate::shell::prefs_window::PrefsWindowState,
+    /// 背景选择窗口（`gui/backgroundwindow.py`）。
+    pub(crate) background_window: crate::shell::background_window::BackgroundWindowState,
     // ---- 预览面板 ----
     /// 当前视图重命名对话框的文本（`ask_for_name` 的 egui 技术栈适配）。
     pub(crate) layer_view_rename: Option<String>,
@@ -729,6 +731,7 @@ impl PigmentApp {
             accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
             key_editor: Default::default(),
             prefs_window: Default::default(),
+            background_window: Default::default(),
             layer_view_rename: None,
             preview: Default::default(),
             icon_editor: Default::default(),
@@ -805,7 +808,8 @@ impl PigmentApp {
         // 启动时载回上次的暂存页（`application.py:474-486`）：偏好
         // `scratchpad.last_opened_scratchpad` 有就用它，没有就写回 autosave 路径。
         app.scratch.startup_page(&mut app.prefs);
-        app.doc.reset_background();
+        let cfg = pigment_engine::prefs::config_dir();
+        app.doc.reset_background_from(Some(&cfg));
         app
     }
 
@@ -1110,8 +1114,10 @@ impl PigmentApp {
         // （`lib/document.py:944-961`），这里不再重复设一遍。
         self.doc.clear();
         // `RootLayerStack.clear()` 回到「默认背景」——应用层默认是纸纹
-        // （`reset_background()`，`document.py:1327-1380`）。
-        self.doc.reset_background();
+        // （`reset_background()`，`document.py:1327-1380`），优先用户
+        // `backgrounds/default.png`。
+        let cfg = pigment_engine::prefs::config_dir();
+        self.doc.reset_background_from(Some(&cfg));
         self.current_file = None;
         self.force_resync = true; // 表面换了 → 显存全丢重传
         self.view = View::default();
@@ -2406,6 +2412,7 @@ fn layout_ink_buttons(
     pub(crate) fn toggle_state(&self, id: &str) -> Option<bool> {
         match id {
             "ShowBackgroundToggle" => Some(self.doc.layers().background_visible()),
+            "BackgroundWindow" => Some(self.background_window.open),
             "Fullscreen" => Some(self.fullscreen),
             "BlendModeNormal" => Some(!self.eraser),
             "BlendModeEraser" => Some(self.eraser),
@@ -2774,8 +2781,10 @@ fn layout_ink_buttons(
                 ctx.request_repaint();
             }
             "BackgroundWindow" => {
-                // 技术栈适配：背景色对话框未移植，指向面板里的取色钮
-                self.set_status("背景色请用图层面板底部的取色钮（技术栈适配）".to_string(), now);
+                // `toggle_window_cb`（`gui/document.py` / `drawwindow.py`）：
+                // 打开背景选择窗口并重新扫描背景目录。
+                self.background_window
+                    .toggle(&pigment_engine::prefs::config_dir());
             }
             // ---- 停靠面板（`toggle_dockpanel_cb`，drawwindow.py:352-367）----
             // Toggle*Tool → MyPaint<GType 名>（去 Toggle 前缀）；BrushGroups 是
@@ -3119,6 +3128,7 @@ impl eframe::App for PigmentApp {
         // 偏好窗口（B6-3）在它之前：窗口里的 Keys 页自带按键捕获对话框
         // （`egui::Modal`），与文件弹层不会同时打开（捕获时 `handle_keys` 直接早退）。
         self.preferences_window(&ctx);
+        self.background_window(&ctx);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();

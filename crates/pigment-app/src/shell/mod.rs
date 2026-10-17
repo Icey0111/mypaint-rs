@@ -25,6 +25,7 @@
 
 pub(crate) mod accelmap;
 pub(crate) mod actions;
+pub(crate) mod background_window;
 pub(crate) mod color_panel;
 pub(crate) mod dock;
 pub(crate) mod hcy_wheel_page;
