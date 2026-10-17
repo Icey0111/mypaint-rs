@@ -252,6 +252,8 @@ pub struct ColorPickMode {
     /// 键盘起手后，真正的拖拽要等下一次 motion
     /// （`self._start_drag_on_next_motion_event`）
     start_drag_on_next_motion: bool,
+    /// 最近一次指针事件的视图缩放（屏幕 3×3 取样间距 = 1/zoom）。
+    last_viewzoom: f32,
 }
 
 impl Default for ColorPickMode {
@@ -276,6 +278,7 @@ impl ColorPickMode {
             started_from_key_press: false,
             enter_pick: None,
             start_drag_on_next_motion: false,
+            last_viewzoom: 1.0,
         }
     }
 
@@ -303,6 +306,7 @@ impl ColorPickMode {
             started_from_key_press: true,
             enter_pick: last_event,
             start_drag_on_next_motion: false,
+            last_viewzoom: 1.0,
         }
     }
 
@@ -375,8 +379,23 @@ impl ColorPickMode {
     ///
     /// `direct=True` 时立刻写进出口，否则排进队列等 [`Self::flush_queued`]
     /// （源码是 `cm.set_color()` / `_queue_color_change()` 两条路）。
-    fn pick_color_at(&mut self, ctx: &mut ModeContext<'_>, x: f32, y: f32, direct: bool) {
-        let Some(pick_rgb) = ctx.doc.pick_color(x, y) else {
+    fn pick_color_at(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        x: f32,
+        y: f32,
+        direct: bool,
+        viewzoom: f32,
+    ) {
+        // 源码 `tdw.pick_color` 在 device 坐标系里取 3×3 像素；换算到模型
+        // 坐标就是间距 `1 / zoom`（旋转下的方格方向近似，见 document.rs 记账）。
+        self.last_viewzoom = if viewzoom.is_finite() && viewzoom > 0.0 {
+            viewzoom
+        } else {
+            1.0
+        };
+        let step = 1.0 / self.last_viewzoom;
+        let Some(pick_rgb) = ctx.doc.pick_color_scaled(x, y, step) else {
             return;
         };
         // `if pick_color != self._color`：颜色没变就什么都不做，免得每帧
@@ -462,7 +481,7 @@ impl InteractionMode for ColorPickMode {
         if self.started_from_key_press {
             // 键盘起手：用"最后一次指针事件的位置"立刻取一次色
             if let Some((x, y)) = self.enter_pick {
-                self.pick_color_at(ctx, x, y, true);
+                self.pick_color_at(ctx, x, y, true, self.last_viewzoom);
             }
             // 拖拽要等下一次 motion 才开始
             self.start_drag_on_next_motion = true;
@@ -485,7 +504,7 @@ impl InteractionMode for ColorPickMode {
     /// 再把事件交给 `DragMode` 去开拖拽。
     fn button_press(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent) -> bool {
         // 源码这里不筛按键号（`button_press_cb` 对任何键都先取色）
-        self.pick_color_at(ctx, ev.x, ev.y, true);
+        self.pick_color_at(ctx, ev.x, ev.y, true, ev.viewzoom);
         self.start_drag_on_next_motion = false;
         let drag = &mut self.oneshot.drag_mode;
         if drag.drag.in_drag {
@@ -517,7 +536,7 @@ impl InteractionMode for ColorPickMode {
         // `DragMode.motion_notify_cb` → `drag_update_cb`（`colorpicker.py:116-119`）：
         // 拖拽中持续取色；这一路是**排队**的（源码 60fps 节流），
         // 落地由 `process_pending` 完成。
-        self.pick_color_at(ctx, ev.x, ev.y, false);
+        self.pick_color_at(ctx, ev.x, ev.y, false, ev.viewzoom);
         true
     }
 

@@ -132,6 +132,12 @@ impl Modifiers {
     pub fn intersects(self, other: Self) -> bool {
         (self.shift && other.shift) || (self.ctrl && other.ctrl) || (self.alt && other.alt)
     }
+
+    /// 是否包含 `other` 的全部修饰键（`(mods & other) == other`）。
+    #[inline]
+    pub fn contains(self, other: Self) -> bool {
+        (!other.shift || self.shift) && (!other.ctrl || self.ctrl) && (!other.alt || self.alt)
+    }
 }
 
 /// 键盘事件里我们关心的键（`mode.py` 只对 space 有特殊处理）。
@@ -763,7 +769,10 @@ impl OneshotDragMode {
             return true;
         }
         match self.drag_mode.drag.initial_modifiers {
-            Some(init) if init.any() => init.intersects(modifiers) != true,
+            // 源码：`pop = not (init_mods & current_mods == init_mods)`。
+            // 初始按住两个修饰键、松开其中一个 → 必须出栈（原来的
+            // `intersects` 判断反了，会继续留在模式里）。
+            Some(init) if init.any() => !modifiers.contains(init),
             _ => self.temporary_activation || !self.unmodified_persist,
         }
     }
@@ -1079,6 +1088,33 @@ mod tests {
             ..Modifiers::NONE
         }));
         assert!(spring.should_pop(Modifiers::NONE));
+
+        // 初始按住 Ctrl+Shift：**松开其中一个**就要出栈（源码
+        // `not (init & current == init)`；旧实现的 intersects 语义会留下）
+        let mut two = OneshotDragMode::default();
+        let init = Modifiers {
+            shift: true,
+            ctrl: true,
+            alt: false,
+        };
+        two.drag_mode.drag.initial_modifiers = Some(init);
+        assert!(!two.should_pop(init));
+        assert!(two.should_pop(Modifiers {
+            shift: true,
+            ctrl: false,
+            alt: false,
+        }));
+        assert!(two.should_pop(Modifiers {
+            shift: false,
+            ctrl: true,
+            alt: false,
+        }));
+        // 多按一个无关修饰键仍算"包含全部初始键" → 留下
+        assert!(!two.should_pop(Modifiers {
+            shift: true,
+            ctrl: true,
+            alt: true,
+        }));
     }
 
     #[test]

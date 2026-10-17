@@ -20,7 +20,7 @@ use pigment_engine::color::UIColor;
 use crate::app::PigmentApp;
 
 use super::{
-    mode_icon_tooltip, mode_status_text, scale_label_text, ADJUSTER_BORDER_WIDTH,
+    mode_status_text, scale_label_text, ADJUSTER_BORDER_WIDTH,
     BRUSH_INDICATOR_DEFAULT_NAME, BRUSH_INDICATOR_EDGE_HIGHLIGHT_RGBA, BRUSH_INDICATOR_MASK_STOPS,
     BRUSH_INDICATOR_OUTLINE_RGBA, FOOTER_BRUSH_INDICATOR_WIDTH, FOOTER_COLOR_INDICATOR_WIDTH,
     FOOTER_ICON_SIZE, FOOTER_SCALE_LABEL_TEXT_SCALE, FOOTER_SCALE_LABEL_WIDTH,
@@ -78,26 +78,40 @@ impl PigmentApp {
                     // （含边框留白），两者差几个像素，直接拿来当行高会让
                     // 笔刷指示器的裁切位置对不上源码。
                     let h = ui.available_height().max(FOOTER_ICON_SIZE);
-                    // ---- 0 取色按钮（`ColorPickMode`，属 B3 工具模式）----
-                    self.footer_icon_slot(
+                    // ---- 0 取色按钮（`ColorPickMode`）----
+                    // glade 把它接到 `color_picker_mode`（`mypaint.glade:112`），
+                    // 与工具条/`r` 键同一个动作。
+                    let picker = self.footer_icon_slot(
                         ui,
                         SymbolicIcon::PickColor,
                         h,
                         TIP_COLOR_PICKER,
-                        false,
-                        "未移植：取色模式 ColorPickMode（属 B3 工具模式）",
+                        true,
+                        "",
                     );
+                    if picker.clicked() {
+                        let now = ui.input(|i| i.time);
+                        self.switch_pick_mode(
+                            pigment_engine::mode::pick::PickVariant::Full,
+                            false,
+                            None,
+                            now,
+                        );
+                    }
                     // ---- 1 当前色 / 上一色 ----
                     self.footer_color_indicator(ui, h);
-                    // ---- 2 颜色详情（MyPaint 弹 `ColorDetailsDialog`，属 B4 颜色器）----
-                    self.footer_icon_slot(
+                    // ---- 2 颜色详情（`ColorDetailsDialog`）----
+                    let details = self.footer_icon_slot(
                         ui,
                         SymbolicIcon::Edit,
                         h,
                         TIP_COLOR_DETAILS,
-                        false,
-                        "未移植：颜色详情对话框（属 B4 颜色器）",
+                        true,
+                        "",
                     );
+                    if details.clicked() {
+                        self.open_color_details();
+                    }
                     // ---- 3 收藏当前色（写进调色板）----
                     // glade 把它接到 `palette_add_current_color_cb`
                     // （`gui/mypaint.glade:128`），与动作 `PaletteAddCurrentColor`
@@ -135,16 +149,23 @@ impl PigmentApp {
                     // 用 right_to_left 布局把这三项贴到右边缘，等价于 GTK 里
                     // 状态栏的 `expand` 把后续子项挤到最右。
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // ---- 11 上下文取色（`PickContext`：取笔刷设置 + 颜色 +
-                        //        **图层**，需要图层栈，属 B2）----
-                        self.footer_icon_slot(
+                        // ---- 11 上下文取色（`PickContext`）----
+                        let context = self.footer_icon_slot(
                             ui,
                             SymbolicIcon::TargetBrush,
                             h,
                             TIP_CONTEXT_PICKER,
-                            false,
-                            "未移植：上下文取色需要图层（属 B2 图层与混合模式）",
+                            true,
+                            "",
                         );
+                        if context.clicked() {
+                            let now = ui.input(|i| i.time);
+                            self.pick_context_pending = true;
+                            self.set_status(
+                                "Pick Context：在画布上点击要拾取的笔迹".to_string(),
+                                now,
+                            );
+                        }
                         // ---- 10 笔刷指示器 ----
                         self.footer_brush_indicator(ui, h);
                         // ---- 9 separator ----
@@ -312,7 +333,17 @@ impl PigmentApp {
             }
             None => draw_symbolic_icon(ui.painter(), rect, SymbolicIcon::Brush, fg),
         }
-        resp.on_hover_text(mode_icon_tooltip());
+        // 模式 tooltip —— `drawwindow.py:77` 的 `<b>{name}</b>\n{description}`：
+        // 描述优先取关联动作的 tooltip，取不到再用 mode.get_usage()。
+        let mode = self.modes.top();
+        let desc = mode
+            .action_name()
+            .and_then(crate::shell::actions::by_id)
+            .and_then(|a| a.effective_tooltip())
+            .map(str::to_string)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| mode.usage().to_string());
+        resp.on_hover_text(format!("{}\n{desc}", mode.name()));
     }
 
     /// 8 号部件：状态栏（`GtkStatusbar`，`expand=True`）。

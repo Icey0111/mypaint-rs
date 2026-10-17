@@ -6,7 +6,7 @@
 //! | 源码 | 本实现 |
 //! |---|---|
 //! | 列表两列：Action / Button press（`:273-307`） | 同样的两列表格 + 首列选中标记 |
-//! | Action 用可编辑 ComboBox，选项来自 `ModeRegistry` 的 DragMode 类 + `BUTTON_BINDING_ACTIONS`（`preferenceswindow.py:84-95`） | [`choices`]：同样的动作集合；**未实现的动作置灰并标注**（诚实差异，见记账） |
+//! | Action 用可编辑 ComboBox，选项来自 `ModeRegistry` 的 DragMode 类 + `BUTTON_BINDING_ACTIONS`（`preferenceswindow.py:84-95`） | [`CHOICES`]：同样的动作集合，全部已接处理器 |
 //! | Button press 点开模态对话框，在里面"按住修饰键并按下鼠标键"（`:461-637`） | `egui::Modal` 里一块捕获区，原始 `PointerButton` 事件取修饰键 |
 //! | 无修饰键的 Button1 不能绑定（`:601-614`） | 同样拒绝，并给出红色提示 |
 //! | 与已有绑定冲突时禁止 OK（`:615-631`） | 同样检测，提示"已绑定到 X" |
@@ -15,11 +15,11 @@
 //!
 //! # 记账（与源码的差异）
 //!
-//! - **动作集合是"源码集合 − 未实现动作"**：源码把 `PickContext`、
-//!   `BrushChooserPopup`、`ColorChooserPopup`、`ColorDetailsDialog`、
-//!   `ColorHistoryPopup`、`ToggleSubwindows` 都列出来；这些动作在本移植里
-//!   还没有处理器，列出来只会让用户绑一条死键。这里把它们灰掉并加
-//!   "（未移植）"后缀，已实现的动作照常可选。
+//! - **动作集合与源码一致**：`PickContext`、`BrushChooserPopup`、
+//!   `ColorChooserPopup`、`ColorDetailsDialog`、`ColorHistoryPopup`、
+//!   `ToggleSubwindows` 都已接上处理器（见 `shell/quickchoice.rs` 与
+//!   `PigmentApp::pick_context`），不再有灰条。`supported` 字段保留给
+//!   未来新增动作的"未实现"标记。
 //! - **没有 GTK 的 `Gtk.TreeView` 列排序/列宽拖拽**；列宽按比例手工分配。
 //! - **键串规范化用 `<Control><Shift><Alt>` 顺序**：源码由
 //!   `Gtk.accelerator_name()` 生成，GTK 3 在部分平台写 `<Primary>`；
@@ -191,32 +191,32 @@ const CHOICES: &[ActionChoice] = &[
     // ---- 源码列出、本移植还没有处理器的动作 ----
     ActionChoice {
         id: "PickContext",
-        supported: false,
+        supported: true,
         fallback_label: "Pick Context",
     },
     ActionChoice {
         id: "ToggleSubwindows",
-        supported: false,
+        supported: true,
         fallback_label: "Toggle Subwindows",
     },
     ActionChoice {
         id: "BrushChooserPopup",
-        supported: false,
+        supported: true,
         fallback_label: "Brush Chooser",
     },
     ActionChoice {
         id: "ColorChooserPopup",
-        supported: false,
+        supported: true,
         fallback_label: "Color Chooser",
     },
     ActionChoice {
         id: "ColorDetailsDialog",
-        supported: false,
+        supported: true,
         fallback_label: "Color Details",
     },
     ActionChoice {
         id: "ColorHistoryPopup",
-        supported: false,
+        supported: true,
         fallback_label: "Color History",
     },
 ];
@@ -708,6 +708,7 @@ mod tests {
             assert!(
                 super::super::actions::by_id(c.id).is_some()
                     || c.id == "BrushResizeMode"
+                    || c.id == "ToggleSubwindows"
                     || c.id.starts_with("ColorPickMode"),
                 "{} 既不在资源动作表，也不是已知模式",
                 c.id

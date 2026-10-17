@@ -38,6 +38,7 @@ pub(crate) mod menubar;
 pub(crate) mod overlays;
 pub(crate) mod palette_panel;
 pub(crate) mod prefs_window;
+pub(crate) mod quickchoice;
 pub(crate) mod scratch_panel;
 pub(crate) mod toolbars;
 pub(crate) mod topbar;
@@ -163,29 +164,17 @@ pub(crate) const BRUSH_INDICATOR_DEFAULT_NAME: &str = "Unknown Brush";
 pub(crate) const BRUSH_INDICATOR_MASK_STOPS: [(f32, f32); 4] =
     [(0.0, 1.0), (0.8, 1.0), (0.95, 0.5), (1.0, 0.1)];
 
-// ---- 当前工具模式（只有自由笔，其余随 B3 工具模式移植）----
+// ---- 当前工具模式 ----
 
-/// 模式名 —— `gui/freehand.py:55` `FreehandMode.get_name()`。
-pub(crate) const MODE_NAME: &str = "Freehand Drawing";
-/// 状态栏文字 —— `gui/freehand.py:58` `FreehandMode.get_usage()`。
+/// 状态栏文字 —— `gui/freehand.py:58` `FreehandMode.get_usage()` 的兜底。
 ///
-/// `drawwindow.py:794` 的 `_update_status_bar_mode_widgets` 往状态栏推的就是
-/// 这个串（源码里 `"{usage!s}".format(name=..., usage=...)` 只用到 `usage`）。
+/// 正常路径用 `ModeStack::top().usage()`；只有模式没给 usage 时才用这个串
+/// （`drawwindow.py:793-797` 的 `_update_status_bar_mode_widgets`）。
 pub(crate) const MODE_USAGE: &str = "Paint free-form brush strokes";
-/// 模式图标的 tooltip description —— `gui/resources.xml:1637` 里 `FreehandMode`
-/// 动作的 tooltip（`drawwindow.py:807-815` 优先取动作 tooltip，取不到才退回 usage）。
-pub(crate) const MODE_DESCRIPTION: &str =
-    "Freehand: draw and paint freely, without geometric constraints.";
 
 /// 底栏状态栏显示的模式文字 —— 照搬 `drawwindow.py:793-797`。
 pub(crate) fn mode_status_text() -> String {
     MODE_USAGE.to_string()
-}
-
-/// 底栏模式图标的 tooltip —— 模板 `<b>{name}</b>\n{description}`
-/// （`drawwindow.py:77` 的 `_MODE_ICON_TEMPLATE`）。egui 无 markup，去掉 `<b>`。
-pub(crate) fn mode_icon_tooltip() -> String {
-    format!("{MODE_NAME}\n{MODE_DESCRIPTION}")
 }
 
 /// 缩放/旋转标签的文字 —— 照搬 `gui/drawwindow.py:765-776`。

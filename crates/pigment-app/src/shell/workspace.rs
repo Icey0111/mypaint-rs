@@ -384,8 +384,21 @@ impl PigmentApp {
                                 // 编辑器顶部图标 = 当前笔刷的预览图（MyPaint `brusheditor.py:786`）
                                 let sel = self.brushes.selected;
                                 let icon = self.brushes.icon(ui.ctx(), sel);
-                                let edited =
-                                    self.editor.show(ui, &mut self.base_brush, Some(&icon));
+                                // About 元数据直接编辑笔刷库条目（`description`/`notes`）。
+                                // `self.brushes`、`self.editor`、`self.base_brush` 是
+                                // 三个不相交字段，可以同时可变借用。
+                                let about = self
+                                    .brushes
+                                    .library
+                                    .entries
+                                    .get_mut(sel)
+                                    .map(|e| (&mut e.display, &mut e.notes));
+                                let edited = self.editor.show(
+                                    ui,
+                                    &mut self.base_brush,
+                                    Some(&icon),
+                                    about,
+                                );
                                 if edited {
                                     self.derive_active();
                                     if self.live_update {
@@ -1428,6 +1441,13 @@ impl PigmentApp {
             self.view.pan(d.x, d.y);
         }
 
+        // 底栏上下文取色：按钮按下后进入"下一次画布点击执行 PickContext"。
+        if self.pick_context_pending && primary_pressed && response.hovered() {
+            self.pick_context_pending = false;
+            self.primary_action_active = true;
+            self.pick_context(ui.ctx(), now_ms / 1000.0);
+        }
+
         // ---- 视图操纵工具（`gui/viewmanip.py` 的三个 Oneshot）----
         // 源码是压栈模式，拖拽结束后 pop 回原工具；这里用一次性 view_tool 状态。
         let view_gesture = self.view_tool.is_some();
@@ -1663,6 +1683,37 @@ impl PigmentApp {
                 state,
                 overlay_style,
             );
+        }
+
+        // ---- 笔刷光标（`gui/cursor.py`）----
+        //
+        // 源码给每个绘画模式设置一张自绘 pixbuf 光标；egui 侧改为在画布上
+        // 直接画内外圈 + 动态十字线，并隐藏系统光标（`CursorIcon::None`）。
+        // `ui.hide_cursor_while_painting` 只控制"作画时是否还显示这个自绘光标"。
+        let paints = self
+            .modes
+            .top()
+            .pointer_behavior()
+            .intersects(pigment_engine::mode::Behavior::PAINT_BRUSH);
+        if paints && response.hovered() && !space_down && !view_gesture {
+            let painting = ui.input(|i| i.pointer.any_down());
+            let hide_now = painting && self.mode_prefs.hide_cursor_while_painting;
+            if !hide_now {
+                if let Some(pos) = response.hover_pos() {
+                    let base_r = self.brush.get(BrushSetting::Radius).base_value;
+                    let by_random = self.brush.get(BrushSetting::OffsetByRandom).base_value;
+                    let visual = base_r.exp() * (1.0 + 2.0 * by_random);
+                    crate::shell::overlays::paint_brush_cursor(
+                        &ui.painter().with_clip_rect(rect),
+                        rect,
+                        pos,
+                        visual * self.view.zoom,
+                        &overlay_style,
+                        &self.prefs,
+                    );
+                }
+            }
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
 
         // ---- Inking ADJUST 节点（`inktool.py:1074-1116`）----

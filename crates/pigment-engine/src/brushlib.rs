@@ -842,7 +842,12 @@ impl BrushLibrary {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let (description, notes) = meta.map(raw_meta).unwrap_or_default();
+        // `raw_meta()` 读的是**磁盘上的旧 JSON**；编辑器改过 description/notes
+        // 后必须以库条目为准（源码 `ManagedBrush.save()` 写的是内存里的
+        // `brushinfo` 字符串属性，不是旧文件）。
+        let (description, notes) = meta
+            .map(|e| (e.display.clone(), e.notes.clone()))
+            .unwrap_or_default();
         let json = serialize_brush(brush, &description, &notes)
             .map_err(|e| io::Error::other(format!("序列化 .myb 失败: {e}")))?;
         fs::write(&path, json)?;
@@ -1192,8 +1197,182 @@ fn json_has_setting(json: &str, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 设置的界面显示名 —— `lib/brushsettings.py` 的 `displayed_name`。
+///
+/// 数据源是 `_libmypaint_ref/brushsettings.json`；编辑器显示 "Opacity" 而不是
+/// 内部名 `opaque`，内部名仍用于 `.myb` 键与调试。
+pub fn setting_display_name(cname: &str) -> &str {
+    match cname {
+        "opaque" => "Opacity",
+        "opaque_multiply" => "Opacity multiply",
+        "opaque_linearize" => "Opacity linearize",
+        "radius_logarithmic" => "Radius",
+        "hardness" => "Hardness",
+        "softness" => "Softness",
+        "anti_aliasing" => "Pixel feather",
+        "dabs_per_basic_radius" => "Dabs per basic radius",
+        "dabs_per_actual_radius" => "Dabs per actual radius",
+        "dabs_per_second" => "Dabs per second",
+        "gridmap_scale" => "GridMap Scale",
+        "gridmap_scale_x" => "GridMap Scale X",
+        "gridmap_scale_y" => "GridMap Scale Y",
+        "radius_by_random" => "Radius by random",
+        "speed1_slowness" => "Fine speed filter",
+        "speed2_slowness" => "Gross speed filter",
+        "speed1_gamma" => "Fine speed gamma",
+        "speed2_gamma" => "Gross speed gamma",
+        "offset_by_random" => "Jitter",
+        "offset_y" => "Offset Y",
+        "offset_x" => "Offset X",
+        "offset_angle" => "Angular Offset: Direction",
+        "offset_angle_asc" => "Angular Offset: Ascension",
+        "offset_angle_view" => "Angular Offset: View",
+        "offset_angle_2" => "Angular Offset Mirrored: Direction",
+        "offset_angle_2_asc" => "Angular Offset Mirrored: Ascension",
+        "offset_angle_2_view" => "Angular Offset Mirrored: View",
+        "offset_angle_adj" => "Angular Offsets Adjustment",
+        "offset_multiplier" => "Offsets Multiplier",
+        "offset_by_speed" => "Offset by speed",
+        "offset_by_speed_slowness" => "Offset by speed filter",
+        "slow_tracking" => "Slow position tracking",
+        "slow_tracking_per_dab" => "Slow tracking per dab",
+        "tracking_noise" => "Tracking noise",
+        "color_h" => "Color hue",
+        "color_s" => "Color saturation",
+        "color_v" => "Color value",
+        "restore_color" => "Save color",
+        "change_color_h" => "Change color hue",
+        "change_color_l" => "Change color lightness (HSL)",
+        "change_color_hsl_s" => "Change color satur. (HSL)",
+        "change_color_v" => "Change color value (HSV)",
+        "change_color_hsv_s" => "Change color satur. (HSV)",
+        "smudge" => "Smudge",
+        "paint_mode" => "Pigment",
+        "smudge_transparency" => "Smudge transparency",
+        "smudge_length" => "Smudge length",
+        "smudge_length_log" => "Smudge length multiplier",
+        "smudge_bucket" => "Smudge bucket",
+        "smudge_radius_log" => "Smudge radius",
+        "eraser" => "Eraser",
+        "stroke_threshold" => "Stroke threshold",
+        "stroke_duration_logarithmic" => "Stroke duration",
+        "stroke_holdtime" => "Stroke hold time",
+        "custom_input" => "Custom input",
+        "custom_input_slowness" => "Custom input filter",
+        "elliptical_dab_ratio" => "Elliptical dab: ratio",
+        "elliptical_dab_angle" => "Elliptical dab: angle",
+        "direction_filter" => "Direction filter",
+        "lock_alpha" => "Lock alpha",
+        "colorize" => "Colorize",
+        "posterize" => "Posterize",
+        "posterize_num" => "Posterization levels",
+        "snap_to_pixel" => "Snap to pixel",
+        "pressure_gain_log" => "Pressure gain",
+        other => other,
+    }
+}
+
+/// 设置的出厂默认值 —— `brushsettings.json` 的 `default`。
+///
+/// 编辑器"重置该设置"要回到这个值（`brusheditor.py` 的
+/// `base_value_reset_button_clicked_cb` 是 `adj.set_value(s.default)`），不是清成 0。
+pub fn setting_default(cname: &str) -> Option<f64> {
+    match cname {
+        "opaque" => Some(1.0),
+        "opaque_multiply" => Some(0.0),
+        "opaque_linearize" => Some(0.9),
+        "radius_logarithmic" => Some(2.0),
+        "hardness" => Some(0.8),
+        "softness" => Some(0.0),
+        "anti_aliasing" => Some(1.0),
+        "dabs_per_basic_radius" => Some(0.0),
+        "dabs_per_actual_radius" => Some(2.0),
+        "dabs_per_second" => Some(0.0),
+        "gridmap_scale" => Some(0.0),
+        "gridmap_scale_x" => Some(1.0),
+        "gridmap_scale_y" => Some(1.0),
+        "radius_by_random" => Some(0.0),
+        "speed1_slowness" => Some(0.04),
+        "speed2_slowness" => Some(0.8),
+        "speed1_gamma" => Some(4.0),
+        "speed2_gamma" => Some(4.0),
+        "offset_by_random" => Some(0.0),
+        "offset_y" => Some(0.0),
+        "offset_x" => Some(0.0),
+        "offset_angle" => Some(0.0),
+        "offset_angle_asc" => Some(0.0),
+        "offset_angle_view" => Some(0.0),
+        "offset_angle_2" => Some(0.0),
+        "offset_angle_2_asc" => Some(0.0),
+        "offset_angle_2_view" => Some(0.0),
+        "offset_angle_adj" => Some(0.0),
+        "offset_multiplier" => Some(0.0),
+        "offset_by_speed" => Some(0.0),
+        "offset_by_speed_slowness" => Some(1.0),
+        "slow_tracking" => Some(0.0),
+        "slow_tracking_per_dab" => Some(0.0),
+        "tracking_noise" => Some(0.0),
+        "color_h" => Some(0.0),
+        "color_s" => Some(0.0),
+        "color_v" => Some(0.0),
+        "restore_color" => Some(0.0),
+        "change_color_h" => Some(0.0),
+        "change_color_l" => Some(0.0),
+        "change_color_hsl_s" => Some(0.0),
+        "change_color_v" => Some(0.0),
+        "change_color_hsv_s" => Some(0.0),
+        "smudge" => Some(0.0),
+        "paint_mode" => Some(1.0),
+        "smudge_transparency" => Some(0.0),
+        "smudge_length" => Some(0.5),
+        "smudge_length_log" => Some(0.0),
+        "smudge_bucket" => Some(0.0),
+        "smudge_radius_log" => Some(0.0),
+        "eraser" => Some(0.0),
+        "stroke_threshold" => Some(0.0),
+        "stroke_duration_logarithmic" => Some(4.0),
+        "stroke_holdtime" => Some(0.0),
+        "custom_input" => Some(0.0),
+        "custom_input_slowness" => Some(0.0),
+        "elliptical_dab_ratio" => Some(1.0),
+        "elliptical_dab_angle" => Some(90.0),
+        "direction_filter" => Some(2.0),
+        "lock_alpha" => Some(0.0),
+        "colorize" => Some(0.0),
+        "posterize" => Some(0.0),
+        "posterize_num" => Some(0.05),
+        "snap_to_pixel" => Some(0.0),
+        "pressure_gain_log" => Some(0.0),
+        _ => return None,
+    }
+}
+
+/// 输入轴的显示名 —— `brushsettings.json` 的 `displayed_name`。
+pub fn input_display_name(cname: &str) -> &str {
+    match cname {
+    "pressure" => "Pressure",
+    "random" => "Random",
+    "stroke" => "Stroke",
+    "direction" => "Direction",
+    "tilt_declination" => "Declination/Tilt",
+    "tilt_ascension" => "Ascension",
+    "speed1" => "Fine speed",
+    "speed2" => "Gross speed",
+    "custom" => "Custom",
+    "direction_angle" => "Direction 360",
+    "attack_angle" => "Attack Angle",
+    "tilt_declinationx" => "Declination/Tilt X",
+    "tilt_declinationy" => "Declination/Tilt Y",
+    "gridmap_x" => "GridMap X",
+    "gridmap_y" => "GridMap Y",
+    "viewzoom" => "Zoom Level",
+    "brush_radius" => "Base Brush Radius",
+    "barrel_rotation" => "Barrel Rotation",
+        other => other,
+    }
+}
 /// 解析 `.myb` JSON 并恢复**显式写出**的设置（不把显式 0 当未定义）。
-fn parse_brush_json(json: &str) -> Result<Brush, String> {
+pub fn parse_brush_json(json: &str) -> Result<Brush, String> {
     let mut brush = myb::from_str(json).map_err(|e| e.to_string())?;
     apply_raw_settings(json, &mut brush);
     if !json_has_setting(json, "paint_mode") {
@@ -1309,6 +1488,7 @@ fn serialize_brush(brush: &Brush, description: &str, notes: &str) -> Result<Stri
 }
 
 /// 从原始 `.myb` 取 `description` / `notes`（保存时原样保留）；解析失败退回 entry 元数据。
+#[cfg(test)]
 fn raw_meta(entry: &BrushEntry) -> (String, String) {
     let Ok(raw) = entry.read_json() else {
         return (entry.display.clone(), entry.notes.clone());
@@ -1331,6 +1511,19 @@ fn raw_meta(entry: &BrushEntry) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn setting_metadata_matches_brushsettings_json() {
+        // 编辑器显示名 / 出厂默认值 / 输入轴名都来自 brushsettings.json
+        assert_eq!(setting_display_name("opaque"), "Opacity");
+        assert_eq!(setting_display_name("radius_logarithmic"), "Radius");
+        assert_eq!(setting_display_name("not_a_setting"), "not_a_setting");
+        assert!((setting_default("radius_logarithmic").unwrap() - 2.0).abs() < 1e-9);
+        assert!((setting_default("opaque").unwrap() - 1.0).abs() < 1e-9);
+        assert_eq!(setting_default("not_a_setting"), None);
+        assert_eq!(input_display_name("pressure"), "Pressure");
+        assert_eq!(input_display_name("tilt_declination"), "Declination/Tilt");
+    }
 
     #[test]
     fn mypaint_name_replaces_underscores() {

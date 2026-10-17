@@ -15,6 +15,7 @@
 //! 一样不显示——它们由颜色 UI 管理，不该出现在笔刷编辑器里。
 
 use eframe::egui;
+use pigment_engine::brushlib::{input_display_name, setting_default, setting_display_name};
 use pigment_engine::hokusai::{Brush, BrushInput, BrushSetting, InputMapping, SettingValue};
 
 /// 曲线编辑区高度。
@@ -187,15 +188,58 @@ impl BrushEditor {
     /// `icon` 是当前笔刷的预览图（与我方笔刷列表同一张），由调用方给出 ——
     /// 对齐 MyPaint `brusheditor.py:786`：编辑器顶部的图标就是
     /// `ManagedBrush.preview`（随附的 `_prev.png`），**不随设置改动实时重画**。
-    pub fn show(&mut self, ui: &mut egui::Ui, edit: &mut Brush, icon: Option<&egui::TextureHandle>) -> bool {
+    pub fn show(
+        &mut self,
+        ui: &mut egui::Ui,
+        edit: &mut Brush,
+        icon: Option<&egui::TextureHandle>,
+        about: Option<(&mut String, &mut String)>,
+    ) -> bool {
         self.icon_section(ui, icon);
+        let mut changed = false;
+        // "About" 组 —— `brusheditor.py` 的 description/notes 元数据。
+        // 源码允许直接编辑（`description_entry_changed_cb` /
+        // `notes_textbuffer_changed_cb`），这里同样把编辑写回笔刷库条目，
+        // Save Brush 时随 `.myb` 一起落盘。
+        if let Some((desc, notes)) = about {
+            ui.collapsing("About", |ui| {
+                ui.label(egui::RichText::new("Description").small().strong());
+                changed |= ui
+                    .add(
+                        egui::TextEdit::singleline(desc)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("description"),
+                    )
+                    .changed();
+                ui.label(egui::RichText::new("Notes / author").small().strong());
+                changed |= ui
+                    .add(
+                        egui::TextEdit::multiline(notes)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("notes"),
+                    )
+                    .changed();
+            });
+        }
         ui.separator();
 
         // ---- 设置列表（按 MyPaint 的命名分组组织）----
+        //
+        // 未被任何分组的设置 → MyPaint 归入 Experimental，而且这个组在
+        // `brusheditor.py:331-339` 里是**第一组**（不是最后）。
+        let ungrouped: Vec<BrushSetting> = BrushSetting::ALL
+            .iter()
+            .copied()
+            .filter(|s| {
+                !MP_HIDDEN.contains(s) && !MP_GROUPS.iter().any(|(_, m)| m.contains(s))
+            })
+            .collect();
+        let group_count = MP_GROUPS.len() + usize::from(!ungrouped.is_empty());
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("设置").strong());
             ui.label(
-                egui::RichText::new(format!("{} 组", MP_GROUPS.len()))
+                egui::RichText::new(format!("{group_count} 组"))
                     .weak()
                     .small(),
             );
@@ -206,28 +250,12 @@ impl BrushEditor {
                  color_h / color_s / color_v 与 MyPaint 一样不在此列出（由颜色面板管理）",
             );
 
-        // 未被任何分组的设置 → MyPaint 会归入 Experimental
-        let ungrouped: Vec<BrushSetting> = BrushSetting::ALL
-            .iter()
-            .copied()
-            .filter(|s| {
-                !MP_HIDDEN.contains(s) && !MP_GROUPS.iter().any(|(_, m)| m.contains(s))
-            })
-            .collect();
-
         let mut pick: Option<BrushSetting> = None;
         egui::ScrollArea::vertical()
             .id_salt("brush-settings")
             .max_height(260.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for (title, members) in MP_GROUPS {
-                    if let Some(p) =
-                        setting_group_ui(ui, edit, self.setting, self.only_nondefault, title, members)
-                    {
-                        pick = Some(p);
-                    }
-                }
                 if !ungrouped.is_empty() {
                     if let Some(p) = setting_group_ui(
                         ui,
@@ -240,6 +268,13 @@ impl BrushEditor {
                         pick = Some(p);
                     }
                 }
+                for (title, members) in MP_GROUPS {
+                    if let Some(p) =
+                        setting_group_ui(ui, edit, self.setting, self.only_nondefault, title, members)
+                    {
+                        pick = Some(p);
+                    }
+                }
             });
         if let Some(s) = pick {
             if s != self.setting {
@@ -249,12 +284,11 @@ impl BrushEditor {
         }
 
         ui.separator();
-        let mut changed = false;
 
         // ---- 当前设置的 base 值 ----
         let setting = self.setting;
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(setting.cname()).strong());
+            ui.label(egui::RichText::new(setting_display_name(setting.cname())).strong());
             let sv = edit.get_mut(setting);
             changed |= ui
                 .add(
@@ -267,8 +301,13 @@ impl BrushEditor {
                 sv.base_value = 0.0;
                 changed = true;
             }
-            if ui.small_button("重置该设置").on_hover_text("清空 base 与全部输入曲线").clicked() {
-                *sv = pigment_engine::hokusai::SettingValue::constant(0.0);
+            if ui
+                .small_button("重置该设置")
+                .on_hover_text("回到 brushsettings.json 的出厂默认值，并清空输入曲线")
+                .clicked()
+            {
+                let default = setting_default(setting.cname()).unwrap_or(0.0);
+                *sv = pigment_engine::hokusai::SettingValue::constant(default as f32);
                 changed = true;
             }
         });
@@ -295,7 +334,10 @@ impl BrushEditor {
                     ui.horizontal(|ui| {
                         for (i, m) in edit.get(setting).inputs.iter().enumerate() {
                             if ui
-                                .selectable_label(self.curve == i, m.input.cname())
+                                .selectable_label(
+                                    self.curve == i,
+                                    input_display_name(m.input.cname()),
+                                )
                                 .clicked()
                             {
                                 self.curve = i;
@@ -321,7 +363,10 @@ impl BrushEditor {
                         if exists {
                             continue;
                         }
-                        if ui.selectable_label(false, inp.cname()).clicked() {
+                        if ui
+                            .selectable_label(false, input_display_name(inp.cname()))
+                            .clicked()
+                        {
                             let sv = edit.get_mut(setting);
                             sv.inputs.push(InputMapping::new(*inp));
                             self.curve = sv.inputs.len() - 1;
@@ -537,8 +582,8 @@ impl BrushEditor {
             egui::Align2::LEFT_TOP,
             format!(
                 "{} × {}   x∈[0,{xmax:.1}]  y∈[±{ymax:.1}]",
-                setting.cname(),
-                live.input.cname()
+                setting_display_name(setting.cname()),
+                input_display_name(live.input.cname())
             ),
             font.clone(),
             weak,
@@ -599,7 +644,7 @@ fn setting_group_ui(
         let sv = edit.get(s);
         let text = format!(
             "{:<24}{:>7.2}  ×{}",
-            s.cname(),
+            setting_display_name(s.cname()),
             sv.base_value,
             sv.inputs.len()
         );

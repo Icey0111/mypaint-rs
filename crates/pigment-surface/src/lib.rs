@@ -265,6 +265,42 @@ impl PigmentSurface {
         self.tiles.get(&(tx, ty))
     }
 
+    /// 模型坐标 `(x, y)` 周围半径 `radius` 内的平均 alpha（0..1）。
+    ///
+    /// 对应 `Document._layer_is_pickable` 用的 `layer.get_alpha(x, y,
+    /// PICKING_RADIUS)`（`gui/document.py:1167`，`PICKING_RADIUS=5`）：
+    /// 源码取圆形邻域的平均值，用来判断"这一点下面有没有东西"。
+    /// 空 tile 按 alpha 0 计。
+    pub fn average_alpha(&self, x: i32, y: i32, radius: i32) -> f32 {
+        let r = radius.max(0);
+        let r2 = r * r;
+        let mut sum: u64 = 0;
+        let mut count: u64 = 0;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if dx * dx + dy * dy > r2 {
+                    continue;
+                }
+                let px = x + dx;
+                let py = y + dy;
+                let tx = px.div_euclid(TILE_SIZE as i32);
+                let ty = py.div_euclid(TILE_SIZE as i32);
+                let ix = px.rem_euclid(TILE_SIZE as i32) as usize;
+                let iy = py.rem_euclid(TILE_SIZE as i32) as usize;
+                let a = self
+                    .tile(tx, ty)
+                    .map(|t| t[iy][ix][3] as u64)
+                    .unwrap_or(0);
+                sum += a;
+                count += 1;
+            }
+        }
+        if count == 0 {
+            return 0.0;
+        }
+        sum as f32 / (count as f32 * 32768.0)
+    }
+
     /// 已分配 tile 数。
     #[inline]
     pub fn tile_count(&self) -> usize {
@@ -645,6 +681,32 @@ mod tests {
 
     fn pixel(surface: &PigmentSurface, tx: i32, ty: i32) -> Option<[u16; 4]> {
         surface.tile(tx, ty).map(|t| t[0][0])
+    }
+
+    #[test]
+    fn average_alpha_samples_a_circular_neighbourhood() {
+        let mut s = PigmentSurface::new();
+        // 在 (10,10) 附近铺一块满 alpha，半径 5 的圆内大部分被覆盖
+        let t = s.tile_request_start(0, 0);
+        for y in 0..21 {
+            for x in 0..21 {
+                t[y][x] = [0, 0, 0, 1 << 15];
+            }
+        }
+        s.tile_request_end(0, 0);
+        assert!((s.average_alpha(10, 10, 5) - 1.0).abs() < 1e-6);
+        // 圆完全落在外面 → 0
+        assert_eq!(s.average_alpha(50, 50, 5), 0.0);
+        // 部分覆盖：把 (10,10) 右边一半清空
+        let t = s.tile_request_start(0, 0);
+        for y in 0..21 {
+            for x in 11..21 {
+                t[y][x] = [0; 4];
+            }
+        }
+        s.tile_request_end(0, 0);
+        let a = s.average_alpha(10, 10, 5);
+        assert!(a > 0.2 && a < 0.8, "半覆盖应落在中间（实得 {a}）");
     }
 
     #[test]

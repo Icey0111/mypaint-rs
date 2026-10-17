@@ -235,6 +235,14 @@ pub(crate) fn color_swatch(
     resp.on_hover_text(format!("{tip}\n{}", color::hex_from_hsv(hsv)))
 }
 
+/// 图层路径的简短显示（`[0, 1]` → `"0/1"`），用于状态栏。
+fn path_label(path: &[usize]) -> String {
+    path.iter()
+        .map(usize::to_string)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// 预览面板的可变状态（`gui/previewwindow.py` 的 `PreviewTool`）。
 ///
 /// 纹理缓存键 = `(合成版本, 有效外接框, mip 级)`；拖动状态记
@@ -246,6 +254,17 @@ pub(crate) struct PreviewState {
     pub(crate) key: Option<(u64, [i32; 4], u32)>,
     pub(crate) size: [u32; 2],
     pub(crate) drag: Option<([f32; 2], [f32; 2])>,
+}
+
+/// `ToggleSubwindows` 的可见性快照：第一次按隐藏，第二次按恢复
+/// （`gui/mode.py:40-57` 的按钮动作；源码没有对应的 GtkAction，这里补一条
+/// 可用的"隐藏/恢复全部子窗口"语义）。
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct SubwindowsSnapshot {
+    pub prefs: bool,
+    pub background: bool,
+    pub color_details: bool,
+    pub quick_choice: bool,
 }
 
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
@@ -275,6 +294,14 @@ pub struct PigmentApp {
     pub(crate) key_editor: crate::shell::accelmap::KeyEditorState,
     /// 偏好窗口 Buttons 页的按钮映射编辑器（`gui/buttonmap.py`）。
     pub(crate) button_editor: crate::shell::buttonmap_editor::ButtonEditorState,
+    /// 笔刷/颜色快速选择弹层（`gui/quickchoice.py`）。
+    pub(crate) quick_choice: Option<crate::shell::quickchoice::QuickChoiceState>,
+    /// 颜色历史弹层（`gui/historypopup.py`）。
+    pub(crate) color_history_popup: Option<crate::shell::quickchoice::HistoryPopupState>,
+    /// 颜色详情对话框（`dialogs.ask_for_color`）。
+    pub(crate) color_details: Option<crate::shell::quickchoice::ColorDetailsState>,
+    /// `ToggleSubwindows` 隐藏前的可见性快照（再按一次恢复）。
+    pub(crate) subwindows_saved: Option<SubwindowsSnapshot>,
     // ---- 偏好窗口（B6-3）----
     /// 偏好窗口的界面状态 —— `gui/preferenceswindow.py` 那个
     /// `windowing.Dialog`（当前页签 / 是否可见 / 状态文字）。
@@ -395,6 +422,8 @@ pub struct PigmentApp {
     /// （例如 `<Control>Button1` → `BrushResizeMode`）：按住的这段时间不喂给
     /// 绘画模式，避免"改笔刷尺寸的同时画一笔"。
     pub(crate) primary_action_active: bool,
+    /// 底栏上下文取色按钮的"下一次画布点击执行 PickContext"状态。
+    pub(crate) pick_context_pending: bool,
     /// 视图工具上一帧的指针位置（画布局部坐标，逐帧增量用）。
     pub(crate) view_drag_prev: Option<egui::Pos2>,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
@@ -748,6 +777,10 @@ impl PigmentApp {
             accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
             key_editor: Default::default(),
             button_editor: Default::default(),
+            quick_choice: None,
+            color_history_popup: None,
+            color_details: None,
+            subwindows_saved: None,
             prefs_window: Default::default(),
             background_window: Default::default(),
             layer_view_rename: None,
@@ -788,6 +821,7 @@ impl PigmentApp {
             popup_opened: 0.0,
             mapped_mode_button: None,
             primary_action_active: false,
+            pick_context_pending: false,
             view_drag_prev: None,
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
@@ -1709,6 +1743,155 @@ impl PigmentApp {
         self.set_status(format!("{label}: {usage}"), now);
     }
 
+    /// `PickContext` —— 拾取笔迹并恢复图层、笔刷与颜色
+    /// （`document.py:1088-1123`）。
+    ///
+    /// 图层判定照 `_layer_is_pickable`：自顶向下找第一个可见、未锁、
+    /// 半径 `PICKING_RADIUS=5` 内平均 alpha × 有效不透明度 ≥ `0.1` 的绘画层。
+    /// 源码的 `blink_layer`/`strokeblink_state` 是视觉闪烁，本项目只更新状态栏。
+    pub(crate) fn pick_context(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((fx, fy)) = self.pointer_model_pos(ctx) else {
+            self.set_status("Pick Context：指针不在画布上".to_string(), now);
+            return;
+        };
+        let (mx, my) = (fx.floor() as i32, fy.floor() as i32);
+        let Some(path) = self.pickable_layer_at(mx, my) else {
+            self.set_status("Pick Context：这里没有可拾取的图层".to_string(), now);
+            return;
+        };
+        let changed = path.as_slice() != self.doc.current_path();
+        self.doc.select_layer(&path);
+
+        // 取该层最近一笔覆盖该点的笔迹，恢复笔刷设置与颜色
+        let stroke = self
+            .doc
+            .layers()
+            .layer_at(&path)
+            .and_then(|l| l.surface())
+            .and_then(|s| {
+                s.strokes()
+                    .iter()
+                    .rev()
+                    .find(|st| st.touches_pixel(mx, my))
+                    .cloned()
+            });
+        if let Some(stroke) = stroke {
+            match pigment_engine::brushlib::parse_brush_json(&stroke.brush) {
+                Ok(brush) => {
+                    let h = brush.get(BrushSetting::ColorH).base_value;
+                    let s = brush.get(BrushSetting::ColorS).base_value;
+                    let v = brush.get(BrushSetting::ColorV).base_value;
+                    self.base_brush = brush;
+                    self.radius_override = None;
+                    self.eraser = false;
+                    self.paint_override = None;
+                    self.brush_name = "Picked Stroke".to_string();
+                    self.set_color_hsv([h, s, v]);
+                    self.derive_active();
+                    self.set_status(
+                        format!(
+                            "Pick Context：图层 {} / 笔迹笔刷已恢复{}",
+                            path_label(&path),
+                            if changed { "（切换了图层）" } else { "" }
+                        ),
+                        now,
+                    );
+                    return;
+                }
+                Err(e) => eprintln!("Pick Context：笔迹里的笔刷解析失败：{e}"),
+            }
+        }
+        self.set_status(
+            format!(
+                "Pick Context：选中图层 {}{}",
+                path_label(&path),
+                if changed { "" } else { "（未变）" }
+            ),
+            now,
+        );
+    }
+
+    /// `PickLayer` —— 只选图层，不恢复笔刷（`document.py:1125-1147`）。
+    pub(crate) fn pick_layer(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((fx, fy)) = self.pointer_model_pos(ctx) else {
+            self.set_status("Pick Layer：指针不在画布上".to_string(), now);
+            return;
+        };
+        let (mx, my) = (fx.floor() as i32, fy.floor() as i32);
+        let Some(path) = self.pickable_layer_at(mx, my) else {
+            self.set_status("Pick Layer：这里没有可拾取的图层".to_string(), now);
+            return;
+        };
+        self.doc.select_layer(&path);
+        self.set_status(format!("Pick Layer：{}", path_label(&path)), now);
+    }
+
+    /// 自顶向下找第一个可拾取的绘画层（`_layer_is_pickable`）。
+    fn pickable_layer_at(&self, x: i32, y: i32) -> Option<Vec<usize>> {
+        let layers = self.doc.layers();
+        for (path, layer) in layers.walk() {
+            let Some(surface) = layer.surface() else {
+                continue;
+            };
+            if !layers.branch_visible(&path) || layers.branch_locked(&path) {
+                continue;
+            }
+            let mut opacity = 1.0f32;
+            for depth in 1..=path.len() {
+                if let Some(l) = layers.layer_at(&path[..depth]) {
+                    opacity *= l.opacity;
+                }
+            }
+            let alpha = surface.average_alpha(x, y, 5);
+            if alpha * opacity >= 0.1 {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    /// `ToggleSubwindows`：隐藏全部应用子窗口；再按一次恢复。
+    ///
+    /// 源码没有对应的 GtkAction（`mode.py:50` 只在可绑定动作表里列了名字），
+    /// 这里实现为"偏好窗口 / 背景窗口 / 颜色详情 / 快速选择"的可见性开关。
+    pub(crate) fn toggle_subwindows(&mut self, now: f64) {
+        if let Some(saved) = self.subwindows_saved.take() {
+            self.prefs_window.open = saved.prefs;
+            self.background_window.open = saved.background;
+            if saved.color_details {
+                self.open_color_details();
+            }
+            if saved.quick_choice {
+                // 快速选择的具体页/位置不持久化；恢复成颜色选择（默认页）。
+                self.quick_choice = Some(crate::shell::quickchoice::QuickChoiceState {
+                    kind: crate::shell::quickchoice::QuickChoiceKind::Color,
+                    pos: self
+                        .canvas_rect
+                        .map(|r| r.center())
+                        .unwrap_or(egui::pos2(120.0, 120.0)),
+                    group: String::new(),
+                    opened: now,
+                });
+            }
+            self.set_status("子窗口已恢复".to_string(), now);
+            return;
+        }
+        self.subwindows_saved = Some(SubwindowsSnapshot {
+            prefs: self.prefs_window.open,
+            background: self.background_window.open,
+            color_details: self.color_details.is_some(),
+            quick_choice: self.quick_choice.is_some(),
+        });
+        self.prefs_window.open = false;
+        self.background_window.open = false;
+        self.color_details = None;
+        self.quick_choice = None;
+        self.color_history_popup = None;
+        self.key_editor.capture = None;
+        self.button_editor.capture = None;
+        self.set_status("子窗口已隐藏（再按一次恢复）".to_string(), now);
+    }
+
     /// 从偏好构造填充选项（`gui/fill.py:433-462` 的
     /// `FloodFillOptionsWidget`：7 个持久键 + 1 个一次性开关）。
     ///
@@ -2498,6 +2681,10 @@ fn layout_ink_buttons(
             // 尺寸/不透明度四个动作改的是**笔刷设置**（`document.py:1571-1590`），
             // 颜色六个动作改的是**绘画颜色**（`document.py:1592-1644`）。
             "Bigger" | "Smaller" | "MoreOpaque" | "LessOpaque" => true,
+            // 取色/弹层/子窗口（A.3 收尾）：都有处理器
+            "PickContext" | "PickLayer" | "ColorDetailsDialog" | "ColorHistoryPopup"
+            | "BrushChooserPopup" | "ColorChooserPopup" | "ColorChooserPopupFastSubset"
+            | "ToggleSubwindows" => true,
             "Brighter" | "Darker" | "IncreaseHue" | "DecreaseHue" | "Purer" | "Grayer" => true,
             "BlendModeNormal" | "BlendModeEraser" => true,
             // ---- 视图 ----
@@ -3035,6 +3222,40 @@ fn layout_ink_buttons(
                     self.color_page = crate::shell::color_panel::PAGE_PALETTE;
                 }
             }
+            // ---- 取色/弹层/子窗口（A.3 收尾）----
+            // `pick_context_cb` / `pick_layer_cb`（`drawwindow.py:846-868`）
+            "PickContext" => {
+                self.pick_context(ctx, now);
+                ctx.request_repaint();
+            }
+            "PickLayer" => {
+                self.pick_layer(ctx, now);
+                ctx.request_repaint();
+            }
+            // `quick_chooser_popup_cb`（`drawwindow.py:486-497`）
+            "BrushChooserPopup" => {
+                self.open_brush_chooser(ctx, now);
+                ctx.request_repaint();
+            }
+            "ColorChooserPopup" | "ColorChooserPopupFastSubset" => {
+                self.open_color_chooser(ctx, now);
+                ctx.request_repaint();
+            }
+            // `ColorHistoryPopup` 是 `StateGroup` 的 popup state：每次动作前进一格
+            "ColorHistoryPopup" => {
+                self.open_color_history(ctx, now);
+                ctx.request_repaint();
+            }
+            // `color_details_dialog_cb`（`drawwindow.py:499-508`）
+            "ColorDetailsDialog" => {
+                self.open_color_details();
+                ctx.request_repaint();
+            }
+            // `ToggleSubwindows`（`gui/mode.py:50` 的按钮动作）
+            "ToggleSubwindows" => {
+                self.toggle_subwindows(now);
+                ctx.request_repaint();
+            }
             // `PaletteNext` / `PalettePrev`（`drawwindow.py:659-675`）：
             // 取当前色 → `move_match_position(±1, 当前色)` → 有颜色就 `set_color`；
             // 最后 reveal 调色板工具（"Show the palette panel if hidden"）。
@@ -3344,6 +3565,9 @@ impl eframe::App for PigmentApp {
         // （`egui::Modal`），与文件弹层不会同时打开（捕获时 `handle_keys` 直接早退）。
         self.preferences_window(&ctx);
         self.background_window(&ctx);
+        self.quick_choice_popup(&ctx, now);
+        self.color_history_popup(&ctx);
+        self.color_details_dialog(&ctx);
         self.popup_menu(&ctx, now);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {

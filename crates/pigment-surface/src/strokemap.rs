@@ -103,6 +103,20 @@ impl StrokeShape {
         }
     }
 
+    /// 这个形状是否覆盖模型坐标 `(x, y)` 的像素
+    /// （`lib/strokemap.py` 的 `touches_pixel`）。
+    ///
+    /// 坐标按 tile 常量向下取整/取余，负数与源码的 `//`/`%` 一致。
+    pub fn touches_pixel(&self, x: i32, y: i32) -> bool {
+        let n = N as i32;
+        let (tx, ty) = (x.div_euclid(n), y.div_euclid(n));
+        let (px, py) = (x.rem_euclid(n) as usize, y.rem_euclid(n) as usize);
+        self.tiles
+            .get(&(tx, ty))
+            .map(|m| m[py * N + px] != 0)
+            .unwrap_or(false)
+    }
+
     /// 按像素平移整张形状（`StrokeShape.translate`，`lib/strokemap.py:212`）。
     ///
     /// 源码用 `calc_translation_slices` 把 tile 切成条带再拼到相邻 tile；这里
@@ -341,6 +355,24 @@ mod tests {
         let back = read_dat(&dat, 0, 0).unwrap();
         assert_eq!(back.len(), 1);
         assert!(back[0].tiles[&(0, 0)].iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn touches_pixel_handles_negative_coordinates() {
+        let mut shape = StrokeShape::default();
+        let mut mask = vec![0u8; N * N];
+        mask[5 * N + 7] = 1;
+        shape.tiles.insert((0, 0), mask.clone());
+        assert!(shape.touches_pixel(7, 5));
+        assert!(!shape.touches_pixel(8, 5));
+        // 负数坐标：-1 落在 tile (-1) 的像素 63，不在 (0,0)
+        assert!(!shape.touches_pixel(-1, 5));
+        shape.tiles.insert((-1, 0), {
+            let mut m = vec![0u8; N * N];
+            m[5 * N + 63] = 1;
+            m
+        });
+        assert!(shape.touches_pixel(-1, 5));
     }
 
     #[test]

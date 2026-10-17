@@ -922,6 +922,43 @@ impl Document {
     ///
     /// 返回 `[r, g, b]`（各分量 0..=1，sRGB）。坐标非有限值时返回 `None`；
     /// 除此之外永远有值（源码此处也有值与位置无关：黑底/棋盘格兜底）。
+    /// 按**屏幕像素间距**取色（`tdw.pick_color`，`tileddrawwidget.py:977-1050`）。
+    ///
+    /// 源码在 device 坐标系里取 3×3 方形，再按当前视图变换渲染；本实现把
+    /// 采样间距换成 `step = 1 / zoom` 个模型像素，取 3×3 个点求平均。
+    /// 旋转视图下严格来说应取旋转后的方格，这里按轴对齐近似（记账）。
+    pub fn pick_color_scaled(&self, x: f32, y: f32, step: f32) -> Option<[f32; 3]> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let step = if step.is_finite() && step > 0.0 {
+            step
+        } else {
+            1.0
+        };
+        let mut acc = [0f32; 3];
+        let mut n = 0f32;
+        for dy in [-step, 0.0, step] {
+            for dx in [-step, 0.0, step] {
+                let px = (x + dx).floor() as i32;
+                let py = (y + dy).floor() as i32;
+                let mut pixels = vec![0u8; 4];
+                // `with_alpha = false`：取"屏幕上看到的"合成分量
+                self.layers
+                    .render_rect_rgba8((px, py, 1, 1), false, &mut pixels);
+                acc[0] += pixels[0] as f32;
+                acc[1] += pixels[1] as f32;
+                acc[2] += pixels[2] as f32;
+                n += 1.0;
+            }
+        }
+        Some([
+            acc[0] / n / 255.0,
+            acc[1] / n / 255.0,
+            acc[2] / n / 255.0,
+        ])
+    }
+
     pub fn pick_color(&self, x: f32, y: f32) -> Option<[f32; 3]> {
         if !x.is_finite() || !y.is_finite() {
             return None;
@@ -1756,6 +1793,25 @@ mod tests {
 
     /// 取样源是**合成结果**（含背景、跳过隐藏层），不是当前层：
     /// `colorpicker.py:143-145` 用的就是"屏幕上看到的"那一路。
+    #[test]
+    fn pick_color_scaled_matches_the_pixel_square_at_zoom_one() {
+        let mut doc = Document::new();
+        fill_block(&mut doc, 0, 0, 1, 3, [204, 51, 51, 255]);
+        fill_block(&mut doc, 1, 0, 1, 3, [128, 128, 128, 255]);
+        fill_block(&mut doc, 2, 0, 1, 3, [51, 51, 204, 255]);
+        let a = doc.pick_color(1.0, 1.0).unwrap();
+        let b = doc.pick_color_scaled(1.0, 1.0, 1.0).unwrap();
+        for i in 0..3 {
+            assert!((a[i] - b[i]).abs() < 1.0 / 255.0, "通道 {i}: {a:?} vs {b:?}");
+        }
+        // 放大 4 倍：取样间距 0.25 模型像素 → 9 个样本都落在同一个源像素，
+        // 结果应等于该像素本身的颜色（(1,1) 是灰色那一列）。
+        let c = doc.pick_color_scaled(1.5, 1.5, 0.25).unwrap();
+        assert!((c[0] * 255.0 - 128.0).abs() <= 1.0);
+        assert!((c[1] * 255.0 - 128.0).abs() <= 1.0);
+        assert!((c[2] * 255.0 - 128.0).abs() <= 1.0);
+    }
+
     #[test]
     fn pick_color_samples_the_composite_including_the_background() {
         let mut doc = Document::new();

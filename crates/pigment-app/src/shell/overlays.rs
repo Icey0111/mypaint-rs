@@ -751,6 +751,90 @@ pub(crate) fn viewport_intersections(
         .collect()
 }
 
+/// 画笔刷光标 —— `gui/cursor.py:get_brush_cursor()` / `draw_brush_cursor()`。
+///
+/// 源码把光标渲染成一张 pixbuf 交给 `Gdk.Window.set_cursor()`；egui 没有
+/// 自绘系统光标，所以在画布上直接画内外两圈 + 动态十字线，并把系统光标
+/// 隐藏（`CursorIcon::None`）。几何照 `draw_brush_cursor`：
+/// - 外圈半径 `radius - width1/2`，线宽 `cursor.freehand.outer_line_width`；
+/// - 内圈半径 `radius - inset + width2/2`，线宽 `cursor.freehand.inner_line_width`；
+/// - `cursor.dynamic_crosshair` 开启且半径小于阈值时，从圆边向外画十字线，
+///   先黑 3px 再白 1px（源码同样的双描边）。
+///
+/// 记账：橡皮/锁 alpha/着色三种**缺口圆环样式**（`cursor_arc_segments`）
+/// 还没搬，统一画完整圆环；颜色/线宽/内缩/十字线参数已按源码读取。
+pub(crate) fn paint_brush_cursor(
+    painter: &egui::Painter,
+    clip: egui::Rect,
+    center: egui::Pos2,
+    radius: f32,
+    style: &OverlayStyle,
+    prefs: &Prefs,
+) {
+    if radius < 0.5 {
+        return;
+    }
+    let painter = painter.with_clip_rect(clip);
+    let outer = color32(
+        style.brush_outer_rgba[0],
+        style.brush_outer_rgba[1],
+        style.brush_outer_rgba[2],
+        style.brush_outer_rgba[3],
+    );
+    let inner = color32(
+        style.brush_inner_rgba[0],
+        style.brush_inner_rgba[1],
+        style.brush_inner_rgba[2],
+        style.brush_inner_rgba[3],
+    );
+    // 外圈（cairo 的 `r_outer = radius - width1/2`）
+    let r_outer = (radius - style.brush_outer_width / 2.0).max(0.5);
+    painter.circle_stroke(
+        center,
+        r_outer,
+        egui::Stroke::new(style.brush_outer_width.max(0.5), outer),
+    );
+    // 内圈（`r_inner = radius - inset + width2/2`）
+    let r_inner = (radius - style.brush_inset + style.brush_inner_width / 2.0).max(0.5);
+    painter.circle_stroke(
+        center,
+        r_inner,
+        egui::Stroke::new(style.brush_inner_width.max(0.5), inner),
+    );
+
+    // 动态十字线（`cursor_line_segments` 的普通样式）
+    if prefs.bool_or("cursor.dynamic_crosshair", false) {
+        let threshold = prefs.i64_or("cursor.dynamic_crosshair_threshold", 8) as f32;
+        if radius < threshold {
+            let offs = (threshold - radius).ceil();
+            let segs = [
+                (
+                    egui::vec2(-radius - offs, 0.0),
+                    egui::vec2(-radius, 0.0),
+                ),
+                (egui::vec2(radius, 0.0), egui::vec2(radius + offs, 0.0)),
+                (
+                    egui::vec2(0.0, -radius - offs),
+                    egui::vec2(0.0, -radius),
+                ),
+                (egui::vec2(0.0, radius), egui::vec2(0.0, radius + offs)),
+            ];
+            for (a, b) in segs {
+                painter.line_segment(
+                    [center + a, center + b],
+                    egui::Stroke::new(3.0, egui::Color32::BLACK),
+                );
+            }
+            for (a, b) in segs {
+                painter.line_segment(
+                    [center + a, center + b],
+                    egui::Stroke::new(1.0, egui::Color32::WHITE),
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
