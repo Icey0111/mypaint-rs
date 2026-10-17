@@ -73,9 +73,11 @@ pub const MYPAINT_VERSION: &str = "2.0.0";
 pub const ORA_JSON_SETTINGS_ZIP_PATH: &str = "data/mypaint-settings.json";
 /// `lib/layer/tree.py:564` 的 `size=256` 默认值。
 pub const THUMBNAIL_SIZE: u32 = 256;
-/// `mypaintlib.MAX_MIPMAP_LEVEL`（应用层 C++ 常量，本仓库克隆里没有定义；
-/// 取值不影响结果 —— 循环另受 `max(w,h) <= 256` 约束，8 足够覆盖任何画幅）。
-pub const MAX_MIPMAP_LEVEL: u32 = 8;
+/// `mypaintlib.MAX_MIPMAP_LEVEL`（`lib/tiledsurface.hpp` / `mypaint-config.h`
+/// 的 C 侧常量 = 4）。超过 4 级后不再减半，改由最后的
+/// `scale_proportionally(pixbuf, 256, 256)` 双线性缩到 256 以内
+/// （`tree.py:576-599`）。
+pub const MAX_MIPMAP_LEVEL: u32 = 4;
 
 /// EOTF 值，写进 `mypaint:eotf`（`str(lib.eotf.eotf())` = `"2.2"`）。
 pub const EOTF_ATTR_VALUE: &str = "2.2";
@@ -460,7 +462,26 @@ pub fn render_thumbnail(layers: &LayerStack, bbox: (i32, i32, i32, i32)) -> (Vec
         return (vec![0u8; 4], 1, 1);
     }
     let level = mipmap_level(w, h);
-    layers.render_thumbnail_rgba8((x, y, w, h), level)
+    let (px, w, h) = layers.render_thumbnail_rgba8((x, y, w, h), level);
+    scale_to_fit(px, w, h)
+}
+
+/// `helpers.scale_proportionally(pixbuf, 256, 256)`：`shrink_only`，双线性。
+/// 源条件 `not ((w == size) or (h == size))` 才缩；缩完取整并至少 1px。
+fn scale_to_fit(px: Vec<u8>, w: u32, h: u32) -> (Vec<u8>, u32, u32) {
+    let size = THUMBNAIL_SIZE;
+    if w == size || h == size {
+        return (px, w, h);
+    }
+    let scale = (size as f32 / w as f32).min(size as f32 / h as f32);
+    if scale >= 1.0 {
+        return (px, w, h);
+    }
+    let nw = ((w as f32 * scale) as u32).max(1);
+    let nh = ((h as f32 * scale) as u32).max(1);
+    let img = image::RgbaImage::from_raw(w, h, px).expect("缩略图像素长度应与尺寸匹配");
+    let out = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
+    (out.into_raw(), nw, nh)
 }
 
 /// 生成 256×256 上限的**单图层**缩略图（`layer.render_thumbnail(layer.get_bbox())`
@@ -478,7 +499,8 @@ pub fn render_layer_thumbnail(layer: &Layer, bbox: (i32, i32, i32, i32)) -> (Vec
     let w = w.max(TILE_SIZE as i32);
     let h = h.max(TILE_SIZE as i32);
     let level = mipmap_level(w, h);
-    layer.render_thumbnail_rgba8((x, y, w, h), level)
+    let (px, w, h) = layer.render_thumbnail_rgba8((x, y, w, h), level);
+    scale_to_fit(px, w, h)
 }
 
 /// `max(w, h) <= 256` 所需的 mipmap 层数（`render_layer_preview` 的 while 循环）。
@@ -1050,6 +1072,8 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
         &z,
         true,
         0,
+        0,
+        0,
         &mut background_found,
         &mut background_color,
         &mut background_image,
@@ -1096,12 +1120,17 @@ fn build_ora_layers(
     z: &ZipArchive,
     top_level: bool,
     depth: usize,
+    off_x: i32,
+    off_y: i32,
     background_found: &mut bool,
     background_color: &mut [u8; 3],
     background_image: &mut Option<BackgroundImage>,
 ) -> Result<Vec<OraLayerData>, FileError> {
     let mut out: Vec<OraLayerData> = Vec::new();
     for l in nodes {
+        // `group.py:113-114`：组把自身 x/y 累加后传给子层；数据层再加自己的 x/y。
+        let x = off_x + l.x;
+        let y = off_y + l.y;
         // 背景判定：只允许一个，且只看根 stack 的直接子元素
         if top_level {
             if let Some(bg_src) = &l.bg_tile {
@@ -1135,6 +1164,8 @@ fn build_ora_layers(
                 z,
                 false,
                 depth + 1,
+                x,
+                y,
                 background_found,
                 background_color,
                 background_image,
@@ -1176,11 +1207,11 @@ fn build_ora_layers(
             .map_err(|e| FileError::Malformed(format!("读图层数据 {src:?} 失败：{e}")))?;
         let (px, w, h) = pigment_surface::png::decode_rgba8_png(&png).map_err(FileError::Png)?;
         let mut surface = PigmentSurface::new();
-        surface.load_from_rgba8(&px, l.x, l.y, w, h);
+        surface.load_from_rgba8(&px, x, y, w, h);
         if let Some(name) = &l.strokemap {
             if let Ok(dat) = z.read(name) {
                 surface
-                    .load_strokemap_dat(&dat, l.x, l.y)
+                    .load_strokemap_dat(&dat, x, y)
                     .map_err(|e| FileError::Malformed(format!("strokemap {name:?}: {e}")))?;
             }
         }
@@ -1858,6 +1889,24 @@ fn test_layer_attrs(
         let st = LayerStack::new();
         let (_, w, h) = render_thumbnail(&st, (0, 0, 64, 64));
         assert_eq!((w, h), (64, 64), "只缩不放");
+    }
+
+    /// 源码 mipmap 上限是 4（`MAX_MIPMAP_LEVEL`），之后由
+    /// `scale_proportionally(256,256)` 收尾；8 级会得到更小的错误尺寸。
+    #[test]
+    fn mipmap_cap_is_four_then_scale_to_256() {
+        assert_eq!(mipmap_level(8000, 8000), 4);
+        assert_eq!(mipmap_level(3456, 3008), 4);
+        assert_eq!(mipmap_level(64, 64), 0);
+        // 源码条件 `not ((w == size) or (h == size))`：一边正好 256 时不缩
+        let px = vec![128u8; 512 * 256 * 4];
+        let (_, w, h) = scale_to_fit(px, 512, 256);
+        assert_eq!((w, h), (512, 256));
+        // 1024×512 两边都 >256 → 双线性缩到 256×128
+        let px = vec![128u8; 1024 * 512 * 4];
+        let (out, w, h) = scale_to_fit(px, 1024, 512);
+        assert_eq!((w, h), (256, 128));
+        assert_eq!(out.len(), 256 * 128 * 4);
     }
 
     /// 单图层缩略图的下限是**一个 tile**（`_validate_layer_bbox_arg` 的

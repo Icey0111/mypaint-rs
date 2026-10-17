@@ -455,8 +455,7 @@ impl Layer {
         debug_assert_eq!(dst.len(), TILE_CHANNELS);
         dst.fill(0);
         let mut pool: Vec<Vec<u16>> = Vec::new();
-        let mut has_alpha = true;
-        composite_layer(self, tx, ty, dst, &mut has_alpha, false, 0, &mut pool)
+        composite_layer(self, tx, ty, dst, true, false, 0, &mut pool)
     }
 
     /// **图层**缩略图（`lib/layer/core.py:922 render_thumbnail` →
@@ -479,10 +478,8 @@ impl Layer {
         let src = tile_source(|(tx, ty), buf| {
             // 本层自身的 visible 按 solo 规则忽略（`data.py:353-358`）
             scratch.fill(0);
-            let has_alpha = true;
-            let has_alpha = &mut { has_alpha };
             let content =
-                composite_layer(self, tx, ty, &mut scratch, has_alpha, false, 0, &mut pool);
+                composite_layer(self, tx, ty, &mut scratch, true, false, 0, &mut pool);
             buf.copy_from_slice(&scratch);
             content
         });
@@ -522,7 +519,7 @@ fn composite_layer(
     tx: i32,
     ty: i32,
     dst: &mut [u16],
-    has_alpha: &mut bool,
+    has_alpha: bool,
     respect_visible: bool,
     depth: usize,
     pool: &mut Vec<Vec<u16>>,
@@ -541,17 +538,16 @@ fn composite_layer(
                         mode,
                         tile.as_flattened().as_flattened(),
                         dst,
-                        *has_alpha,
+                        has_alpha,
                         layer.opacity,
                     );
-                    *has_alpha = true;
                     true
                 }
                 None => {
                     // 透明源规则（`tiledsurface.py:443-452`）：先跳过零处理，
                     // 其余（DestIn/DestAtop）用全零源照常合成。
                     if !mode.zero_alpha_has_effect() {
-                        if *has_alpha && mode.zero_alpha_clears_backdrop() {
+                        if has_alpha && mode.zero_alpha_clears_backdrop() {
                             dst.fill(0);
                         }
                         return false;
@@ -561,10 +557,9 @@ fn composite_layer(
                         mode,
                         zero.as_flattened().as_flattened(),
                         dst,
-                        *has_alpha,
+                        has_alpha,
                         layer.opacity,
                     );
-                    *has_alpha = true;
                     false
                 }
             }
@@ -582,19 +577,17 @@ fn composite_layer(
             // 借出本深度的缓冲（递归期间该槽位留空，更深的组用自己的槽）
             let mut sub = std::mem::take(&mut pool[depth]);
             sub.fill(0);
-            let mut sub_has_alpha = true;
             let sub_content = composite_layers(
                 &stack.layers,
                 tx,
                 ty,
                 &mut sub,
-                &mut sub_has_alpha,
+                true,
                 depth + 1,
                 pool,
             );
             // POP：用组自己的 mode/opacity 合到父背板
-            tile_combine(mode, &sub, dst, *has_alpha, layer.opacity);
-            *has_alpha = true;
+            tile_combine(mode, &sub, dst, has_alpha, layer.opacity);
             pool[depth] = sub;
             sub_content
         }
@@ -607,7 +600,7 @@ fn composite_layers(
     tx: i32,
     ty: i32,
     dst: &mut [u16],
-    has_alpha: &mut bool,
+    has_alpha: bool,
     depth: usize,
     pool: &mut Vec<Vec<u16>>,
 ) -> bool {
@@ -1362,6 +1355,25 @@ impl LayerStack {
         tile
     }
 
+    /// `get_render_is_opaque`（`tree.py:306-330`）：背景参与、且**任何可见层**
+    /// 都不是 alpha 递减模式（dst-in/out/atop）时，合成结果恒不透明。
+    pub fn render_is_opaque(&self) -> bool {
+        if !self.background_visible {
+            return false;
+        }
+        for (path, layer) in self.walk() {
+            if !self.branch_visible(&path) {
+                continue;
+            }
+            if let LayerMode::Standard(m) = layer.mode {
+                if m.can_decrease_alpha() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// 把 `(tx, ty)` 处的栈合成结果写入 `dst`（fix15 预乘，长度 = tile 通道数）。
     ///
     /// 返回 `true` 表示结果非空透明块：背景可见，或该坐标存在任一层的内容。
@@ -1386,14 +1398,15 @@ impl LayerStack {
     ) -> bool {
         debug_assert_eq!(dst.len(), TILE_CHANNELS);
 
-        // 初始 dst：背景可见 → 不透明背景 tile（dst_has_alpha=false）；
-        // 否则全透明（dst_has_alpha=true）。照 `_get_render_background`。
-        let mut dst_has_alpha = true;
+        // 初始 dst：背景可见且合成结果不透明 → 背景 tile 且 dst_has_alpha=false；
+        // 否则全透明。**整块 tile 的 dst_has_alpha 是常量**（源码
+        // `tree.py:461` 的 `get_render_is_opaque`），不能合成一层后就改成 true。
+        let opaque = include_background && self.render_is_opaque();
+        let dst_has_alpha = !opaque;
         let mut has_content = false;
         if include_background && self.background_visible {
             let bg = self.background_tile_at(tx, ty);
             dst.copy_from_slice(bg.as_flattened().as_flattened());
-            dst_has_alpha = false;
             has_content = true;
         } else {
             dst.fill(0);
@@ -1406,7 +1419,7 @@ impl LayerStack {
             tx,
             ty,
             dst,
-            &mut dst_has_alpha,
+            dst_has_alpha,
             0,
             &mut pool,
         );
@@ -2025,6 +2038,23 @@ mod tests {
 
     /// 图案背景按世界坐标平铺（`tiledsurface.Background` 的循环采样）。
     #[test]
+    fn render_is_opaque_matches_source_rule() {
+        let mut st = LayerStack::new();
+        assert!(st.render_is_opaque(), "背景可见且无递减模式 → 不透明");
+        let mut top = Layer::new();
+        top.set_mode(LayerMode::Standard(CombineMode::DestinationOut));
+        st.insert(0, top);
+        assert!(
+            !st.render_is_opaque(),
+            "任一可见 dst-out/in/atop → 允许透明（tree.py:326-330）"
+        );
+        st.layer_mut(0).visible = false;
+        assert!(st.render_is_opaque(), "隐藏的递减层不算");
+        st.set_background_visible(false);
+        assert!(!st.render_is_opaque(), "背景不参与 → 允许透明");
+    }
+
+    #[test]
     fn background_image_tiles_by_world_coordinates() {
         let mut st = LayerStack::new();
         // 2×2 四色图：红/绿/蓝/黄
@@ -2055,3 +2085,5 @@ mod tests {
         assert_eq!(st.background_color(), [10, 20, 30]);
     }
 }
+
+

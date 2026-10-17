@@ -449,6 +449,48 @@ fn paper_texture_is_tiled_across_world_coordinates() {
     }
 }
 
+/// 嵌套 `<stack x/y>` 偏移要累加（`group.py:113-114` + `data.py:157-158`）。
+#[test]
+fn nested_group_offsets_accumulate() {
+    let ora = tmp("nested-offset.ora");
+    let png = tmp("dot.png");
+    pigment_engine::surface::png::write_rgba8_png(
+        &png,
+        vec![0, 0, 255, 255],
+        1,
+        1,
+    )
+    .unwrap();
+    let png_bytes = std::fs::read(&png).unwrap();
+    let _ = std::fs::remove_file(&png);
+    let xml = r#"<?xml version='1.0' encoding='UTF-8'?>
+<image w="256" h="256" version="0.0.5">
+  <stack>
+    <stack x="64" y="64" name="G">
+      <layer x="64" y="64" src="data/dot.png" opacity="1.0" visibility="visible" />
+    </stack>
+  </stack>
+</image>"#;
+    {
+        let mut w = pigment_engine::zip::ZipWriter::create(&ora).unwrap();
+        w.add_stored("mimetype", b"image/openraster").unwrap();
+        w.add_stored("data/dot.png", &png_bytes).unwrap();
+        w.add_stored("stack.xml", xml.as_bytes()).unwrap();
+        w.finish().unwrap();
+    }
+    let mut doc = Document::new();
+    doc.load(&ora).unwrap();
+    // 组 64 + 层 64 = 128 → tile (2,2)
+    let layer = doc.layers().layer_at(&[0, 0]).expect("组内层");
+    let surface = layer.surface().expect("绘画层");
+    assert!(
+        surface.tile_entry(2, 2).is_some(),
+        "绝对位置应是 128,128；实际 tiles={:?}",
+        surface.tiles().map(|(c, _)| c).collect::<Vec<_>>()
+    );
+    let _ = std::fs::remove_file(&ora);
+}
+
 /// 画框启用时，ORA 画幅与图层坐标都相对**画框**（`document.py:1778` 传
 /// `get_user_bbox()`；`_save_rect_to_ora` 用 `frame_bbox` 求 x/y）。
 #[test]
