@@ -83,6 +83,27 @@ impl PigmentApp {
 
     /// 渲染并处理一条菜单条目。
     fn menu_item(&mut self, ui: &mut egui::Ui, id: &'static str) {
+        if id == "OpenRecent" {
+            self.open_recent_menu(ui);
+            return;
+        }
+        if id == "OpenLast" {
+            let info = crate::shell::menubar::item_info(id);
+            let available = !self.recent_files().is_empty();
+            let resp = crate::shell::menubar::item(
+                ui,
+                &info.label,
+                info.accel.as_deref(),
+                available,
+                self.toggle_state(id),
+            );
+            if available && resp.clicked() {
+                let now = ui.input(|i| i.time);
+                self.open_recent(0, now);
+                ui.close();
+            }
+            return;
+        }
         let info = crate::shell::menubar::item_info(id);
         let available = self.action_available(id);
         let resp = crate::shell::menubar::item(
@@ -105,6 +126,33 @@ impl PigmentApp {
             self.run_action(id, &ctx, now);
             ui.close();
         }
+    }
+
+    /// `File → Open Recent` 子菜单（`GtkRecentAction`，`filehandling.py:1497`）。
+    fn open_recent_menu(&mut self, ui: &mut egui::Ui) {
+        let label = crate::shell::menubar::item_info("OpenRecent").label;
+        ui.menu_button(label, |ui| {
+            let files = self.recent_files().to_vec();
+            if files.is_empty() {
+                ui.add_enabled(false, egui::Button::new("No Recent Files"));
+                return;
+            }
+            let mut pick = None;
+            for (i, p) in files.iter().enumerate() {
+                let name = std::path::Path::new(p)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(p);
+                if ui.button(name).on_hover_text(p).clicked() {
+                    pick = Some(i);
+                }
+            }
+            if let Some(i) = pick {
+                let now = ui.input(|i| i.time);
+                self.open_recent(i, now);
+                ui.close();
+            }
+        });
     }
 
     /// 工具条行 —— 左 toolbar1 / 右 toolbar2；整行右键弹片段设置菜单。

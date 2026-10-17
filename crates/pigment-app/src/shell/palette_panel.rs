@@ -653,6 +653,22 @@ impl PigmentApp {
     ///    （`adjbases.py:660-672`）—— 空槽给 `None`，`set_managed_color(None)`
     ///    是无操作（`:405-410`），所以点空槽什么都不改。
     pub(crate) fn color_palette_page(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui
+                .button("Load .gpl…")
+                .on_hover_text("导入 GIMP 调色板（palette.py:132-196）")
+                .clicked()
+            {
+                self.prompt_load_palette();
+            }
+            if ui
+                .button("Save .gpl…")
+                .on_hover_text("导出当前调色板（palette.py:198-222）")
+                .clicked()
+            {
+                self.prompt_save_palette();
+            }
+        });
         let bg = palette_bg_color(ui);
         // 本帧的快照：绘制/命中都读它，交互改完再统一落回模型
         let entries: Vec<Option<RgbColor>> = self.color_manager.palette().iter_colors().collect();

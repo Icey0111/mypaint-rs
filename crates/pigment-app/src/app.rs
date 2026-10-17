@@ -266,6 +266,8 @@ pub struct PigmentApp {
     /// 在 app 内的路径输入框（**技术栈适配**：GTK FileChooser 在 egui 里没有
     /// 对应物，改用内嵌的路径输入弹层；语义仍是"给个文件名再存/开"）。
     pub(crate) file_prompt: Option<FilePrompt>,
+    /// 最近打开/保存的文件（`Gtk.RecentManager` 的替代，持久化在偏好）。
+    pub(crate) recent_files: Vec<String>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -418,6 +420,10 @@ impl ModePrefs {
         ScratchpadOpen,
         /// `save_as_scratchpad_cb`（导出暂存页，`drawwindow.py:631-632`）
         ScratchpadSaveAs,
+        /// 调色板 `.gpl` 导入（`palette.py:132-196`）
+        PaletteOpen,
+        /// 调色板 `.gpl` 导出（`palette.py:198-222`）
+        PaletteSaveAs,
     }
 
     pub(crate) struct FilePrompt {
@@ -463,9 +469,18 @@ impl ModePrefs {
                 FileAction::ScratchpadOpen => "打开暂存页（Open Scratchpad…）",
                 // `save_scratchpad_as_dialog`（filehandling.py:1256-1266）
                 FileAction::ScratchpadSaveAs => "暂存页另存为（Export Scratchpad As…）",
+                FileAction::PaletteOpen => "导入调色板 .gpl",
+                FileAction::PaletteSaveAs => "导出调色板 .gpl",
             }
         }
     }
+
+/// 最近文件栈：新→旧、去重、最多 20 条（Gtk.RecentManager 的 `add_item` 语义）。
+fn push_recent(list: &mut Vec<String>, path: &str) {
+    list.retain(|p| p != path);
+    list.insert(0, path.to_string());
+    list.truncate(20);
+}
 
 /// 把文件名补成绝对路径（照 `os.path.abspath`，`filehandling.py:996`）。
 fn abspath(p: &str) -> std::path::PathBuf {
@@ -486,6 +501,7 @@ fn abspath(p: &str) -> std::path::PathBuf {
 fn action_extension(action: FileAction, doc_ext: &'static str) -> &'static str {
     match action {
         FileAction::Export => ".png",
+        FileAction::PaletteOpen | FileAction::PaletteSaveAs => ".gpl",
         _ => doc_ext,
     }
 }
@@ -587,6 +603,15 @@ impl PigmentApp {
             }
             crate::scratch::Scratchpad::new(dir)
         };
+        // 最近文件：MyPaint 用 Gtk.RecentManager（XDG），这里落到偏好数组
+        let recent_files: Vec<String> = prefs
+            .get_array("recent_files")
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut app = Self {
             doc: Document::new(),
             prefs,
@@ -618,6 +643,7 @@ impl PigmentApp {
             status: None,
             current_file: None,
             file_prompt: None,
+            recent_files,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -986,11 +1012,38 @@ impl PigmentApp {
                 if !export {
                     self.current_file = Some(path.to_path_buf());
                 }
+                self.record_recent(path);
                 let verb = if export { "已导出" } else { "已保存" };
                 self.set_status(format!("{verb}：{}", path.display()), now);
             }
             Err(e) => self.set_status(format!("保存失败：{e}"), now),
         }
+    }
+
+    /// 记一条最近文件（新→旧、去重、最多 20 条），写进偏好并落盘。
+    fn record_recent(&mut self, path: &std::path::Path) {
+        let s = path.display().to_string();
+        push_recent(&mut self.recent_files, &s);
+        self.prefs.set_str_array(
+            "recent_files",
+            self.recent_files.iter().map(|s| s.as_str()),
+        );
+        if let Err(e) = self.prefs.save() {
+            eprintln!("保存最近文件列表失败: {e}");
+        }
+    }
+
+    /// 最近文件列表（菜单用）。
+    pub(crate) fn recent_files(&self) -> &[String] {
+        &self.recent_files
+    }
+
+    /// 打开最近文件列表中的第 `idx` 条。
+    pub(crate) fn open_recent(&mut self, idx: usize, now: f64) {
+        let Some(path) = self.recent_files.get(idx).map(std::path::PathBuf::from) else {
+            return;
+        };
+        self.open_from_path(&path, now);
     }
 
     /// 打开文件（`gui/filehandling.py:890` 的 `open_file`）。
@@ -1004,6 +1057,7 @@ impl PigmentApp {
                 self.current_file = Some(path.to_path_buf());
                 self.force_resync = true;
                 self.view = View::default();
+                self.record_recent(path);
                 let msg = match outcome {
                     pigment_engine::LoadOutcome::Ora {
                         bbox,
@@ -1079,7 +1133,10 @@ impl PigmentApp {
             return;
         }
         let action = prompt.action;
-        let candidate = if matches!(action, FileAction::Open | FileAction::ScratchpadOpen) {
+        let candidate = if matches!(
+            action,
+            FileAction::Open | FileAction::ScratchpadOpen | FileAction::PaletteOpen
+        ) {
             raw.to_string()
         } else {
             with_default_extension(action, raw, prompt.ext)
@@ -1145,7 +1202,66 @@ impl PigmentApp {
                     Err(e) => self.set_status(format!("暂存页保存失败：{e}"), now),
                 }
             }
+            FileAction::PaletteOpen => {
+                if !path.is_file() {
+                    self.file_prompt = Some(FilePrompt {
+                        error: Some(format!("文件不存在：{}", path.display())),
+                        ..prompt
+                    });
+                    return;
+                }
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let mut palette = pigment_engine::color::Palette::new();
+                        match palette.load_str(&text) {
+                            Ok(()) => {
+                                let n = palette.len();
+                                *self.color_manager.palette_mut() = palette;
+                                self.set_status(
+                                    format!("已导入调色板 {}（{n} 色）", path.display()),
+                                    now,
+                                );
+                            }
+                            Err(e) => {
+                                self.set_status(format!("导入调色板失败：{e}"), now)
+                            }
+                        }
+                    }
+                    Err(e) => self.set_status(format!("读取调色板失败：{e}"), now),
+                }
+            }
+            FileAction::PaletteSaveAs => {
+                if let Some(dir) = path.parent() {
+                    if !dir.is_dir() {
+                        self.file_prompt = Some(FilePrompt {
+                            error: Some(format!("目录不存在：{}", dir.display())),
+                            ..prompt
+                        });
+                        return;
+                    }
+                }
+                let text = self.color_manager.palette().to_gimp_palette_string();
+                match std::fs::write(&path, text) {
+                    Ok(()) => self.set_status(
+                        format!("已导出调色板：{}", path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("导出调色板失败：{e}"), now),
+                }
+            }
         }
+    }
+
+    /// 打开调色板 `.gpl` 的文件弹层（PaletteEditorDialog 的 Load 按钮）。
+    pub(crate) fn prompt_load_palette(&mut self) {
+        let prompt = self.new_file_prompt(FileAction::PaletteOpen, None);
+        self.file_prompt = Some(prompt);
+    }
+
+    /// 导出调色板 `.gpl` 的文件弹层（PaletteEditorDialog 的 Save 按钮）。
+    pub(crate) fn prompt_save_palette(&mut self) {
+        let prompt = self.new_file_prompt(FileAction::PaletteSaveAs, None);
+        self.file_prompt = Some(prompt);
     }
 
     /// `Ctrl+S`：有当前文件就直接存，否则走另存为（照 `save_cb`，`:1230`）。
@@ -1184,6 +1300,8 @@ impl PigmentApp {
                 FileAction::SaveAs => "保存路径（.ora / .png；不带后缀时按 .ora 处理）：",
                 FileAction::ScratchpadOpen => "要打开到暂存区的文件路径（.ora / .png）：",
                 FileAction::ScratchpadSaveAs => "暂存页另存的路径（不带后缀时按 .ora 处理）：",
+                FileAction::PaletteOpen => "要导入的 GIMP 调色板路径（.gpl）：",
+                FileAction::PaletteSaveAs => "导出调色板的路径（不带后缀时按 .gpl 处理）：",
             });
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut prompt.path)
@@ -2608,5 +2726,19 @@ mod tests {
             Some("#003153")
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recent_files_dedupe_and_cap_at_twenty() {
+        let mut list = Vec::new();
+        push_recent(&mut list, "a.ora");
+        push_recent(&mut list, "b.ora");
+        push_recent(&mut list, "a.ora");
+        assert_eq!(list, vec!["a.ora".to_string(), "b.ora".to_string()]);
+        for i in 0..30 {
+            push_recent(&mut list, &format!("{i}.ora"));
+        }
+        assert_eq!(list.len(), 20);
+        assert_eq!(list[0], "29.ora");
     }
 }
