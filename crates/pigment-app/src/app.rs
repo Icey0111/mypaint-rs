@@ -221,6 +221,11 @@ pub struct PigmentApp {
     /// （`gui/colors/adjbases.py:432-830`），按下/拖动状态挂在控件自己身上；
     /// egui 立即模式没有控件对象，只能由应用持有。
     pub(crate) wheel_pages: crate::shell::wheel_pages::WheelPagesState,
+    /// HCY 页（B4-4c）的控件状态：两个 `ColorChanger` + 色域遮罩。
+    ///
+    /// 源码里遮罩挂在 `MaskableWheelMixin` 实例上（`hcywheel.py:70-71` 的
+    /// `__mask` 与 `mask_toggle`），egui 没有控件对象，只能由应用持有。
+    pub(crate) hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState,
     // ---- 工具条（S4）----
     /// 图标纹理缓存（`shell::toolbars::IconCache`）。
     pub(crate) icon_cache: crate::shell::toolbars::IconCache,
@@ -442,6 +447,7 @@ impl PigmentApp {
             // 默认打开分量滑条页（B4-3 先落地的那一页）
             color_page: crate::shell::color_panel::PAGE_COMPONENT_SLIDERS,
             wheel_pages: crate::shell::wheel_pages::WheelPagesState::new(),
+            hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
         };
         app.derive_active();
         app
@@ -1193,6 +1199,10 @@ impl PigmentApp {
             // 源码弹一个九种颜色器的菜单 —— 本项目只实现了其中一页，动作直接
             // reveal 该面板并记账（见 B4-3 交付说明）。
             "ComponentSlidersTool" | "ColorAdjusters" => true,
+            // 颜色器页签的动作（B4-4b / B4-4c）。源码里六个颜色器是六个独立的
+            // `GtkToggleAction`（`resources.xml:1392-1438`），各自 toggle 自己的
+            // 停靠窗口；本项目合成一个面板，所以每个动作都是"切到那一页"。
+            "HCYWheelTool" | "HSVWheelTool" | "HSVSquareTool" | "HSVCubeTool" => true,
             // ---- 调色板（B4-4a）----
             // 工具开关 + 三个动作（resources.xml:1034-1053 的 `PaletteNext` /
             // `PalettePrev` / `PaletteAddCurrentColor`，:1400-1406 的
@@ -1611,12 +1621,13 @@ impl PigmentApp {
                 self.color_page = crate::shell::color_panel::PAGE_PALETTE;
                 ctx.request_repaint();
             }
-            // `HSVWheelTool` / `HSVSquareTool` / `HSVCubeTool`
-            // （`resources.xml:1409-1431`）在源码里也是三个独立工具
-            // （`colortools.py:79-96`）。与 `PaletteTool` 同一处置：共用面板，
+            // `HCYWheelTool` / `HSVWheelTool` / `HSVSquareTool` / `HSVCubeTool`
+            // （`resources.xml:1392-1431`）在源码里也是四个独立工具
+            // （`colortools.py:74-96`）。与 `PaletteTool` 同一处置：共用面板，
             // 已停在该页就收起，否则 reveal 并切页。
-            "HSVWheelTool" | "HSVSquareTool" | "HSVCubeTool" => {
+            "HCYWheelTool" | "HSVWheelTool" | "HSVSquareTool" | "HSVCubeTool" => {
                 let page = match id {
+                    "HCYWheelTool" => crate::shell::color_panel::PAGE_HCY_WHEEL,
                     "HSVWheelTool" => crate::shell::color_panel::PAGE_HSV_WHEEL,
                     "HSVSquareTool" => crate::shell::color_panel::PAGE_HSV_SQUARE,
                     _ => crate::shell::color_panel::PAGE_HSV_CUBE,
@@ -1640,15 +1651,11 @@ impl PigmentApp {
             }
             // `ColorAdjusters`（resources.xml:198-204）在源码里是弹菜单的工厂动作
             // （`gui/colortools.py:207-235` 的 `ColorAdjustersToolItem`）。egui 的
-            // 菜单不能在动作回调里弹出，这里直接 reveal 已移植的页，
-            // 只剩 HCY 轮一页在面板内以禁用页签列出（B4-4c）。
+            // 菜单不能在动作回调里弹出，这里直接 reveal 已移植的页。
             "ColorAdjusters" => {
                 self.dock
                     .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
-                self.set_status(
-                    "颜色器：已移植 5 页，HCY Wheel 页留给 B4-4c".to_string(),
-                    now,
-                );
+                self.set_status("颜色器：六页全部已移植（B4-4c）".to_string(), now);
             }
             // ---- 窗口 ----
             "Fullscreen" => {

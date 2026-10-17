@@ -86,12 +86,37 @@
 //!
 //! ## 没移植的（B4-4b 记账）
 //!
-//! - **HCY 色轮**（`gui/colors/hcywheel.py`，含 mood/accent 三角）→ B4-4c；
-//!   本模块的几何层已经可复用（颜色层只要再补两个钩子）。
 //! - `adjbases.py:1169-1285` 的 Cairo 绘制、`:536-601` 的 DnD、
 //!   `:679-695` 的双击详情对话框：控件层，见 `shell/wheel_pages.rs` 的记账。
+//!
+//! B4-4c 追加（`color/hcywheel.rs`，HCY 轮 + 色域遮罩的模型层）：
+//!
+//! | 源码 | 这里 |
+//! |---|---|
+//! | `gui/colors/hcywheel.py:320-336` `HCYHueChromaWheelMixin` | [`hcy_wheel_polar_for_color`] / [`hcy_wheel_color_at_polar`] |
+//! | `gui/colors/hcywheel.py:180-244` 遮罩 void（凸包、尺寸） | [`mask_voids`] / [`colors_to_mask_void`] / [`visible_mask_voids`] / [`void_size`] |
+//! | `gui/colors/hcywheel.py:206-238` 遮罩取色裁剪 | [`masked_color_at_position`] |
+//! | `gui/colors/hcywheel.py:868-988` 五个 mood 预设 | [`mask_templates`] / [`template_mask`] / [`MaskTemplate`] |
+//! | `gui/colors/hcywheel.py:356-367` 轮上滚轮改明度 | [`hcy_wheel_scroll`] |
+//! | `gui/colors/hcywheel.py:43-67` / `:303-311` / `:390-396` 常量 | [`MIN_SHAPE_SIZE`] / [`MASK_DRAW_ALPHA`] 等 |
+//! | `lib/alg.py:25-186` 多边形算法子集 | [`convex_hull`] / [`poly_area`] / [`point_in_convex_poly`] / [`nearest_point_in_segment`] / [`pairwise`] |
+//! | `gui/colors/sliders.py:287-292` `HCYLumaSlider.samples` | [`hcy_luma_slider_samples`] |
+//!
+//! 控件层（盘面绘制、遮罩画灰、指针事件）在
+//! `crates/pigment-app/src/shell/hcy_wheel_page.rs`。
+//! **未移植**：遮罩编辑交互（`HCYMaskEditorWheel`，`hcywheel.py:370-822`）、
+//! `HCYMaskPropertiesDialog` / `HCYMaskTemplateDialog`（`:860-1265`）、
+//! 遮罩的偏好持久化与 GIMP 调色板 I/O —— 逐条见 `hcywheel.rs` 模块文档。
+//!
+//! ## 门槛（B4-4c）
+//!
+//! 同一份 `tests/fixtures/wheel_vectors.txt`，`hcy_*` 行由
+//! `tests/tools/gen-wheel-vectors.py` 从 `hcywheel.py` / `sliders.py` 抽方法体、
+//! **真 import** `lib/alg.py`（只依赖 `math`）生成；断言在
+//! `tests/wheel_vectors.rs` 的 HCY 部分。
 
 mod adjust;
+mod hcywheel;
 mod manager;
 mod model;
 mod palette;
@@ -103,6 +128,17 @@ pub use adjust::{
     BrushStep, ColorAction, BRUSH_OPAQUE_FACTOR, BRUSH_RADIUS_STEP,
     CONTEXT_RESTORES_COLOR_DEFAULT, HUE_STEP, LEVEL_CEIL, LEVEL_FLOOR, LEVEL_STEP, OPAQUE_MAX,
     OPAQUE_MIN, RADIUS_LOG_MAX, RADIUS_LOG_MIN,
+};
+pub use hcywheel::{
+    colors_to_mask_void, convex_hull, editor_luma_y, hcy_luma_slider_samples,
+    hcy_wheel_center_rgb, hcy_wheel_color_at_polar, hcy_wheel_color_at_position,
+    hcy_wheel_polar_for_color, hcy_wheel_position_for_color, hcy_wheel_scroll, hcy_wheel_slice_rgb,
+    mask_templates, mask_voids, masked_color_at_position, nearest_point_in_segment, pairwise,
+    point_in_convex_poly, poly_area, template_mask, visible_mask_voids, void_size, MaskShape,
+    MaskTemplate, Point, EDITOR_CTRLPOINT_GRAB_RADIUS, EDITOR_CTRLPOINT_RADIUS, EDITOR_MAX_LUMA,
+    EDITOR_MAX_NUM_SHAPES, EDITOR_MIN_LUMA, HCY_WHEEL_TOOLTIP, MASK_ACTIVE_LABEL,
+    MASK_ACTIVE_TOOLTIP, MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH, MASK_EDITOR_TOOLTIP,
+    MASK_MIN_VOID_POINTS, MIN_SHAPE_SIZE, PREFS_ACTIVE_KEY, PREFS_MASK_KEY,
 };
 pub use manager::{
     ColorManager, DEFAULT_HIST_HEX, HIST_LEN, PREFS_KEY_COLOR_HISTORY, PREFS_KEY_CONTEXT_RESTORES_COLOR,

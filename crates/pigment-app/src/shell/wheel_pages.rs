@@ -60,6 +60,7 @@
 use eframe::egui;
 use pigment_engine::color::{
     depth_slider_amount, depth_slider_color, depth_slider_scroll, distance_fade_stops,
+    hcy_wheel_center_rgb, hcy_wheel_position_for_color, hcy_wheel_slice_rgb,
     hsv_ring_color_at_position, hsv_ring_position_for_color, hsv_ring_slice_rgb,
     hsv_wheel_center_rgb, hsv_wheel_color_at_position, hsv_wheel_position_for_color,
     hsv_wheel_scroll, hsv_wheel_slice_rgb, hue_slice_hues, point_to_amount, slice_color_at_position,
@@ -413,7 +414,7 @@ pub(crate) fn drive_changer(
 
 /// 本帧的滚轮方向 —— 与分量滑条页共用同一套 GTK 方向映射
 /// （`color_panel::wheel_direction`，`adjbases.py:1069-1077`）。
-fn scroll_direction(ui: &egui::Ui) -> Option<ScrollDirection> {
+pub(crate) fn scroll_direction(ui: &egui::Ui) -> Option<ScrollDirection> {
     let delta = ui.input(|i| {
         i.events.iter().find_map(|e| match e {
             egui::Event::MouseWheel { delta, .. } => Some(*delta),
@@ -444,12 +445,43 @@ pub(crate) enum WheelStyle {
     Wheel,
     /// HSV 方块的外环：纯色相，中心挖洞（`hsvsquare.py:199-283`）。
     Ring,
+    /// HCY 轮（B4-4c）：结构与 [`WheelStyle::Wheel`] **完全相同**
+    /// （`hcywheel.py:339-342` 的 `HCYHueChromaWheel` 就是
+    /// `HueSaturationWheelAdjuster` 的子类，没有覆写 `render_background_cb`），
+    /// 只把三个颜色钩子换成 HCY 的：扇区色、盘心灰、纯色刻痕的位置
+    /// （`hcywheel.py:328-336`）。
+    Hcy,
 }
 
 fn style_slice_rgb(style: WheelStyle, managed: &Color, hue: f64) -> [f64; 3] {
     match style {
         WheelStyle::Wheel => hsv_wheel_slice_rgb(managed, hue),
         WheelStyle::Ring => hsv_ring_slice_rgb(managed, hue),
+        WheelStyle::Hcy => hcy_wheel_slice_rgb(managed, hue),
+    }
+}
+
+/// 盘心去饱和渐变的颜色 —— `adjbases.py:1173` 的
+/// `color_at_normalized_polar_pos(0, 0)` 套各自的钩子。
+fn style_center_rgb(style: WheelStyle, managed: &Color) -> [f64; 3] {
+    match style {
+        WheelStyle::Hcy => hcy_wheel_center_rgb(managed),
+        // 环不画这层渐变（`hsvsquare.py:199-283` 没有径向渐变），取哪个都行
+        WheelStyle::Wheel | WheelStyle::Ring => hsv_wheel_center_rgb(managed),
+    }
+}
+
+/// 盘边纯色小刻痕的位置 —— `adjbases.py:1261-1263` 的
+/// `self.get_pos_for_color(col)`，套各自的钩子。
+fn style_notch_position(
+    style: WheelStyle,
+    geom: &WheelGeometry,
+    color: &Color,
+    ranges: Option<&[pigment_engine::color::HueRange]>,
+) -> (f64, f64) {
+    match style {
+        WheelStyle::Hcy => hcy_wheel_position_for_color(geom, color, ranges),
+        WheelStyle::Wheel | WheelStyle::Ring => hsv_wheel_position_for_color(geom, color, ranges),
     }
 }
 
@@ -536,13 +568,13 @@ pub(crate) fn paint_wheel_disc(
     painter.add(egui::Shape::mesh(mesh));
 
     match style {
-        WheelStyle::Wheel => {
+        WheelStyle::Wheel | WheelStyle::Hcy => {
             // ---- 中心去饱和（:1233-1240）----
             paint_radial_fade(
                 &painter,
                 center,
                 radius,
-                hsv_wheel_center_rgb(managed),
+                style_center_rgb(style, managed),
             );
             // ---- 盘边高光（:1242-1246）----
             painter.circle_stroke(
@@ -564,11 +596,7 @@ pub(crate) fn paint_wheel_disc(
                     pigment_engine::color::RgbColor::new(1.0, 0.0, 1.0),
                 ];
                 for rgb in pure {
-                    let (x, y) = hsv_wheel_position_for_color(
-                        &geom,
-                        &Color::Rgb(rgb),
-                        ranges,
-                    );
+                    let (x, y) = style_notch_position(style, &geom, &Color::Rgb(rgb), ranges);
                     let p = rect.min + egui::vec2(x as f32, y as f32);
                     painter.circle_filled(
                         p,

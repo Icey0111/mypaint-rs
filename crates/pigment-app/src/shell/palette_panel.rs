@@ -1215,10 +1215,17 @@ mod tests {
             .filter(|p| p.ported)
             .map(|p| p.title)
             .collect();
-        // B4-4b 起 HSV 三页也接上了，只剩 HCY Wheel 一页禁用（B4-4c）
+        // B4-4c 起六页全部接上了
         assert_eq!(
             ported,
-            ["HSV Wheel", "Palette", "HSV Square", "HSV Cube", "Component Sliders"]
+            [
+                "HCY Wheel",
+                "HSV Wheel",
+                "Palette",
+                "HSV Square",
+                "HSV Cube",
+                "Component Sliders"
+            ]
         );
 
         // 三个调色板动作都在动作表里

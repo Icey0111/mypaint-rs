@@ -26,6 +26,7 @@
 pub(crate) mod actions;
 pub(crate) mod color_panel;
 pub(crate) mod dock;
+pub(crate) mod hcy_wheel_page;
 pub(crate) mod layers_panel;
 pub(crate) mod footer;
 pub(crate) mod menubar;

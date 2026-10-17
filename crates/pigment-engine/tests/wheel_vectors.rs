@@ -1,32 +1,40 @@
-//! 色轮 / 色方块 / 色立方的向量逐位门禁（B4-4b）。
+//! 色轮 / 色方块 / 色立方 / HCY 轮的向量逐位门禁（B4-4b / B4-4c）。
 //!
-//! fixture：`tests/fixtures/wheel_vectors.txt`（4381 条向量），由
-//! `tests/tools/gen-wheel-vectors.py` 生成：
+//! fixture：`tests/fixtures/wheel_vectors.txt`（6092 条向量，其中 `hcy_*`
+//! 1708 条），由 `tests/tools/gen-wheel-vectors.py` 生成：
 //!
 //! ```text
 //! python crates/pigment-engine/tests/tools/gen-wheel-vectors.py
 //! ```
 //!
-//! 脚本 `import` 的是**真** `lib/color.py` 与 `gui/colors/util.py`，并用 `ast`
-//! 把 `adjbases.py` / `hsvwheel.py` / `hsvsquare.py` / `hsvcube.py` 里纯数学的
+//! 脚本 `import` 的是**真** `lib/color.py`、`lib/alg.py` 与
+//! `gui/colors/util.py`，并用 `ast` 把 `adjbases.py` / `hsvwheel.py` /
+//! `hsvsquare.py` / `hsvcube.py` / `hcywheel.py` / `sliders.py` 里纯数学的
 //! 方法体抽出来 `exec` —— 执行的是源码那几行，不是照抄的公式（每个被抽方法的
 //! 行号在脚本运行时打印）。浮点一律 Python `repr()`（最短往返），所以这里
 //! **零容差**逐位比对（`to_bits()`）；只有 `+0.0`/`-0.0` 视为相等。
 //!
 //! 依赖 GTK 控件状态的部分（按下/抬起状态机、`queue_draw`、`get_allocation`
 //! 的真实分配）不在这份 fixture 里：控件的几何/命中在
-//! `crates/pigment-app/src/shell/wheel_pages.rs` 的测试里用源码行号手推期望值。
+//! `crates/pigment-app/src/shell/wheel_pages.rs` 与
+//! `.../hcy_wheel_page.rs` 的测试里用源码行号手推期望值。
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use pigment_engine::color::{
-    depth_slider_amount, depth_slider_color, distance_fade_stops, distort_hue,
+    colors_to_mask_void, convex_hull, depth_slider_amount, depth_slider_color,
+    distance_fade_stops, distort_hue, editor_luma_y, hcy_luma_slider_samples,
+    hcy_wheel_color_at_position, hcy_wheel_position_for_color, hcy_wheel_scroll,
     hsv_ring_color_at_position, hsv_wheel_color_at_position, hsv_wheel_position_for_color,
-    hsv_wheel_scroll, hue_from_angle, saturation_from_radius, slice_color_at_position,
-    slice_faces, slice_position_for_color, tumble_faces, undistort_hue, Color, HsvColor, HsvFace,
-    HueRange, ScrollDirection, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES, EDGE_HIGHLIGHT_RGBA,
-    EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, OUTLINE_RGBA, OUTLINE_WIDTH, PRIMARY_ADJUSTERS_MIN_HEIGHT,
+    hsv_wheel_scroll, hue_from_angle, mask_templates, mask_voids, masked_color_at_position,
+    nearest_point_in_segment, point_in_convex_poly, poly_area, saturation_from_radius,
+    slice_color_at_position, slice_faces, slice_position_for_color, template_mask, tumble_faces,
+    undistort_hue, visible_mask_voids, void_size, Color, HcyColor, HsvColor, HsvFace, HueRange,
+    MaskShape, Point, ScrollDirection, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES,
+    EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH,
+    MIN_SHAPE_SIZE, OUTLINE_RGBA, OUTLINE_WIDTH, PRIMARY_ADJUSTERS_MIN_HEIGHT,
     PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH,
     SLIDER_MIN_WIDTH,
 };
@@ -563,3 +571,493 @@ fn hue_range_is_a_pair_of_pairs() {
     let range: HueRange = ((0.0, 1.0), (0.0, 0.5));
     assert_eq!(range.0 .0, 0.0);
 }
+
+// ---------------------------------------------------------------------------
+// B4-4c：HCY 轮 + 色域遮罩（`hcy_*` 行）
+// ---------------------------------------------------------------------------
+
+/// 从字段切片里读 `n` 个点（每点两个浮点）。
+fn points_of(toks: &[&str], n: usize, ln: usize) -> Vec<Point> {
+    assert!(
+        toks.len() >= 2 * n,
+        "第 {ln} 行要 {n} 个点（{} 个浮点），只有 {} 个字段",
+        2 * n,
+        toks.len()
+    );
+    (0..n)
+        .map(|i| (f64_of(toks[2 * i], ln), f64_of(toks[2 * i + 1], ln)))
+        .collect()
+}
+
+/// `hcy_mask` 里的一段：`<颜色数> <h> <c> <y>…`（会前移游标）。
+fn shape_at(f: &[&str], cursor: &mut usize, ln: usize) -> MaskShape {
+    let n = f64_of(f[*cursor], ln) as usize;
+    *cursor += 1;
+    let mut shape = Vec::with_capacity(n);
+    for _ in 0..n {
+        shape.push(Color::Hcy(HcyColor::new(
+            f64_of(f[*cursor], ln),
+            f64_of(f[*cursor + 1], ln),
+            f64_of(f[*cursor + 2], ln),
+        )));
+        *cursor += 3;
+    }
+    shape
+}
+
+/// 一个遮罩用例（`hcy_mask` 行）。
+struct MaskCase {
+    wheel_type: WheelType,
+    width: f64,
+    height: f64,
+    mask: Vec<MaskShape>,
+}
+
+/// fixture 里所有 `hcy_mask` 行，按 tag 索引。
+fn mask_cases() -> BTreeMap<String, MaskCase> {
+    let mut out = BTreeMap::new();
+    for (ln, f) in rows("hcy_mask") {
+        let wheel_type = wheel_type_of(f[2], ln);
+        let n_shapes = f64_of(f[5], ln) as usize;
+        let mut cursor = 6;
+        let mut mask = Vec::with_capacity(n_shapes);
+        for _ in 0..n_shapes {
+            mask.push(shape_at(&f, &mut cursor, ln));
+        }
+        assert_eq!(cursor, f.len(), "第 {ln} 行有剩余字段没读：{f:?}");
+        out.insert(
+            f[1].to_string(),
+            MaskCase {
+                wheel_type,
+                width: f64_of(f[3], ln),
+                height: f64_of(f[4], ln),
+                mask,
+            },
+        );
+    }
+    assert!(!out.is_empty(), "fixture 里没有 hcy_mask 行");
+    out
+}
+
+/// 常量（`hcywheel.py:43-44`、`:67`、`:79-90`、`:303-311`、`:344-347`、`:390-396`）。
+#[test]
+fn hcy_constants_match_source() {
+    let mut seen = BTreeSet::new();
+    for (ln, f) in rows("hcy_const") {
+        let name = f[1];
+        seen.insert(name.to_string());
+        let text = f[2];
+        let num = || f64_of(text, ln);
+        match name {
+            "MIN_SHAPE_SIZE" => assert_bits(num(), MIN_SHAPE_SIZE, "hcywheel.py:67"),
+            "MIN_LUMA" => assert_bits(
+                num(),
+                pigment_engine::color::EDITOR_MIN_LUMA,
+                "hcywheel.py:391",
+            ),
+            "MAX_LUMA" => assert_bits(
+                num(),
+                pigment_engine::color::EDITOR_MAX_LUMA,
+                "hcywheel.py:390",
+            ),
+            "CTRLPOINT_RADIUS" => assert_bits(
+                num(),
+                pigment_engine::color::EDITOR_CTRLPOINT_RADIUS,
+                "hcywheel.py:394",
+            ),
+            "CTRLPOINT_GRAB_RADIUS" => assert_bits(
+                num(),
+                pigment_engine::color::EDITOR_CTRLPOINT_GRAB_RADIUS,
+                "hcywheel.py:395",
+            ),
+            "MAX_NUM_SHAPES" => assert_eq!(
+                num() as usize,
+                pigment_engine::color::EDITOR_MAX_NUM_SHAPES,
+                "hcywheel.py:396"
+            ),
+            "MASK_EDGE_LINE_WIDTH" => {
+                assert_bits(num(), MASK_EDGE_LINE_WIDTH, "hcywheel.py:303")
+            }
+            "MASK_DRAW_ALPHA" => assert_bits(num(), MASK_DRAW_ALPHA, "hcywheel.py:311"),
+            "PREFS_MASK_KEY" => {
+                assert_eq!(text, pigment_engine::color::PREFS_MASK_KEY, ":43");
+            }
+            "PREFS_ACTIVE_KEY" => {
+                assert_eq!(text, pigment_engine::color::PREFS_ACTIVE_KEY, ":44");
+            }
+            "WHEEL_TOOLTIP" => {
+                assert_eq!(text, pigment_engine::color::HCY_WHEEL_TOOLTIP, ":344-347");
+            }
+            "MASK_ACTIVE_LABEL" => {
+                assert_eq!(text, pigment_engine::color::MASK_ACTIVE_LABEL, ":79-90");
+            }
+            "MASK_ACTIVE_TOOLTIP" => {
+                assert_eq!(text, pigment_engine::color::MASK_ACTIVE_TOOLTIP, ":85-88");
+            }
+            "EDITOR_TOOLTIP" => {
+                assert_eq!(text, pigment_engine::color::MASK_EDITOR_TOOLTIP, ":400-405");
+            }
+            other => panic!("第 {ln} 行有未断言的常量 {other:?}"),
+        }
+    }
+    assert_eq!(seen.len(), 14, "常量表少了几条：{seen:?}");
+}
+
+/// 五个 mood 预设的名字/说明/形状数/每个点的 (h, c, y) ——
+/// `hcywheel.py:868-988`。
+#[test]
+fn hcy_mask_templates_match_source() {
+    let templates = mask_templates();
+    let mut seen_names = BTreeSet::new();
+    for (ln, f) in rows("hcy_template") {
+        let idx = f64_of(f[1], ln) as usize;
+        let tpl = &templates[idx];
+        assert_eq!(tpl.name, f[2], "第 {ln} 行模板名");
+        assert_eq!(tpl.description, f[3], "第 {ln} 行说明");
+        assert_eq!(tpl.shapes.len(), f64_of(f[4], ln) as usize, "第 {ln} 行形状数");
+        seen_names.insert(tpl.name);
+    }
+    assert_eq!(seen_names.len(), 5, "fixture 应有五个预设");
+
+    let mut n = 0;
+    for (ln, f) in rows("hcy_template_point") {
+        let idx = f64_of(f[1], ln) as usize;
+        let si = f64_of(f[2], ln) as usize;
+        let pi = f64_of(f[3], ln) as usize;
+        let point = templates[idx].shapes[si][pi];
+        assert_bits(point[0], f64_of(f[4], ln), &format!("第 {ln} 行 h"));
+        assert_bits(point[1], f64_of(f[5], ln), &format!("第 {ln} 行 c"));
+        assert_bits(point[2], f64_of(f[6], ln), &format!("第 {ln} 行 y"));
+        n += 1;
+    }
+    assert_eq!(n, 38, "五个预设一共 38 个点");
+
+    // 模板 → 遮罩：色相过逆畸变（`:1013`），彩度/明度原样
+    for (ty, ranges) in [
+        (WheelType::Rgb, None),
+        (WheelType::Rygb, WheelType::Rygb.ranges()),
+        (WheelType::Ryb, WheelType::Ryb.ranges()),
+    ] {
+        for tpl in &templates {
+            let mask = template_mask(tpl, ranges);
+            assert_eq!(mask.len(), tpl.shapes.len(), "{ty:?} 的形状数");
+            for (shape, floats) in mask.iter().zip(tpl.shapes.iter()) {
+                assert_eq!(shape.len(), floats.len());
+                for (col, [h, c, y]) in shape.iter().zip(floats.iter()) {
+                    let Color::Hcy(col) = col else {
+                        panic!("模板颜色应是 HCYColor")
+                    };
+                    assert_bits(col.h, undistort_hue(*h, ranges), "模板色相");
+                    assert_bits(col.c, *c, "模板彩度");
+                    assert_bits(col.y, *y, "模板明度");
+                }
+            }
+        }
+    }
+}
+
+/// 凸包 —— `lib/alg.py:25-69`（真 import）。
+#[test]
+fn hcy_convex_hull_matches_source() {
+    let mut n = 0;
+    for (ln, f) in rows("hcy_hull") {
+        let n_in = f64_of(f[1], ln) as usize;
+        let input = points_of(&f[2..], n_in, ln);
+        let out_at = 2 + 2 * n_in;
+        let n_out = f64_of(f[out_at], ln) as usize;
+        let expected = points_of(&f[out_at + 1..], n_out, ln);
+        let actual = convex_hull(&input);
+        assert_eq!(actual.len(), expected.len(), "第 {ln} 行凸包点数");
+        for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
+            assert_bits(a.0, e.0, &format!("第 {ln} 行凸包第 {i} 点 x"));
+            assert_bits(a.1, e.1, &format!("第 {ln} 行凸包第 {i} 点 y"));
+        }
+        n += 1;
+    }
+    assert!(n >= 15, "凸包向量太少：{n}");
+}
+
+/// 点在凸多边形内（含边界）—— `lib/alg.py:127-159`。
+#[test]
+fn hcy_point_in_poly_matches_source() {
+    let mut n = 0;
+    for (ln, f) in rows("hcy_pip") {
+        let np = f64_of(f[1], ln) as usize;
+        let poly = points_of(&f[2..], np, ln);
+        let x = f64_of(f[2 + 2 * np], ln);
+        let y = f64_of(f[3 + 2 * np], ln);
+        let expect = bool_of(f[4 + 2 * np], ln);
+        assert_eq!(
+            point_in_convex_poly((x, y), &poly),
+            expect,
+            "第 {ln} 行点 ({x}, {y})"
+        );
+        n += 1;
+    }
+    assert!(n >= 60, "命中向量太少：{n}");
+}
+
+/// 线段垂足（不含端点）—— `lib/alg.py:162-186`。
+#[test]
+fn hcy_nearest_point_in_segment_matches_source() {
+    for (ln, f) in rows("hcy_nps") {
+        let a = (f64_of(f[1], ln), f64_of(f[2], ln));
+        let b = (f64_of(f[3], ln), f64_of(f[4], ln));
+        let p = (f64_of(f[5], ln), f64_of(f[6], ln));
+        let has = bool_of(f[7], ln);
+        match nearest_point_in_segment(a, b, p) {
+            None => assert!(!has, "第 {ln} 行源码给出了垂足"),
+            Some(got) => {
+                assert!(has, "第 {ln} 行源码返回 None");
+                assert_bits(got.0, f64_of(f[8], ln), &format!("第 {ln} 行垂足 x"));
+                assert_bits(got.1, f64_of(f[9], ln), &format!("第 {ln} 行垂足 y"));
+            }
+        }
+    }
+}
+
+/// 面积与"尺寸" —— `lib/alg.py:84-95` + `hcywheel.py:240-244`。
+#[test]
+fn hcy_poly_area_and_void_size_match_source() {
+    for (ln, f) in rows("hcy_area") {
+        let np = f64_of(f[1], ln) as usize;
+        let poly = points_of(&f[2..], np, ln);
+        assert_bits(
+            poly_area(&poly),
+            f64_of(f[2 + 2 * np], ln),
+            &format!("第 {ln} 行面积"),
+        );
+    }
+    for (ln, f) in rows("hcy_void_size") {
+        let np = f64_of(f[1], ln) as usize;
+        let poly = points_of(&f[2..], np, ln);
+        assert_bits(
+            void_size(&poly),
+            f64_of(f[2 + 2 * np], ln),
+            &format!("第 {ln} 行尺寸"),
+        );
+    }
+}
+
+/// 取色：位置 → HCY（含逆畸变）—— `adjbases.py:1148-1167` +
+/// `hcywheel.py:332-336`。
+#[test]
+fn hcy_wheel_colors_match_source() {
+    let mut n = 0;
+    let mut types = BTreeSet::new();
+    for (ln, f) in rows("hcy_color") {
+        let wheel_type = wheel_type_of(f[1], ln);
+        types.insert(wheel_type.name());
+        let geom = WheelGeometry::for_size(f64_of(f[2], ln), f64_of(f[3], ln), 2.0);
+        let x = f64_of(f[4], ln);
+        let y = f64_of(f[5], ln);
+        let managed = Color::Hcy(HcyColor::new(
+            f64_of(f[6], ln),
+            f64_of(f[7], ln),
+            f64_of(f[8], ln),
+        ));
+        let expected = HcyColor::new(f64_of(f[9], ln), f64_of(f[10], ln), f64_of(f[11], ln));
+        let actual = hcy_wheel_color_at_position(&geom, x, y, &managed, wheel_type.ranges())
+            .unwrap_or_else(|| panic!("第 {ln} 行：几何应可用"));
+        assert_bits(actual.h, expected.h, &format!("第 {ln} 行 h"));
+        assert_bits(actual.c, expected.c, &format!("第 {ln} 行 c"));
+        assert_bits(actual.y, expected.y, &format!("第 {ln} 行 y"));
+        n += 1;
+    }
+    assert_eq!(types.len(), 2, "rgb 与 rygb 两种轮都要覆盖");
+    assert!(n >= 700, "HCY 取色向量太少：{n}");
+}
+
+/// 标记位置：颜色 → 像素 —— `adjbases.py:1301-1315` 套 HCY 钩子。
+#[test]
+fn hcy_wheel_marker_positions_match_source() {
+    let mut n = 0;
+    for (ln, f) in rows("hcy_pos") {
+        let wheel_type = wheel_type_of(f[1], ln);
+        let geom = WheelGeometry::for_size(f64_of(f[2], ln), f64_of(f[3], ln), 2.0);
+        let color = Color::Hcy(HcyColor::new(
+            f64_of(f[4], ln),
+            f64_of(f[5], ln),
+            f64_of(f[6], ln),
+        ));
+        let (x, y) = hcy_wheel_position_for_color(&geom, &color, wheel_type.ranges());
+        assert_bits(x, f64_of(f[7], ln), &format!("第 {ln} 行标记 x"));
+        assert_bits(y, f64_of(f[8], ln), &format!("第 {ln} 行标记 y"));
+        n += 1;
+    }
+    assert!(n >= 40, "HCY 标记向量太少：{n}");
+}
+
+/// 轮上滚轮只改 HCY 明度 —— `hcywheel.py:356-367`。
+#[test]
+fn hcy_wheel_scroll_matches_source() {
+    for (ln, f) in rows("hcy_scroll") {
+        let y0 = f64_of(f[1], ln);
+        let direction = match f[2] {
+            "UP" => ScrollDirection::Up,
+            "DOWN" => ScrollDirection::Down,
+            "LEFT" => ScrollDirection::Left,
+            "RIGHT" => ScrollDirection::Right,
+            "SMOOTH" => ScrollDirection::Smooth,
+            other => panic!("第 {ln} 行未知方向 {other:?}"),
+        };
+        let changed = bool_of(f[3], ln);
+        let y1 = f64_of(f[4], ln);
+        let managed = Color::Hcy(HcyColor::new(0.3, 0.4, y0));
+        match hcy_wheel_scroll(&managed, direction) {
+            None => assert!(!changed, "第 {ln} 行：源码的 if 不成立时不应落色"),
+            Some(Color::Hcy(col)) => {
+                assert!(changed, "第 {ln} 行：应落色");
+                assert_bits(col.y, y1, &format!("第 {ln} 行明度"));
+                assert_bits(col.h, 0.3, "色相不该动");
+                assert_bits(col.c, 0.4, "彩度不该动");
+            }
+            Some(other) => panic!("第 {ln} 行应回写 HCYColor，实得 {}", other.class_name()),
+        }
+    }
+}
+
+/// 编辑器轮子的明度夹取 —— `hcywheel.py:811-822`。
+///
+/// 两条来源不同的行：`hcy_luma` 是 `get_managed_color()`（读出来的颜色被夹），
+/// `hcy_luma_set` 是 `set_managed_color()`（写进去的颜色被夹）。两者共用同一
+/// 个 `clamp(col.y, __MIN_LUMA, __MAX_LUMA)`。
+#[test]
+fn hcy_editor_luma_matches_source() {
+    for kind in ["hcy_luma", "hcy_luma_set"] {
+        let mut n = 0;
+        for (ln, f) in rows(kind) {
+            assert_bits(
+                editor_luma_y(f64_of(f[1], ln)),
+                f64_of(f[2], ln),
+                &format!("第 {ln} 行 {kind}"),
+            );
+            n += 1;
+        }
+        assert_eq!(n, 9, "{kind} 应有 9 条");
+    }
+}
+
+/// 明度滑条的采样段数 —— `sliders.py:287-292`。
+#[test]
+fn hcy_luma_slider_samples_match_source() {
+    let mut n = 0;
+    for (ln, f) in rows("hcy_samples") {
+        let got = hcy_luma_slider_samples(
+            f64_of(f[1], ln),
+            f64_of(f[2], ln),
+            bool_of(f[3], ln),
+            f64_of(f[4], ln),
+        );
+        assert_eq!(got, f64_of(f[5], ln) as i64, "第 {ln} 行段数");
+        n += 1;
+    }
+    assert_eq!(n, 21);
+}
+
+/// 遮罩 void = 各颜色位置的凸包（`hcywheel.py:180-204`）。
+#[test]
+fn hcy_mask_voids_match_source() {
+    let cases = mask_cases();
+    let mut n = 0;
+    for (ln, f) in rows("hcy_mask_voids") {
+        let case = cases
+            .get(f[1])
+            .unwrap_or_else(|| panic!("第 {ln} 行引用了不存在的 case {}", f[1]));
+        let geom = WheelGeometry::for_size(case.width, case.height, 2.0);
+        let got = mask_voids(&case.mask, &geom, case.wheel_type.ranges());
+        let n_voids = f64_of(f[2], ln) as usize;
+        assert_eq!(got.len(), n_voids, "第 {ln} 行 void 数");
+        let mut cursor = 3;
+        for (vi, void) in got.iter().enumerate() {
+            let np = f64_of(f[cursor], ln) as usize;
+            cursor += 1;
+            let expected = points_of(&f[cursor..], np, ln);
+            cursor += 2 * np;
+            assert_eq!(void.len(), np, "第 {ln} 行第 {vi} 个 void 点数");
+            for (i, (a, e)) in void.iter().zip(expected.iter()).enumerate() {
+                assert_bits(a.0, e.0, &format!("第 {ln} 行 void {vi} 点 {i} x"));
+                assert_bits(a.1, e.1, &format!("第 {ln} 行 void {vi} 点 {i} y"));
+            }
+        }
+        assert_eq!(cursor, f.len(), "第 {ln} 行有剩余字段没读");
+        n += 1;
+    }
+    assert_eq!(n, 14);
+}
+
+/// 遮罩绘制时的两层过滤（点数 < 3、尺寸 < `radius * MIN_SHAPE_SIZE`）——
+/// `hcywheel.py:288-295`。ground truth 来自**真源码** `draw_mask()` 里
+/// 实际 `move_to/line_to` 的点（脚本用记录式 cairo 替身接住）。
+#[test]
+fn hcy_mask_draw_filter_matches_source() {
+    let cases = mask_cases();
+    let mut saw_empty = false;
+    for (ln, f) in rows("hcy_mask_draw") {
+        let case = cases
+            .get(f[1])
+            .unwrap_or_else(|| panic!("第 {ln} 行引用了不存在的 case {}", f[1]));
+        let geom = WheelGeometry::for_size(case.width, case.height, 2.0);
+        let got = visible_mask_voids(&case.mask, &geom, case.wheel_type.ranges(), geom.radius);
+        let n_drawn = f64_of(f[2], ln) as usize;
+        assert_eq!(got.len(), n_drawn, "第 {ln} 行画出的 void 数");
+        if n_drawn == 0 {
+            saw_empty = true;
+        }
+        let mut cursor = 3;
+        for (vi, void) in got.iter().enumerate() {
+            let np = f64_of(f[cursor], ln) as usize;
+            cursor += 1;
+            let expected = points_of(&f[cursor..], np, ln);
+            cursor += 2 * np;
+            for (i, (a, e)) in void.iter().zip(expected.iter()).enumerate() {
+                assert_bits(a.0, e.0, &format!("第 {ln} 行 void {vi} 点 {i} x"));
+                assert_bits(a.1, e.1, &format!("第 {ln} 行 void {vi} 点 {i} y"));
+            }
+        }
+        assert_eq!(cursor, f.len(), "第 {ln} 行有剩余字段没读");
+    }
+    assert!(saw_empty, "fixture 里应有被尺寸过滤掉的用例");
+}
+
+/// 遮罩取色裁剪 —— `hcywheel.py:206-238`。
+#[test]
+fn hcy_masked_sampling_matches_source() {
+    let cases = mask_cases();
+    let mut n = 0;
+    for (ln, f) in rows("hcy_masked") {
+        let case = cases
+            .get(f[1])
+            .unwrap_or_else(|| panic!("第 {ln} 行引用了不存在的 case {}", f[1]));
+        let geom = WheelGeometry::for_size(case.width, case.height, 2.0);
+        let x = f64_of(f[2], ln);
+        let y = f64_of(f[3], ln);
+        // 脚本里 managed 固定是 HCYColor(0, 0, 0.5)
+        let managed = Color::Hcy(HcyColor::new(0.0, 0.0, 0.5));
+        let got = masked_color_at_position(&case.mask, &geom, x, y, &managed, case.wheel_type.ranges())
+            .unwrap_or_else(|| panic!("第 {ln} 行：几何应可用"));
+        assert_bits(got.h, f64_of(f[4], ln), &format!("第 {ln} 行 h"));
+        assert_bits(got.c, f64_of(f[5], ln), &format!("第 {ln} 行 c"));
+        assert_bits(got.y, f64_of(f[6], ln), &format!("第 {ln} 行 y"));
+        n += 1;
+    }
+    assert!(n >= 300, "遮罩取色向量太少：{n}");
+}
+
+/// `colors_to_mask_void` 与 `mask_voids` 的组合等于"逐形状的凸包"，
+/// 且点数 < 3 的形状不参与（`hcywheel.py:186` / `:200`）。
+#[test]
+fn hcy_mask_void_helpers_agree() {
+    let cases = mask_cases();
+    let (tag, case) = cases.iter().next().expect("至少一个用例");
+    let geom = WheelGeometry::for_size(case.width, case.height, 2.0);
+    let voids = mask_voids(&case.mask, &geom, case.wheel_type.ranges());
+    let expected: Vec<Vec<Point>> = case
+        .mask
+        .iter()
+        .filter(|s| s.len() >= 3)
+        .map(|s| colors_to_mask_void(s, &geom, case.wheel_type.ranges()))
+        .collect();
+    assert_eq!(voids, expected, "{tag}");
+}
+

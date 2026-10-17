@@ -155,7 +155,7 @@ pub(crate) static COLOR_PAGES: [ColorPageDef; 6] = [
         title: "HCY Wheel",
         description: "Set the color using cylindrical hue/chroma/luma space. \
                       The circular slices are equiluminant.",
-        ported: false,
+        ported: true,
     },
     // gui/colors/hsvwheel.py:82-91
     ColorPageDef {
@@ -743,6 +743,9 @@ pub(crate) const PAGE_COMPONENT_SLIDERS: usize = 5;
 /// 调色板页在 [`COLOR_PAGES`] 里的下标（`paletteview.py:74-83`）。
 pub(crate) const PAGE_PALETTE: usize = 2;
 
+/// HCY 轮页在 [`COLOR_PAGES`] 里的下标（`hcywheel.py:1307-1322`）。
+pub(crate) const PAGE_HCY_WHEEL: usize = 0;
+
 /// HSV 轮页在 [`COLOR_PAGES`] 里的下标（`hsvwheel.py:82-91`）。
 pub(crate) const PAGE_HSV_WHEEL: usize = 1;
 
@@ -765,6 +768,8 @@ impl PigmentApp {
         ui.separator();
         // ---- 页面体 ----
         match self.color_page {
+            // HCY 轮页（B4-4c）：页面自己有一行遮罩控件 + `Gtk.Table` 的 padding
+            PAGE_HCY_WHEEL => self.color_hcy_wheel_page(ui),
             // 调色板页（B4-4a）：`get_page_widget()` 返回的就是 PaletteView 自己，
             // 页面没有额外留白（`paletteview.py:84-88`）
             PAGE_PALETTE => self.color_palette_page(ui),
@@ -1065,8 +1070,15 @@ mod tests {
             .collect();
         assert_eq!(
             ported,
-            ["HSV Wheel", "Palette", "HSV Square", "HSV Cube", "Component Sliders"],
-            "B4-4b 起只剩 HCY Wheel 一页禁用（B4-4c）"
+            [
+                "HCY Wheel",
+                "HSV Wheel",
+                "Palette",
+                "HSV Square",
+                "HSV Cube",
+                "Component Sliders"
+            ],
+            "B4-4c 起六页全部可用"
         );
         // 每个页面都有描述（页签 tooltip 的第二行）
         assert!(COLOR_PAGES.iter().all(|p| !p.description.is_empty()));
@@ -1122,10 +1134,12 @@ mod tests {
         assert!(!crate::shell::toolbars::icon_png_exists("mypaint-tool-hsvsquare"));
     }
 
-    /// 页签下标常量与 `COLOR_PAGES` 一一对应（B4-4b 接三页时最易错的地方）。
+    /// 页签下标常量与 `COLOR_PAGES` 一一对应（B4-4b 接三页、B4-4c 接 HCY 时
+    /// 最易错的地方）。
     #[test]
     fn page_indices_match_color_pages() {
         for (index, expect) in [
+            (PAGE_HCY_WHEEL, "HCY Wheel"),
             (PAGE_HSV_WHEEL, "HSV Wheel"),
             (PAGE_PALETTE, "Palette"),
             (PAGE_HSV_SQUARE, "HSV Square"),
@@ -1135,7 +1149,17 @@ mod tests {
             assert_eq!(COLOR_PAGES[index].title, expect);
             assert!(COLOR_PAGES[index].ported, "{expect} 应可用");
         }
-        assert!(!COLOR_PAGES[0].ported, "HCY Wheel 留给 B4-4c");
+        // 六个下标互不相同且覆盖 0..6
+        let mut idx = [
+            PAGE_HCY_WHEEL,
+            PAGE_HSV_WHEEL,
+            PAGE_PALETTE,
+            PAGE_HSV_SQUARE,
+            PAGE_HSV_CUBE,
+            PAGE_COMPONENT_SLIDERS,
+        ];
+        idx.sort_unstable();
+        assert_eq!(idx, [0, 1, 2, 3, 4, 5]);
     }
 
     /// 面板 id 的注册与元数据 —— `sliders.py:107-120` + `resources.xml:1433-1438`。
