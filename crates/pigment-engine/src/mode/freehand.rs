@@ -519,6 +519,7 @@ impl FreehandMode {
             ev.viewzoom.unwrap_or(1.0),
             ev.viewrotation.unwrap_or(0.0),
             ev.barrel_rotation.unwrap_or(0.0),
+            true,
         );
     }
 }
@@ -530,6 +531,10 @@ impl InteractionMode for FreehandMode {
 
     fn usage(&self) -> &str {
         "Paint free-form brush strokes"
+    }
+
+    fn action_name(&self) -> Option<&'static str> {
+        Some("FreehandMode")
     }
 
     fn pointer_behavior(&self) -> super::Behavior {

@@ -23,6 +23,7 @@
 //!   由 GUI 每帧调用一次（等价于 idle 优先级回调）。
 
 pub mod freehand;
+pub mod line;
 
 use crate::hokusai::BrushState;
 use crate::command::Brushwork;
@@ -264,6 +265,13 @@ pub trait InteractionMode {
     fn scroll_behavior(&self) -> Behavior {
         Behavior::NONE
     }
+    /// 关联的动作名（`resources.xml` 里的 id；`get_action()` 的来源）。
+    ///
+    /// GUI 用它取图标/tooltip，并据此把动作映射到模式类。
+    fn action_name(&self) -> Option<&'static str> {
+        None
+    }
+
     /// 是否有一段作画正在录制（guis mode 的实时更新要跳过它）。
     fn is_painting(&self) -> bool {
         false
@@ -433,9 +441,11 @@ impl BrushworkState {
         viewzoom: f32,
         viewrotation: f32,
         barrel_rotation: f32,
+        auto_split: bool,
     ) {
-        // 到点了就切段（`mode.py:841-845`）
-        if self.active.as_ref().map(|c| c.split_due).unwrap_or(false) {
+        // 到点了就切段（`mode.py:841-845`；`auto_split=False` 时不切，
+        // 直线/椭圆模式靠它在一段里画出整条几何图形）
+        if auto_split && self.active.as_ref().map(|c| c.split_due).unwrap_or(false) {
             let desc = self.active.as_ref().and_then(|c| c.description.clone());
             self.commit(ctx, false);
             self.active = None;

@@ -774,6 +774,33 @@ impl PigmentApp {
         self.with_mode(|modes, ctx| modes.checkpoint(ctx));
     }
 
+    /// 切换当前工具模式（`gui/document.py` 的 `mode_flip_action_activated_cb`
+    /// 与 Edit→Current Mode 那组无线电动作）。
+    ///
+    /// 记账：源码用 `context_push`（叠在兼容模式之上）或 `pop`，本移植直接
+    /// `reset` —— 我们还没有需要"叠在下面"的临时视图模式（平移/缩放仍由 GUI
+    /// 直接处理），reset 的观感一致。
+    pub(crate) fn switch_mode(&mut self, action: &str, now: f64) {
+        use pigment_engine::mode::freehand::FreehandMode;
+        use pigment_engine::mode::line::{LineKind, LineMode};
+        let new_mode: Box<dyn pigment_engine::mode::InteractionMode> = match action {
+            "FreehandMode" => Box::new(FreehandMode::new()),
+            "StraightMode" => Box::new(LineMode::new(LineKind::Straight)),
+            "SequenceMode" => Box::new(LineMode::new(LineKind::Sequence)),
+            "EllipseMode" => Box::new(LineMode::new(LineKind::Ellipse)),
+            _ => return,
+        };
+        let label = new_mode.name().to_string();
+        let usage = new_mode.usage().to_string();
+        self.with_mode(|modes, ctx| modes.reset(Some(new_mode), ctx));
+        self.set_status(format!("{label}: {usage}"), now);
+    }
+
+    /// 当前模式的图标名（`mode.get_icon_name()`：取关联动作的 icon-name）。
+    pub(crate) fn mode_icon_name(&self) -> Option<&'static str> {
+        crate::shell::actions::by_id(self.modes.top().action_name()?).and_then(|a| a.icon_name)
+    }
+
     /// 构造模式上下文（等价 Python 里模式通过 `self.doc` 拿到的一切）。
     ///
     /// 字段级拆分借用：`doc` 可变、笔刷只读、笔刷状态可变，三者互不重叠。
@@ -1027,6 +1054,11 @@ impl PigmentApp {
                 }
             }
             "ShowBackgroundToggle" | "BackgroundWindow" => true,
+            // ---- 工具模式（B3：无线电动作 + 它们的 Flip 快捷键版本）----
+            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" => true,
+            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode" => {
+                true
+            }
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -1168,6 +1200,18 @@ impl PigmentApp {
             "ShowBackgroundToggle" => {
                 let v = !self.doc.layers().background_visible();
                 self.doc.layers_mut().set_background_visible(v);
+                ctx.request_repaint();
+            }
+            // ---- 工具模式切换（B3-1/B3-2）----
+            // `mode_flip_action_activated_cb` / 无线电动作都落到"把模式压栈"上；
+            // 本移植直接重置模式栈（不保留之前的临时视图模式）。
+            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" => {
+                self.switch_mode(id, now);
+                ctx.request_repaint();
+            }
+            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode" => {
+                let base = id.trim_start_matches("Flip");
+                self.switch_mode(base, now);
                 ctx.request_repaint();
             }
             "BackgroundWindow" => {

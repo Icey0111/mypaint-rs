@@ -305,13 +305,29 @@ impl PigmentApp {
     /// 自由笔模式对应 `resources.xml:1634` 的 `FreehandMode` 动作，
     /// 其 `icon-name` 是 `mypaint-brush-symbolic`。tooltip 模板是
     /// `<b>{name}</b>\n{description}`。
-    fn footer_mode_icon(&self, ui: &mut egui::Ui, row_h: f32) {
+    fn footer_mode_icon(&mut self, ui: &mut egui::Ui, row_h: f32) {
         let (rect, resp) = ui.allocate_exact_size(
             egui::vec2(FOOTER_ICON_SIZE + 6.0, row_h),
             egui::Sense::hover(),
         );
+        // B3：图标跟着**当前模式**走（mode.get_icon_name() 取关联动作的
+        // icon-name，drawwindow.py:793），取不到时退回自由笔的图标。
         let fg = ui.visuals().text_color();
-        draw_symbolic_icon(ui.painter(), rect, SymbolicIcon::Brush, fg);
+        let ctx = ui.ctx().clone();
+        let tex = self
+            .mode_icon_name()
+            .and_then(|name| crate::shell::toolbars::icon_texture(&ctx, &mut self.icon_cache, name));
+        match tex {
+            Some(tex) => {
+                ui.painter().image(
+                    tex.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    fg,
+                );
+            }
+            None => draw_symbolic_icon(ui.painter(), rect, SymbolicIcon::Brush, fg),
+        }
         resp.on_hover_text(mode_icon_tooltip());
     }
 
@@ -342,7 +358,11 @@ impl PigmentApp {
 
         // B3-1 起状态栏第一段用**当前模式**的 usage（`mode.get_usage()`，
         // 与 `_update_status_bar_mode_widgets` 同源），不再写死文案。
-        let mut text = format!("{}  —  {}", self.modes.top().name(), mode_status_text());
+        let usage = match self.modes.top().usage() {
+            "" => mode_status_text(),
+            u => u.to_string(),
+        };
+        let mut text = format!("{}  —  {usage}", self.modes.top().name());
         if let Some(msg) = &transient {
             text.push_str("  ·  ");
             text.push_str(msg);
