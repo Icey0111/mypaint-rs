@@ -883,7 +883,38 @@ impl PigmentApp {
         // 指针时间戳：用应用启动以来的毫秒（没有 GTK 事件时间可用）
         let now_ms = ui.input(|i| i.time) * 1000.0;
         let mods = self.pointer_modifiers(ui.ctx());
-        if !modal && !space_down {
+
+        // ---- 视图操纵工具（`gui/viewmanip.py` 的三个 Oneshot）----
+        // 源码是压栈模式，拖拽结束后 pop 回原工具；这里用一次性 view_tool 状态。
+        let view_gesture = self.view_tool.is_some();
+        if view_gesture {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                self.view_drag_prev = response.interact_pointer_pos().map(|p| egui::pos2(p.x - rect.min.x, p.y - rect.min.y));
+            }
+            if response.dragged_by(egui::PointerButton::Primary) {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let local = egui::pos2(pos.x - rect.min.x, pos.y - rect.min.y);
+                    if let Some(prev) = self.view_drag_prev {
+                        let c = egui::vec2(rect.width() * 0.5, rect.height() * 0.5);
+                        if let Some(tool) = self.view_tool {
+                            PigmentApp::apply_view_drag(&mut self.view, tool, prev, local, c);
+                        }
+                    }
+                    self.view_drag_prev = Some(local);
+                }
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary)
+                || response.clicked_by(egui::PointerButton::Primary)
+            {
+                self.view_tool = None;
+                self.view_drag_prev = None;
+                let top = self.modes.top();
+                let text = format!("{}: {}", top.name(), top.usage());
+                self.set_status(text, now_ms / 1000.0);
+            }
+        }
+
+        if !modal && !space_down && !view_gesture {
             // 本帧是否已经按"拖拽"语义喂过事件（见下面的 click 分支）
             let mut dispatched_drag = false;
             if response.drag_started_by(egui::PointerButton::Primary) {
@@ -1036,3 +1067,4 @@ impl PigmentApp {
         }
     }
 }
+

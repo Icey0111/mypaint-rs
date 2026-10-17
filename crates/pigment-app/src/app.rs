@@ -102,6 +102,14 @@ pub(crate) struct BrushKeySlot {
     pub(crate) name: String,
 }
 
+/// 视图操纵工具（`gui/viewmanip.py` 的 Pan/Zoom/Rotate 三个 Oneshot 模式）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum ViewTool {
+    Pan,
+    Zoom,
+    Rotate,
+}
+
 /// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
 fn seed_brushkeys(panel: &BrushPanel) -> [Option<BrushKeySlot>; NUM_BRUSHKEYS] {
     let seed = panel.library.brushkey_seed();
@@ -287,6 +295,10 @@ pub struct PigmentApp {
     /// `FreehandConfig` 并广播给两条模式栈。
     pub(crate) mode_prefs: ModePrefs,
     pub(crate) view: View,
+    /// 正在拖拽的视图工具（`gui/viewmanip.py` 的三个 Oneshot 模式）。
+    pub(crate) view_tool: Option<ViewTool>,
+    /// 视图工具上一帧的指针位置（画布局部坐标，逐帧增量用）。
+    pub(crate) view_drag_prev: Option<egui::Pos2>,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
     ///
     /// 键盘缩放要有"围绕哪里缩放"的锚点，而 `handle_keys` 在画布绘制**之前**
@@ -669,6 +681,8 @@ impl PigmentApp {
             pending_pointer_time: 0.0,
             mode_prefs,
             view: View::default(),
+            view_tool: None,
+            view_drag_prev: None,
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
             force_resync: false,
@@ -1496,8 +1510,55 @@ impl PigmentApp {
         };
         let label = new_mode.name().to_string();
         let usage = new_mode.usage().to_string();
+        // 选绘画模式即取消未完成的视图手势（源码里是模式栈 pop/替换）
+        self.view_tool = None;
+        self.view_drag_prev = None;
         self.with_mode(|modes, ctx| modes.reset(Some(new_mode), ctx));
         self.set_status(format!("{label}: {usage}"), now);
+    }
+
+    /// 进入视图操纵工具（`viewmanip.py` 的三个 Oneshot 模式；画布拖拽结束后
+    /// 自动回到原绘画工具）。源码是压栈模式，这里用一次性手势状态实现，
+    /// 因为画布平移/缩放/旋转本来就在 `shell/workspace.rs` 里直接改 `View`。
+    pub(crate) fn start_view_tool(&mut self, tool: ViewTool, now: f64) {
+        self.view_tool = Some(tool);
+        self.view_drag_prev = None;
+        let (name, usage) = match tool {
+            ViewTool::Pan => ("Scroll View", "Drag the canvas view"),
+            ViewTool::Zoom => ("Zoom View", "Zoom the canvas view"),
+            ViewTool::Rotate => ("Rotate View", "Rotate the canvas view"),
+        };
+        self.set_status(format!("{name}: {usage}"), now);
+    }
+
+    /// 视图操纵的一次拖拽增量（`viewmanip.py` 的三个 `drag_update_cb`）。
+    pub(crate) fn apply_view_drag(
+        view: &mut View,
+        tool: ViewTool,
+        prev: egui::Pos2,
+        cur: egui::Pos2,
+        center: egui::Vec2,
+    ) {
+        let d = cur - prev;
+        match tool {
+            ViewTool::Pan => view.pan(d.x, d.y),
+            ViewTool::Zoom => {
+                view.pan(-d.x, -d.y);
+                view.zoom_at(cur.x, cur.y, (d.y / 100.0).exp());
+            }
+            ViewTool::Rotate => {
+                let a1 = (prev.y - center.y).atan2(prev.x - center.x);
+                let a2 = (cur.y - center.y).atan2(cur.x - center.x);
+                let mut step = a2 - a1;
+                while step > std::f32::consts::PI {
+                    step -= std::f32::consts::TAU;
+                }
+                while step < -std::f32::consts::PI {
+                    step += std::f32::consts::TAU;
+                }
+                view.rotate_at(step, center.x, center.y);
+            }
+        }
     }
 
     /// 切到取色模式（`ColorPickMode` 与 `H`/`C`/`Y` 三个变体）。
@@ -1529,6 +1590,9 @@ impl PigmentApp {
         };
         let label = new_mode.name().to_string();
         let usage = new_mode.usage().to_string();
+        // 取色也取消未完成的视图手势
+        self.view_tool = None;
+        self.view_drag_prev = None;
         // `context_push`：保留下面的绘画模式，取完色/松开 `r` 后 pop 回来
         // （`document.py:2201`）。
         self.with_mode(|modes, ctx| modes.context_push(new_mode, ctx));
@@ -1912,6 +1976,9 @@ impl PigmentApp {
             "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
             | "FloodFillMode" | "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC"
             | "ColorPickModeY" => self.modes.top().action_name() == Some(id),
+            "PanViewMode" => self.view_tool == Some(ViewTool::Pan),
+            "ZoomViewMode" => self.view_tool == Some(ViewTool::Zoom),
+            "RotateViewMode" => self.view_tool == Some(ViewTool::Rotate),
             "Fullscreen" => self.fullscreen,
             // 面板开关（toggle_dockpanel_cb 的动作 active 状态 = 已添加）
             "ToggleModeOptionsTool" => {
@@ -2034,6 +2101,9 @@ impl PigmentApp {
             | "FloodFillMode" => true,
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
             | "FlipEllipseMode" | "FlipFloodFillMode" => true,
+            // 视图操纵（`gui/viewmanip.py` 的三个单选 + 三个 Flip）
+            "PanViewMode" | "ZoomViewMode" | "RotateViewMode" => true,
+            "FlipPanViewMode" | "FlipZoomViewMode" | "FlipRotateViewMode" => true,
             // Inking 的节点编辑动作（`document.py:2318-2328`）只在 ADJUST 阶段可用
             "SimplifyNodes" | "CullNodes" => self.modes.top().ink_editing(),
             // ---- 取色（B3-4：`gui/colorpicker.py` 的四个单选动作 + 四个 Flip）----
@@ -2378,6 +2448,19 @@ impl PigmentApp {
             | "FlipEllipseMode" | "FlipFloodFillMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
+                ctx.request_repaint();
+            }
+            // 视图操纵（`viewmanip.py`）；Flip 与单选用同一套手势
+            "PanViewMode" | "FlipPanViewMode" => {
+                self.start_view_tool(ViewTool::Pan, now);
+                ctx.request_repaint();
+            }
+            "ZoomViewMode" | "FlipZoomViewMode" => {
+                self.start_view_tool(ViewTool::Zoom, now);
+                ctx.request_repaint();
+            }
+            "RotateViewMode" | "FlipRotateViewMode" => {
+                self.start_view_tool(ViewTool::Rotate, now);
                 ctx.request_repaint();
             }
             // Inking 节点编辑（`simplify_nodes_cb` / `cull_nodes_cb`）
@@ -2912,5 +2995,42 @@ mod tests {
         }
         assert_eq!(list.len(), 20);
         assert_eq!(list[0], "29.ora");
+    }
+
+    #[test]
+    fn view_tool_drag_matches_viewmanip_math() {
+        // Pan：画布跟手（tdw.scroll(-dx,-dy)）
+        let mut v = View::default();
+        PigmentApp::apply_view_drag(
+            &mut v,
+            ViewTool::Pan,
+            egui::pos2(10.0, 10.0),
+            egui::pos2(30.0, 25.0),
+            egui::vec2(100.0, 100.0),
+        );
+        assert_eq!(v.offset, [20.0, 15.0]);
+
+        // Zoom：以指针为锚，factor = exp(dy/100)
+        let mut v = View::default();
+        let anchor = egui::pos2(40.0, 30.0);
+        PigmentApp::apply_view_drag(
+            &mut v,
+            ViewTool::Zoom,
+            egui::pos2(40.0, 20.0),
+            anchor,
+            egui::vec2(100.0, 100.0),
+        );
+        assert!((v.zoom - 0.1f32.exp()).abs() < 1e-5, "zoom={}", v.zoom);
+
+        // Rotate：绕视图中心，从右到下的 90°
+        let mut v = View::default();
+        PigmentApp::apply_view_drag(
+            &mut v,
+            ViewTool::Rotate,
+            egui::pos2(200.0, 100.0),
+            egui::pos2(100.0, 200.0),
+            egui::vec2(100.0, 100.0),
+        );
+        assert!((v.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
     }
 }
