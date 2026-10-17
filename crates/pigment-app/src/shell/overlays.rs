@@ -820,6 +820,7 @@ mod tests {
         let view = View {
             zoom: 2.0,
             offset: [10.0, 20.0],
+            ..View::default()
         };
         let frame = frame_display_rect(canvas, &view, (0, 0, 100, 50));
         assert_eq!(frame.min, egui::pos2(110.0, 70.0));

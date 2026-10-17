@@ -90,6 +90,8 @@ pub(crate) fn prepare_canvas(
     let view_phys = View {
         zoom: view.zoom * ppp,
         offset: [view.offset[0] * ppp, view.offset[1] * ppp],
+        rotation: view.rotation,
+        mirrored: view.mirrored,
     };
     let (mut tx0, mut ty0, mut tx1, mut ty1) =
         view_phys.visible_tile_range(vp_w, vp_h, TILE_SIZE as i32);
@@ -160,6 +162,8 @@ pub(crate) fn prepare_canvas(
             (view.offset[0] + rect.min.x) * ppp,
             (view.offset[1] + rect.min.y) * ppp,
         ],
+        rotation: view_phys.rotation,
+        mirrored: view_phys.mirrored,
     };
     CanvasTiles {
         uploads,

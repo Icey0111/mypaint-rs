@@ -52,6 +52,10 @@ pub struct View {
     pub zoom: f32,
     /// 屏幕偏移（世界原点映射到的屏幕物理像素位置）。
     pub offset: [f32; 2],
+    /// 视图旋转（弧度，正 = 顺时针；`tdw.rotation`）。
+    pub rotation: f32,
+    /// 视图镜像（`tdw.mirrored`，翻转屏幕 X 轴）。
+    pub mirrored: bool,
 }
 
 impl Default for View {
@@ -59,6 +63,8 @@ impl Default for View {
         Self {
             zoom: 1.0,
             offset: [0.0, 0.0],
+            rotation: 0.0,
+            mirrored: false,
         }
     }
 }
@@ -66,14 +72,28 @@ impl Default for View {
 impl View {
     #[inline]
     pub fn world_to_screen(&self, wx: f32, wy: f32) -> [f32; 2] {
-        [wx * self.zoom + self.offset[0], wy * self.zoom + self.offset[1]]
+        let (s, c) = self.rotation.sin_cos();
+        let x = wx * self.zoom;
+        let y = wy * self.zoom;
+        let mut rx = c * x - s * y;
+        let ry = s * x + c * y;
+        if self.mirrored {
+            rx = -rx;
+        }
+        [self.offset[0] + rx, self.offset[1] + ry]
     }
 
     #[inline]
     pub fn screen_to_world(&self, sx: f32, sy: f32) -> [f32; 2] {
+        let (s, c) = self.rotation.sin_cos();
+        let mut dx = sx - self.offset[0];
+        let dy = sy - self.offset[1];
+        if self.mirrored {
+            dx = -dx;
+        }
         [
-            (sx - self.offset[0]) / self.zoom,
-            (sy - self.offset[1]) / self.zoom,
+            (c * dx + s * dy) / self.zoom,
+            (-s * dx + c * dy) / self.zoom,
         ]
     }
 
@@ -82,6 +102,24 @@ impl View {
     pub fn pan(&mut self, dx: f32, dy: f32) {
         self.offset[0] += dx;
         self.offset[1] += dy;
+    }
+
+    /// 以屏幕锚点为中心旋转（`TiledDrawWidget.rotate` 的 `_fixed_center`）。
+    pub fn rotate_at(&mut self, step: f32, ax: f32, ay: f32) {
+        let before = self.screen_to_world(ax, ay);
+        self.rotation += step;
+        let after = self.world_to_screen(before[0], before[1]);
+        self.offset[0] += ax - after[0];
+        self.offset[1] += ay - after[1];
+    }
+
+    /// 翻转镜像，并保持屏幕锚点处的世界坐标不动（`mirror()`）。
+    pub fn mirror_at(&mut self, ax: f32, ay: f32) {
+        let before = self.screen_to_world(ax, ay);
+        self.mirrored = !self.mirrored;
+        let after = self.world_to_screen(before[0], before[1]);
+        self.offset[0] += ax - after[0];
+        self.offset[1] += ay - after[1];
     }
 
     /// 以屏幕锚点 `(ax, ay)` 为中心缩放（缩放前后锚点处的世界坐标不动）。
@@ -140,27 +178,43 @@ impl View {
     /// 世界区间视为 `[x0, x1)` 半开：右/下边缘恰好落在 tile 边界时不多取一块。
     pub fn visible_tile_range(&self, w: f32, h: f32, tile_size: i32) -> (i32, i32, i32, i32) {
         const EPS: f32 = 1e-4;
-        let [x0, y0] = self.screen_to_world(0.0, 0.0);
-        let [x1, y1] = self.screen_to_world(w, h);
+        let corners = [
+            self.screen_to_world(0.0, 0.0),
+            self.screen_to_world(w, 0.0),
+            self.screen_to_world(0.0, h),
+            self.screen_to_world(w, h),
+        ];
+        let xmin = corners.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min);
+        let xmax = corners.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+        let ymin = corners.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min);
+        let ymax = corners.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
         let tile_of = |v: f32| (v.floor() as i32).div_euclid(tile_size);
         (
-            tile_of(x0),
-            tile_of(y0),
-            tile_of(x1 - EPS),
-            tile_of(y1 - EPS),
+            tile_of(xmin),
+            tile_of(ymin),
+            tile_of(xmax - EPS),
+            tile_of(ymax - EPS),
         )
     }
 
     /// 世界像素 → 裁剪空间的 4×4 矩阵（列主序，供 WGSL uniform）。
     /// `viewport` 为渲染目标物理像素尺寸。
     pub fn clip_matrix(&self, viewport_w: f32, viewport_h: f32) -> [[f32; 4]; 4] {
-        let sx = 2.0 * self.zoom / viewport_w;
-        let sy = -2.0 * self.zoom / viewport_h;
+        let (s, c) = self.rotation.sin_cos();
+        // screen = offset + R(rotation) * (zoom * world)，mirrored 时再翻转 X
+        let mut ax = self.zoom * c;
+        let mut bx = -self.zoom * s;
+        let ay = self.zoom * s;
+        let by = self.zoom * c;
+        if self.mirrored {
+            ax = -ax;
+            bx = -bx;
+        }
         let tx = 2.0 * self.offset[0] / viewport_w - 1.0;
         let ty = 1.0 - 2.0 * self.offset[1] / viewport_h;
         [
-            [sx, 0.0, 0.0, 0.0],
-            [0.0, sy, 0.0, 0.0],
+            [2.0 * ax / viewport_w, -2.0 * ay / viewport_h, 0.0, 0.0],
+            [2.0 * bx / viewport_w, -2.0 * by / viewport_h, 0.0, 0.0],
             [0.0, 0.0, 1.0, 0.0],
             [tx, ty, 0.0, 1.0],
         ]
@@ -176,6 +230,7 @@ mod tests {
         let v = View {
             zoom: 2.5,
             offset: [123.0, -45.0],
+            ..View::default()
         };
         let w = v.screen_to_world(400.0, 300.0);
         let s = v.world_to_screen(w[0], w[1]);
@@ -213,6 +268,7 @@ mod tests {
         let v = View {
             zoom: 1.0,
             offset: [0.0, 0.0],
+            ..View::default()
         };
         // 128×128 视口恰好覆盖 tile (0,0) 与 (1,1)
         let r = v.visible_tile_range(128.0, 128.0, 64);
@@ -237,6 +293,7 @@ mod tests {
         let at = |z: f32| View {
             zoom: z,
             offset: [0.0, 0.0],
+            ..View::default()
         };
         // 1.0 在阶梯上（下标 7）：放大 → 1.5，缩小 → 2/3
         assert_eq!(at(1.0).stepped_zoom(true), 1.5);
@@ -269,5 +326,50 @@ mod tests {
         assert_eq!(v.zoom, ZOOM_MAX);
         v.set_zoom_at(0.0001, 300.0, 200.0);
         assert_eq!(v.zoom, ZOOM_MIN);
+    }
+
+    #[test]
+    fn rotated_mirrored_roundtrip_and_anchor() {
+        let mut v = View::default();
+        let anchor_world = v.screen_to_world(400.0, 300.0);
+        v.rotate_at(std::f32::consts::TAU / 16.0, 400.0, 300.0);
+        v.mirror_at(400.0, 300.0);
+        let w = v.screen_to_world(123.0, 77.0);
+        let s = v.world_to_screen(w[0], w[1]);
+        assert!((s[0] - 123.0).abs() < 1e-3 && (s[1] - 77.0).abs() < 1e-3);
+        let after = v.world_to_screen(anchor_world[0], anchor_world[1]);
+        assert!((after[0] - 400.0).abs() < 1e-3);
+        assert!((after[1] - 300.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn rotated_clip_matrix_maps_a_quarter_turn() {
+        let v = View {
+            zoom: 1.0,
+            offset: [0.0, 0.0],
+            rotation: std::f32::consts::FRAC_PI_2,
+            mirrored: false,
+        };
+        let m = v.clip_matrix(800.0, 600.0);
+        let mul = |x: f32, y: f32| {
+            (
+                m[0][0] * x + m[1][0] * y + m[3][0],
+                m[0][1] * x + m[1][1] * y + m[3][1],
+            )
+        };
+        // 世界 (100,0) 顺时针转 90° → 屏幕 (0,100) → 裁剪 (-1, 1-200/600)
+        let (x, y) = mul(100.0, 0.0);
+        assert!((x + 1.0).abs() < 1e-5);
+        assert!((y - (1.0 - 200.0 / 600.0)).abs() < 1e-5);
+    }
+
+    #[test]
+    fn rotated_visible_range_covers_the_whole_screen() {
+        let v = View {
+            rotation: std::f32::consts::FRAC_PI_4,
+            ..View::default()
+        };
+        let (x0, y0, x1, y1) = v.visible_tile_range(128.0, 128.0, 64);
+        assert!(x0 <= 0 && y0 <= 0 && x1 >= 1 && y1 >= 1);
     }
 }

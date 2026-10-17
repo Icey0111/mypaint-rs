@@ -1859,6 +1859,9 @@ impl PigmentApp {
             // ---- 视图 ----
             "ZoomIn" | "ZoomOut" | "ZoomInCentered" | "ZoomOutCentered" => true,
             "PanLeft" | "PanRight" | "PanUp" | "PanDown" => true,
+            "RotateLeft" | "RotateRight" | "RotateLeftCentered" | "RotateRightCentered" => true,
+            "MirrorHorizontal" | "MirrorVertical" => true,
+            "ResetView" | "ResetRotation" | "ResetZoom" | "ResetMirror" => true,
             // ---- 停靠面板（S6）----
             "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
             | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
@@ -2121,6 +2124,49 @@ impl PigmentApp {
                     "PanRight" => self.view.pan(-step, 0.0),
                     "PanUp" => self.view.pan(0.0, step),
                     _ => self.view.pan(0.0, -step),
+                }
+                ctx.request_repaint();
+            }
+            // ---- 视图：旋转 / 镜像（`document.py:1818-1870` + `:1920-1936`）----
+            // 步长 = 2π/16（`ROTATION_STEP`）；RotateLeft 顺时针、RotateRight 逆时针
+            "RotateLeft" | "RotateRight" | "RotateLeftCentered" | "RotateRightCentered" => {
+                let clockwise = !id.starts_with("RotateRight");
+                let viewport_centered = id.ends_with("Centered");
+                let anchor = self
+                    .canvas_anchor(ctx, !viewport_centered)
+                    .unwrap_or([0.0, 0.0]);
+                let step = if clockwise {
+                    std::f32::consts::TAU / 16.0
+                } else {
+                    -std::f32::consts::TAU / 16.0
+                };
+                self.view.rotate_at(step, anchor[0], anchor[1]);
+                ctx.request_repaint();
+            }
+            "MirrorHorizontal" => {
+                let anchor = self.canvas_anchor(ctx, false).unwrap_or([0.0, 0.0]);
+                self.view.mirror_at(anchor[0], anchor[1]);
+                ctx.request_repaint();
+            }
+            "MirrorVertical" => {
+                // 源码：`tdw.rotate(pi)` 再 `tdw.mirror()`
+                let anchor = self.canvas_anchor(ctx, false).unwrap_or([0.0, 0.0]);
+                self.view
+                    .rotate_at(std::f32::consts::PI, anchor[0], anchor[1]);
+                self.view.mirror_at(anchor[0], anchor[1]);
+                ctx.request_repaint();
+            }
+            "ResetRotation" | "ResetView" | "ResetZoom" | "ResetMirror" => {
+                let anchor = self.canvas_anchor(ctx, false).unwrap_or([0.0, 0.0]);
+                if id != "ResetMirror" && id != "ResetZoom" {
+                    self.view.rotate_at(-self.view.rotation, anchor[0], anchor[1]);
+                }
+                if id != "ResetRotation" && id != "ResetZoom" && self.view.mirrored {
+                    self.view.mirror_at(anchor[0], anchor[1]);
+                }
+                if id == "ResetView" || id == "ResetZoom" {
+                    let default_zoom = self.prefs.f64_or("view.default_zoom", 1.0) as f32;
+                    self.view.set_zoom_at(default_zoom, anchor[0], anchor[1]);
                 }
                 ctx.request_repaint();
             }
