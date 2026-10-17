@@ -12,8 +12,9 @@
 //!
 //! # 与源码的差异
 //!
-//! - 源码用 `GdkPixbuf` 预览、`pixbuflist` 网格；这里用 egui 的 48×48 纹理 +
-//!   纵向列表（没有网格控件，交互等价：点一项即换背景）。
+//! - 源码用 `GdkPixbuf` 预览、`pixbuflist.PixbufList(64, 64)` 网格；
+//!   这里用 egui 的 64×64 纹理 + `Grid`，按窗口宽度自动折行（技术栈适配：
+//!   没有 `Gtk.DrawingArea` 自绘的像素级布局）。
 //! - 内置 fallback 纸纹不在列表里（源码里 stock 目录还有别的背景图，本项目
 //!   只打包了 `mamurk_e_1.png`）；列表顶部给一个 "Default Paper" 入口。
 //! - `default.png` 照源码从列表里剔除（`:179-183`），只能通过 "Save as Default" 写。
@@ -31,8 +32,8 @@ const SUFFIXES: [&str; 3] = [".jpg", ".jpeg", ".png"];
 pub(crate) const DEFAULT_BACKGROUND: &str = "default.png";
 /// 背景图子目录（`backgroundwindow.py:37`）。
 pub(crate) const BACKGROUNDS_SUBDIR: &str = "backgrounds";
-/// 缩略图边长（源码 `PixbufList(N, N)` 是 64；这里为了侧栏宽度用 48）。
-const THUMB: usize = 48;
+/// 缩略图边长 —— 源码 `PixbufList(N, N)` 的 `N = tiledsurface.N = 64`。
+const THUMB: usize = 64;
 
 /// 窗口状态（egui 立即模式：控件没有对象，页签/选择状态由应用持有）。
 #[derive(Default)]
@@ -48,7 +49,7 @@ pub(crate) struct BackgroundWindowState {
     pub(crate) files: Vec<PathBuf>,
     /// 载入/保存错误，显示在窗口底部。
     pub(crate) error: Option<String>,
-    /// 48×48 缩略图缓存（按路径）。
+    /// 64×64 缩略图缓存（按路径）。
     thumbnails: HashMap<PathBuf, egui::TextureHandle>,
 }
 
@@ -220,8 +221,8 @@ impl crate::app::PigmentApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
-            .default_width(360.0)
-            .default_height(480.0)
+            .default_width(440.0)
+            .default_height(520.0)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if ui.selectable_label(tab_now == 0, "Pattern").clicked() {
@@ -259,24 +260,70 @@ impl crate::app::PigmentApp {
                                             .weak(),
                                     );
                                 }
-                                for path in &files {
-                                    let name = path
-                                        .file_name()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("?")
-                                        .to_string();
-                                    ui.horizontal(|ui| {
-                                        if let Some(tex) = thumbnail(ui.ctx(), path, &mut thumbnails) {
-                                            ui.add(
-                                                egui::Image::new(&tex)
-                                                    .max_size(egui::vec2(32.0, 32.0)),
-                                            );
-                                        }
-                                        if ui.selectable_label(false, name).clicked() {
-                                            choose = Some(path.clone());
+                                // 网格列表 —— 源码 `pixbuflist.PixbufList(N, N)`：
+                                // 64×64 缩略图按窗口宽度自动折行。每格是"图 + 文件名"，
+                                // 点图或文字都换背景（源码整格是一个 pixbuf 条目）。
+                                let gap = 8.0;
+                                let cell = THUMB as f32;
+                                let columns = (((ui.available_width() + gap) / (cell + gap))
+                                    .floor() as usize)
+                                    .max(1);
+                                egui::Grid::new("background_grid")
+                                    .spacing([gap, gap])
+                                    .show(ui, |ui| {
+                                        for (i, path) in files.iter().enumerate() {
+                                            if i > 0 && i % columns == 0 {
+                                                ui.end_row();
+                                            }
+                                            let name = path
+                                                .file_name()
+                                                .and_then(|s| s.to_str())
+                                                .unwrap_or("?")
+                                                .to_string();
+                                            ui.vertical(|ui| {
+                                                ui.set_max_width(cell);
+                                                let tex = thumbnail(
+                                                    ui.ctx(),
+                                                    path,
+                                                    &mut thumbnails,
+                                                );
+                                                let clicked = match tex {
+                                                    Some(tex) => ui
+                                                        .add(
+                                                            egui::Button::image(
+                                                                egui::Image::new(&tex)
+                                                                    .fit_to_exact_size(
+                                                                        egui::vec2(cell, cell),
+                                                                    ),
+                                                            )
+                                                            .frame(false),
+                                                        )
+                                                        .on_hover_text(path.display().to_string())
+                                                        .clicked(),
+                                                    None => false,
+                                                };
+                                                let label = if name.chars().count() > 14 {
+                                                    format!(
+                                                        "{}…",
+                                                        name.chars().take(13).collect::<String>()
+                                                    )
+                                                } else {
+                                                    name
+                                                };
+                                                let text = ui
+                                                    .add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(label).small(),
+                                                        )
+                                                        .truncate(),
+                                                    )
+                                                    .on_hover_text(path.display().to_string());
+                                                if clicked || text.clicked() {
+                                                    choose = Some(path.clone());
+                                                }
+                                            });
                                         }
                                     });
-                                }
                             });
                     }
                     _ => {

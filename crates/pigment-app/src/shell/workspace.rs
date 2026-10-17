@@ -494,6 +494,67 @@ impl PigmentApp {
         });
         ui.separator();
         ui.label(egui::RichText::new("Source").strong());
+        // 取样源图层下拉 —— `gui/fill.py:560-603` 的 `FlatLayerList` 组合框。
+        //
+        // 默认项 "Selected Layer"（`src_path=None`，填当前层）；其余是整棵
+        // 图层树的扁平列表，组和子层按 `walk()` 次序排列、按层级缩进。源码把
+        // 组画成斜体、用分隔行隔开默认项；egui 的 ComboBox 没有分隔行，
+        // 默认项直接放在列表最前（技术栈适配，见模块记账）。
+        let layers: Vec<(Vec<usize>, u64, String, bool)> = self
+            .doc
+            .layers()
+            .walk()
+            .into_iter()
+            .map(|(path, layer)| {
+                let is_group = layer.is_group();
+                let name = layer.name.clone().unwrap_or_else(|| "Layer".to_string());
+                (path, layer.id, name, is_group)
+            })
+            .collect();
+        // 源层被删掉后回到默认项（源码 `_src_combo_changed_cb` 同样复位）
+        if let Some(id) = opt.src_layer {
+            if !layers.iter().any(|(_, lid, _, _)| *lid == id) {
+                opt.src_layer = None;
+                changed = true;
+            }
+        }
+        let selected_text = match opt.src_layer {
+            None => "Selected Layer".to_string(),
+            Some(id) => layers
+                .iter()
+                .find(|(_, lid, _, _)| *lid == id)
+                .map(|(path, _, name, _)| format!("{}{name}", "  ".repeat(path.len() - 1)))
+                .unwrap_or_else(|| "Selected Layer".to_string()),
+        };
+        ui.add_enabled_ui(!opt.sample_merged, |ui| {
+            let combo = egui::ComboBox::from_id_salt("fill_source_layer")
+                .selected_text(selected_text)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(opt.src_layer.is_none(), "Selected Layer")
+                        .clicked()
+                    {
+                        opt.src_layer = None;
+                        changed = true;
+                    }
+                    for (path, id, name, is_group) in &layers {
+                        let indent = "  ".repeat(path.len() - 1);
+                        let text = if *is_group {
+                            egui::RichText::new(format!("{indent}{name}")).italics()
+                        } else {
+                            egui::RichText::new(format!("{indent}{name}"))
+                        };
+                        if ui.selectable_label(opt.src_layer == Some(*id), text).clicked() {
+                            opt.src_layer = Some(*id);
+                            changed = true;
+                        }
+                    }
+                });
+            combo.response.on_hover_text(
+                "选择填充取样所依据的图层\n（默认 Selected Layer = 当前层；勾了 Sample Merged 时不可用）",
+            );
+        });
         changed |= ui
             .checkbox(&mut opt.sample_merged, "Sample Merged")
             .on_hover_text("考虑填充区域时使用所有可见层的临时合成结果")
@@ -557,7 +618,7 @@ impl PigmentApp {
                 .changed();
         });
         if changed {
-            self.with_mode(|modes, _ctx| modes.top_mut().set_fill_options(opt));
+            self.with_mode(|modes, _ctx| modes.top_mut().set_fill_options(opt.clone()));
             // 源码各回调只写 preferences dict，落盘由 app 关闭时统一做；
             // 这里立即落盘，避免异常退出丢设置。
             self.prefs
@@ -1200,6 +1261,62 @@ impl PigmentApp {
         }
     }
 
+    /// 执行一条 `input.button_mapping` 动作。
+    ///
+    /// 源码走 `get_handler_object()` 分三类（`gui/buttonmap.py:98-125`）：
+    /// 模式类押栈、popup state、普通 GtkAction。这里：
+    /// - 三个视图操纵模式要记住"是哪个鼠标键起手"（拖拽期间持续按它）；
+    /// - `FrameEditMode` / `BrushResizeMode` 需要在按下点立刻转发一次 press；
+    /// - 其余（含 `Undo`/`Bigger`/`FreehandMode`/`ColorPickMode` 等）直接走
+    ///   [`PigmentApp::run_action`]，与菜单/加速键同一条路径。
+    ///
+    /// 返回是否真的消费了这次按钮（未实现的动作返回 `false`）。
+    #[allow(clippy::too_many_arguments)]
+    fn dispatch_mapped_button(
+        &mut self,
+        action: &str,
+        btn: egui::PointerButton,
+        _gdk_button: u32,
+        pos: egui::Pos2,
+        rect: egui::Rect,
+        now_ms: f64,
+        mods: pigment_engine::mode::Modifiers,
+        ctx: &egui::Context,
+    ) -> bool {
+        match action {
+            "PanViewMode" | "ZoomViewMode" | "RotateViewMode" => {
+                let tool = match action {
+                    "PanViewMode" => ViewTool::Pan,
+                    "ZoomViewMode" => ViewTool::Zoom,
+                    _ => ViewTool::Rotate,
+                };
+                self.view_tool = Some(tool);
+                self.view_drag_button = btn;
+                self.view_drag_prev = None;
+                true
+            }
+            "ShowPopupMenu" => {
+                self.popup_menu = Some(pos);
+                self.popup_opened = now_ms / 1000.0;
+                true
+            }
+            "FrameEditMode" => {
+                let mode: Box<dyn pigment_engine::mode::InteractionMode> =
+                    Box::new(pigment_engine::mode::frameedit::FrameEditMode::new());
+                self.with_mode(|modes, mctx| modes.push(mode, mctx));
+                self.mapped_mode_button = Some(btn);
+                let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
+                self.mode_button_press(ev);
+                true
+            }
+            "BrushResizeMode" => {
+                self.begin_brush_resize(now_ms / 1000.0);
+                true
+            }
+            _ => self.run_action(action, ctx, now_ms / 1000.0),
+        }
+    }
+
     /// 把主视图中心挪到模型坐标 `(wx, wy)` —— `recenter_on_model_coords`。
     pub(crate) fn preview_recenter(&mut self, wx: f32, wy: f32, canvas: egui::Rect) {
         let c = canvas.center();
@@ -1264,32 +1381,44 @@ impl PigmentApp {
             ) else {
                 continue;
             };
-            let tool = match action.as_str() {
-                "PanViewMode" => Some(ViewTool::Pan),
-                "ZoomViewMode" => Some(ViewTool::Zoom),
-                "RotateViewMode" => Some(ViewTool::Rotate),
-                _ => None,
-            };
-            if let Some(tool) = tool {
-                self.view_tool = Some(tool);
-                self.view_drag_button = btn;
-                self.view_drag_prev = None;
-            } else if action == "ShowPopupMenu" {
+            if let Some(pos) = response.interact_pointer_pos() {
+                self.dispatch_mapped_button(
+                    &action,
+                    btn,
+                    gdk_button,
+                    pos,
+                    rect,
+                    now_ms,
+                    mods,
+                    ui.ctx(),
+                );
+            }
+        }
+
+        // ---- 主键 + 修饰键（源码允许 `<Control>Button1` 这种绑定）----
+        // 无修饰键的 Button1 固定给绘画，不查表（`buttonmap.py:601-614` 的
+        // 编辑器同样拒绝它）。命中后整段按住的时期都不喂绘画模式。
+        let primary_pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
+        let primary_down = ui.input(|i| i.pointer.button_down(egui::PointerButton::Primary));
+        if primary_pressed
+            && response.hovered()
+            && (imods.ctrl || imods.shift || imods.alt)
+        {
+            if let Some(action) = self.mapped_button_action(1, imods.ctrl, imods.shift, imods.alt)
+            {
                 if let Some(pos) = response.interact_pointer_pos() {
-                    self.popup_menu = Some(pos);
-                    self.popup_opened = now_ms / 1000.0;
+                    self.primary_action_active = true;
+                    self.dispatch_mapped_button(
+                        &action,
+                        egui::PointerButton::Primary,
+                        1,
+                        pos,
+                        rect,
+                        now_ms,
+                        mods,
+                        ui.ctx(),
+                    );
                 }
-            } else if action == "FrameEditMode" {
-                let mode: Box<dyn pigment_engine::mode::InteractionMode> =
-                    Box::new(pigment_engine::mode::frameedit::FrameEditMode::new());
-                self.with_mode(|modes, ctx| modes.push(mode, ctx));
-                self.mapped_mode_button = Some(btn);
-                if let Some(pos) = response.interact_pointer_pos() {
-                    let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
-                    self.mode_button_press(ev);
-                }
-            } else if action == "BrushResizeMode" {
-                self.begin_brush_resize(now_ms / 1000.0);
             }
         }
 
@@ -1350,7 +1479,12 @@ impl PigmentApp {
             }
         }
 
-        if !modal && !space_down && !view_gesture && !mapped_mode_active {
+        if !modal
+            && !space_down
+            && !view_gesture
+            && !mapped_mode_active
+            && !self.primary_action_active
+        {
             // 本帧是否已经按"拖拽"语义喂过事件（见下面的 click 分支）
             let mut dispatched_drag = false;
             if response.drag_started_by(egui::PointerButton::Primary) {
@@ -1469,6 +1603,12 @@ impl PigmentApp {
                     self.mode_motion(ev);
                 }
             }
+        }
+
+        // 主键映射手势在**松开这一帧的输入处理之后**才解锁：否则
+        // `drag_stopped_by`/`clicked_by` 会把同一次按键再当绘画喂一遍。
+        if !primary_down {
+            self.primary_action_active = false;
         }
 
         // ---- 同步显存并绘制合成结果（与暂存区画布共用 prepare_canvas）----

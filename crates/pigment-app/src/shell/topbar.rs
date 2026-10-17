@@ -61,7 +61,10 @@ impl PigmentApp {
     }
 
     /// 递归渲染一个菜单树节点。
-    fn menu_node(&mut self, ui: &mut egui::Ui, node: &MenuNode) {
+    ///
+    /// 也供 `ShowPopupMenu` 的浮动主菜单复用（`gui/resources.xml:1311-1316`
+    /// 的 `popupmenu_show_cb` —— 源码弹出的就是同一棵 `menu.xml` 树）。
+    pub(crate) fn menu_node(&mut self, ui: &mut egui::Ui, node: &MenuNode) {
         match node {
             MenuNode::Separator => {
                 ui.separator();

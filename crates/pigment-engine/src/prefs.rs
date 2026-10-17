@@ -657,6 +657,27 @@ impl Prefs {
             .collect()
     }
 
+    /// 写回 `input.button_mapping`（`gui/buttonmap.py:403-415` 的
+    /// `_liststore_updated_cb`：整张 dict 用编辑器里的行重建）。
+    ///
+    /// 键串保持调用方给的形式（编辑器的 `button_press_name()` 已归一化）；
+    /// 值必须是动作名，否则跳过。
+    pub fn set_button_mapping_pairs(
+        &mut self,
+        pairs: impl IntoIterator<Item = (String, String)>,
+    ) -> Option<Value> {
+        let mut map = serde_json::Map::new();
+        for (key, action) in pairs {
+            let key = key.trim();
+            let action = action.trim();
+            if key.is_empty() || action.is_empty() {
+                continue;
+            }
+            map.insert(key.to_string(), json!(action));
+        }
+        self.set("input.button_mapping", Value::Object(map))
+    }
+
     pub fn str_or<'a>(&'a self, key: &str, fallback: &'a str) -> &'a str {
         self.get_str(key).unwrap_or(fallback)
     }
@@ -1097,6 +1118,35 @@ mod tests {
         again.reload();
         assert_eq!(again.str_or("colors.current", ""), "#123456");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn button_mapping_setter_round_trips_and_drops_empty_rows() {
+        let dir = tmpdir("button-map");
+        let path = dir.join("settings.json");
+        let mut prefs = Prefs::load(&path);
+        prefs.set_button_mapping_pairs([
+            ("<Control><Shift>Button2".to_string(), "ShowPopupMenu".to_string()),
+            ("Button3".to_string(), "PanViewMode".to_string()),
+            ("".to_string(), "Undo".to_string()),
+            ("Button9".to_string(), "".to_string()),
+        ]);
+        // 空键/空动作不进 dict（编辑器的"尚未按鼠标键"行）
+        assert_eq!(
+            prefs.button_mapping_pairs(),
+            vec![
+                (
+                    "<Control><Shift>Button2".to_string(),
+                    "ShowPopupMenu".to_string()
+                ),
+                ("Button3".to_string(), "PanViewMode".to_string()),
+            ]
+        );
+        // 落盘再读回格式保持
+        prefs.save().unwrap();
+        let again = Prefs::load(&path);
+        assert_eq!(again.button_mapping_pairs(), prefs.button_mapping_pairs());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

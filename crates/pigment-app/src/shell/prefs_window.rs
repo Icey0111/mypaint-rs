@@ -42,13 +42,14 @@
 //! 控件 id、glade 原文标签、绑定的偏好键、**是否已接线**、未接线的原因。
 //!
 //! 判定标准只有一条：**这个键在当前构建里有没有消费方**。
-//! 已接线的偏好键只有四条（对应 7 个控件行 —— Color 页三个单选共用
+//! 已接线的偏好键有五条（对应 8 个控件行 —— Color 页三个单选共用
 //! `colors.wheels.type`，Keys 页的加速键编辑器没有偏好键）：
 //!
 //! - `saving.default_format`（`Prefs`/`save_extension`，B6-1）
 //! - `ui.hide_cursor_while_painting`（`ModePrefs`，B6-1）
 //! - `keyboard.disable_fallbacks`（`AccelMap::lookup` 的兜底开关，B6-2）
 //! - `colors.wheels.type`（`ColorManager::set_wheel_type`，B4-4b）
+//! - `input.button_mapping`（按钮映射编辑器 + 画布指针分派）
 //!
 //! 其余控件一律**禁用 + 悬停说明"该子系统未移植"**，绝不伪造行为
 //! （与本项目 `shell/color_panel.rs` 对未移植页签的处置一致）。
@@ -71,9 +72,11 @@
 //! - **Esc 关窗**：`Gtk.Dialog` 的 Esc 走 `GTK_RESPONSE_DELETE_EVENT` →
 //!   隐藏（等价于点 X，**不回退**）。egui 的 `Window` 没有这个默认键，这里没做
 //!   —— 否则要和捕获对话框的 Esc（`accelmap.py:471-480` 的取消）抢事件。
-//! - **页面外壳**：`Devices` 页的 `MyPaintDeviceSettingsEditor`、`Buttons` 页的
-//!   `ButtonMappingEditor`、`Pressure` 页的 `CurveWidget` 都是自绘控件，
-//!   这里只画一块禁用占位区（尺寸取 glade 的 `width_request`/`height_request`）。
+//! - **页面外壳**：`Devices` 页的 `MyPaintDeviceSettingsEditor`、`Pressure` 页的
+//!   `CurveWidget` 仍是自绘控件占位区（尺寸取 glade 的 `width_request`/
+//!   `height_request`）；`Buttons` 页的 `ButtonMappingEditor` 已移植
+//!   （[`crate::shell::buttonmap_editor`]），列表/Add/Remove/动作下拉/
+//!   鼠标捕获对话框都在。
 //! - **`Compatibility` 页**：整页来自 `gui/compatibility.py` 的
 //!   `CompatibilityPreferences`（`:272-409`），依赖兼容模式/色彩管理子系统，
 //!   全部禁用。
@@ -359,9 +362,6 @@ const R_PRESSURE: &str = "输入压力映射（gui/curve.py 的 CurveWidget + Ap
                           application.py:594-610）未移植";
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
-/// `input.button_mapping`
-const R_BUTTONS: &str = "按键映射子系统（gui/buttonmap.py 的 ButtonMappingEditor + \
-                         gui/mode.py 的 DragMode 动作表）未移植";
 /// `saving.scrap_prefix`
 const R_SCRAP_PREFIX: &str = "碎片（scrap）库与文件浏览器未移植（filehandling.py:1420-1451）；\
                               暂存区目录走 get_scratchpad_prefix（:1431-1438），与本键无关";
@@ -430,14 +430,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // ===== 2. Buttons（glade:345-409）=====
     // `ButtonMappingEditor`（glade:364-369，350×250）；`input.button_mapping` 的
     // 断言与写回见 preferenceswindow.py:84-95 / :273-274。
-    ControlDef::unported(
+    // 已移植：编辑器读写 `input.button_mapping`，运行时每个指针事件现读。
+    ControlDef::wired(
         2,
         Kind::ButtonEditor,
         "button_mapping_editor",
         "",
         Some("input.button_mapping"),
         "glade:364-369",
-        R_BUTTONS,
     ),
     ControlDef::text(
         2,
@@ -1378,11 +1378,14 @@ impl PigmentApp {
                 self.prefs_window.close();
                 // 捕获对话框跟着一起收（GTK 那边窗口藏了对话框就没了）
                 self.key_editor.capture = None;
+                self.button_editor.capture = None;
             }
         }
         // 按键捕获对话框（B6-2）浮在偏好窗口之上 —— `accelmap.py:361` 的
         // `set_modal(True)`；没在捕获时它直接返回。
         self.key_capture_modal(ctx);
+        // 按钮映射的鼠标捕获对话框（`buttonmap.py:461-637`）同理。
+        self.button_capture_modal(ctx);
     }
 
     /// 窗口内容：页签条 + 页面体 + 底部两个按钮。
@@ -1496,7 +1499,7 @@ impl PigmentApp {
             }
             Kind::Curve => curve_placeholder(ui, c),
             Kind::DeviceEditor => editor_placeholder(ui, c, egui::vec2(450.0, 350.0)),
-            Kind::ButtonEditor => editor_placeholder(ui, c, egui::vec2(350.0, 250.0)),
+            Kind::ButtonEditor => self.button_editor_page(ui),
             Kind::Check | Kind::Switch => self.prefs_check_row(ui, c),
             Kind::Radio => self.prefs_radio_row(ui, c),
             Kind::Combo => self.prefs_combo_row(ui, c),
@@ -1653,6 +1656,7 @@ impl PigmentApp {
         // `:132` 的 `self.hide()`；捕获对话框跟着收
         self.prefs_window.close();
         self.key_editor.capture = None;
+        self.button_editor.capture = None;
     }
 
     /// `REVERT` —— `preferenceswindow.py:133-135`：
@@ -1660,6 +1664,9 @@ impl PigmentApp {
     fn preferences_revert(&mut self) {
         settings_on_revert(&mut self.prefs);
         self.apply_settings();
+        // 重读磁盘后，Buttons 页的列表也要跟着回退
+        // （`preferenceswindow.py:222-223` 的 `set_bindings(...)`）。
+        self.reload_button_editor();
         self.prefs_window.status = Some("已从 settings.json 重新载入".to_string());
     }
 }
@@ -1896,10 +1903,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 4 个偏好控件 + Keys 页的编辑器 + Color 页的 3 个单选
+        // 已接线的控件行 = 5 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 7);
-        assert_eq!(widgets - wired, 30, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 8);
+        assert_eq!(widgets - wired, 29, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -1928,7 +1936,7 @@ mod tests {
     }
 
     #[test]
-    fn wired_controls_are_exactly_the_four_wired_prefs() {
+    fn wired_controls_are_exactly_the_wired_prefs() {
         let wired: BTreeSet<&str> = CONTROLS
             .iter()
             .filter(|c| c.wired)
@@ -1941,6 +1949,7 @@ mod tests {
                 "ui.hide_cursor_while_painting",   // B6-1：ModePrefs
                 "keyboard.disable_fallbacks",      // B6-2：AccelMap::lookup
                 "colors.wheels.type",              // B4-4b：ColorManager
+                "input.button_mapping",            // Buttons 页：编辑器 + 指针分派
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -1963,7 +1972,6 @@ mod tests {
             .collect();
         let must_be_disabled = [
             "input.global_pressure_mapping", // Pressure 页的曲线
-            "input.button_mapping",          // Buttons 页的编辑器
             "input.device_mode",             // Devices 页的编辑器
             "saving.scrap_prefix",           // Load & Save 页的输入框
             "document.autosave_backups",     // 自动备份开关

@@ -76,6 +76,23 @@ pub fn wheel_pan_delta(delta_x: f32, delta_y: f32) -> [f32; 2] {
     ]
 }
 
+/// Shift + 滚轮的纵向分量（平台适配）。
+///
+/// 源码只读 `delta_y`（`mode.py:503-508`），但 Windows 上按住 Shift 转滚轮
+/// 常被驱动/winit 报成**水平**滚动：`delta_y = 0`、`delta_x ≠ 0`。此时
+/// 默认的缩放分支会完全没反应。这里把水平分量折算回纵向：Windows 的
+/// `WM_MOUSEHWHEEL` 正方向是"向右"，而 Shift+滚轮向上通常报负的 x，
+/// 取反后与"向上 = 放大"一致。
+///
+/// 只在**缩放**分支用；平移分支照旧用 x 分量水平平移（源码 `:553-558`）。
+pub fn shift_wheel_vertical(delta_x: f32, delta_y: f32) -> f32 {
+    if delta_y == 0.0 && delta_x != 0.0 {
+        -delta_x
+    } else {
+        delta_y
+    }
+}
+
 /// Ctrl/Alt 反转缩放与平移（`mode.py:481-488`）。
 ///
 /// `default_pan` 来自设备设置（源码 `ScrollAction`；本项目用偏好
@@ -419,6 +436,21 @@ mod tests {
         let [dx, dy] = wheel_pan_delta(-100.0, -50.0);
         assert!((dx - 2.0 * WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
         assert!((dy + WHEEL_PIXELS_PER_UNIT).abs() < 1e-5);
+    }
+
+    #[test]
+    fn shift_wheel_horizontal_falls_back_to_vertical_for_zoom() {
+        // 正常纵向滚轮原样保留
+        assert_eq!(shift_wheel_vertical(0.0, 50.0), 50.0);
+        assert_eq!(shift_wheel_vertical(30.0, -50.0), -50.0);
+        // Windows 的 Shift+滚轮只剩水平分量：向上（负 x）→ 放大（正 y）
+        assert_eq!(shift_wheel_vertical(-50.0, 0.0), 50.0);
+        assert_eq!(shift_wheel_vertical(50.0, 0.0), -50.0);
+        // 两个分量都有时以纵向为准，不做二次叠加
+        assert_eq!(shift_wheel_vertical(50.0, 20.0), 20.0);
+        assert_eq!(shift_wheel_vertical(0.0, 0.0), 0.0);
+        // 折算后的倍率方向与普通滚轮一致
+        assert!(wheel_zoom_factor(shift_wheel_vertical(-50.0, 0.0)) > 1.0);
     }
 
     #[test]

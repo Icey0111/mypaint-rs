@@ -622,15 +622,18 @@ impl Command for Brushwork {
 ///
 /// 记账差异：
 /// - 未移植 `status_cb`（进度/取消对话框）：填充是同步的；
-/// - `src_path`（从选项里指定"取样源图层"）未接 GUI：引擎命令只接受
-///   "当前层"或 `sample_merged` 两种源。
+/// - 取样源图层（`src_path`）已接 GUI 与引擎：命令持稳定图层 id，`redo()`
+///   时解析成路径，插层/删层/撤销重做后都不会指错；`sample_merged` 仍是
+///   整份图层栈的合成。
 pub struct FloodFill {
     /// 目标层 id（源码持图层对象引用，我们用稳定 id）。
     target_layer: u64,
-    /// 取样源图层路径（`command.py:596-599` 的 `src_layer = layers.current`）。
+    /// 取样源图层稳定 id（`command.py:596-599` 的 `src_layer = layers.current`）。
     ///
-    /// 普通填充时等于目标层；"新建层再填"时源仍是原来的当前层（可能是组）。
-    src_path: Vec<usize>,
+    /// 普通填充时等于目标层；"新建层再填"时源仍是填充前的当前层（可能是组）。
+    /// 用 id 而不是路径：`redo()` 里新层会插在当前层位置，原层路径随之后移，
+    /// 预先算好的路径会指到新层上。
+    src_layer: u64,
     /// 填充参数（`command.py:581` 的 `self.fill_args`）。
     fill_args: crate::mode::fill::FillArgs,
     /// `sample merged`（`command.py:594-595`）：源改成整份图层栈的合成。
@@ -651,14 +654,14 @@ impl FloodFill {
     /// 新建一条填充命令（`FloodFill.__init__`，`command.py:566-589`）。
     pub fn new(
         target_layer: u64,
-        src_path: Vec<usize>,
+        src_layer: u64,
         fill_args: crate::mode::fill::FillArgs,
         sample_merged: bool,
         make_new_layer: bool,
     ) -> Self {
         Self {
             target_layer,
-            src_path,
+            src_layer,
             fill_args,
             sample_merged,
             make_new_layer,
@@ -674,7 +677,9 @@ impl FloodFill {
         use crate::mode::fill::{flood_fill, flood_fill_surface, LayerSource, MergedSource};
 
         // 源与目标相同（普通填充）时走两阶段就地填充，避免同一表面的双重借用。
-        let same_source = !self.sample_merged && self.target_layer == target_id;
+        // 指定了别的取样源时不能走这条捷径，否则源会被忽略。
+        let same_source =
+            !self.sample_merged && self.src_layer == target_id && self.target_layer == target_id;
         if same_source {
             if let Some(surface) = ctx.layers.surface_by_id(target_id) {
                 flood_fill_surface(surface, &self.fill_args);
@@ -683,6 +688,14 @@ impl FloodFill {
         }
         // 其余情形都需要"源"与"目标"同时存在：克隆一份图层栈当只读源
         // （tile 像素按 Arc 共享，写目标时 COW 不会污染源快照）。
+        //
+        // 源路径在**插层之后**解析（`command.py:596-599`：源码持有图层对象
+        // 引用，路径怎么变都指得对）。找不到源层（被别处删掉）时退回当前层。
+        let src_path = ctx
+            .layers
+            .path_of_id(self.src_layer)
+            .or_else(|| ctx.layers.path_of_id(self.target_layer))
+            .unwrap_or_else(|| ctx.layers.current_path().to_vec());
         let stack = ctx.layers.clone();
         let Some(target) = ctx.layers.surface_by_id(target_id) else {
             return;
@@ -691,7 +704,7 @@ impl FloodFill {
             let src = MergedSource::new(&stack);
             flood_fill(&src, &self.fill_args, target);
         } else {
-            let src = LayerSource::new(&stack, &self.src_path);
+            let src = LayerSource::new(&stack, &src_path);
             flood_fill(&src, &self.fill_args, target);
         }
     }

@@ -317,6 +317,15 @@ pub trait InteractionMode {
         None
     }
 
+    /// 光标用的动作名（`gui/mode.py` 的 `cursor` 属性取
+    /// `app.cursors.get_action_cursor(action_name, ...)`）。
+    ///
+    /// 默认与 [`Self::action_name`] 相同；填充模式在缺口检测开启时会换成
+    /// `FloodFillGCMode`（`fill.py:93-97`）。
+    fn cursor_action_name(&self) -> Option<&'static str> {
+        self.action_name()
+    }
+
     /// 是否有一段作画正在录制（guis mode 的实时更新要跳过它）。
     fn is_painting(&self) -> bool {
         false

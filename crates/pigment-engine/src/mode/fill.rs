@@ -52,9 +52,9 @@
 //!
 //! # 记账（本块未移植 / 用最保守做法的地方）
 //!
-//! - **src_path**（`fill.py:249` 的"取样源图层"下拉）：引擎的
-//!   [`LayerSource`] 已能按路径渲染单层/组，但 GUI 还没有图层下拉框；
-//!   `sample merged` 与"当前层"两条源路径已接。
+//! - **src_path**（`fill.py:249` 的"取样源图层"下拉）：已接 GUI 与引擎
+//!   （[`FillOptions::src_layer`] 存稳定图层 id，命令 `redo()` 时解析路径；
+//!   [`LayerSource`] 按路径渲染单层/组）。
 //! - **进度/取消对话框**（`fill.py:316`、`floodfill.py:116` 的 `FillHandler`）：
 //!   我们的填充是同步的，没有线程与取消点；形态学/模糊同样同步。
 //! - **种子叠加预览**（`fill.py:361` 的 `FloodFillOverlay`，黑白虚线）与
@@ -1330,10 +1330,24 @@ fn composite(
 /// 填充命令的展示名（`lib/command.py:564` 的 `display_name = _("Flood Fill")`）。
 pub const DISPLAY_NAME: &str = "Flood Fill";
 
+/// 填充模式的单选动作名（`fill.py:45` 的 `ACTION_NAME`）。
+pub const ACTION_NAME: &str = "FloodFillMode";
+
+/// 缺口检测开启时的**光标动作名**（`fill.py:46` 的 `GC_ACTION_NAME`）。
+///
+/// 源码只为它注册了一个 `GtkAction`（`resources.xml:1952-1957`），没有
+/// activate 处理器 —— 用途是让 `app.cursors.get_action_cursor()` 取到
+/// `mypaint-fill-gc-symbolic` 那枚光标。它**不是**模式类，所以不参与
+/// `ModeRegistry.get_action_names()`；本移植把它作为
+/// [`FillMode::cursor_action_name`] 的返回值保留，供以后的自绘光标使用。
+/// 记账：本应用目前不画笔刷/工具光标（`cursor.*` 整块未移植），所以这个
+/// id 还没有消费方。
+pub const GC_ACTION_NAME: &str = "FloodFillGCMode";
+
 /// 填充模式的可调项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
 ///
 /// 默认值照源码类常量（`fill.py:450-462`）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FillOptions {
     /// 容差（`DEFAULT_TOLERANCE = 0.05`）。
     pub tolerance: f32,
@@ -1345,6 +1359,11 @@ pub struct FillOptions {
     pub blend_mode: FillBlendMode,
     /// 从所有可见层的临时合成里取样（`DEFAULT_SAMPLE_MERGED = False`）。
     pub sample_merged: bool,
+    /// 取样源图层 id（`fill.py:965-970` 的 `src_path`；`None` = 当前层）。
+    ///
+    /// 源码存的是图层对象路径，并在插层/删层/撤销时修正；这里用稳定 id，
+    /// 到填充命令 `redo()` 时再解析成路径，插层后不会指错层。
+    pub src_layer: Option<u64>,
     /// 把填充限制在当前视口内（`DEFAULT_LIM_TO_VIEW = False`）。
     pub limit_to_view: bool,
     /// 这一次填充写到新层（`DEFAULT_MAKE_NEW_LAYER = False`，用完自动复位）。
@@ -1369,6 +1388,7 @@ impl Default for FillOptions {
             comp_mode: CombineMode::Normal,
             blend_mode: FillBlendMode::Normal,
             sample_merged: false,
+            src_layer: None,
             limit_to_view: false,
             make_new_layer: false,
             offset: 0,
@@ -1424,6 +1444,19 @@ impl FillMode {
             fill_permitted: true,
             last_pos: None,
             view_bbox: None,
+        }
+    }
+
+    /// 当前应使用的光标动作名 —— `fill.py:93-97` 的 `cursor` 属性。
+    ///
+    /// 缺口检测开着时返回 [`GC_ACTION_NAME`]，否则返回 [`ACTION_NAME`]。
+    /// 源码用这个 id 去取两枚不同的光标图；本移植还没有光标绘制，先保留
+    /// 语义与 id，供 `cursor.*` 移植时直接接上。
+    pub fn cursor_action_name(&self) -> &'static str {
+        if self.options.gap_closing {
+            GC_ACTION_NAME
+        } else {
+            ACTION_NAME
         }
     }
 
@@ -1528,10 +1561,16 @@ impl FillMode {
             opacity: self.options.opacity,
             bbox,
         };
-        let src_path = ctx.doc.current_path().to_vec();
+        // 源码 `src_path=None` 表示"当前层"（`command.py:596-599`）。命令要拿
+        // 稳定 id，而不是此刻的路径：勾了 "New Layer (once)" 时新层会插在
+        // 当前层位置、把原层往下挤，路径会指错。
+        let src_layer = self
+            .options
+            .src_layer
+            .unwrap_or_else(|| ctx.current_layer_id());
         let cmd = crate::command::FloodFill::new(
             ctx.current_layer_id(),
-            src_path,
+            src_layer,
             args,
             self.options.sample_merged,
             make_new_layer,
@@ -1566,7 +1605,7 @@ impl InteractionMode for FillMode {
     }
 
     fn fill_options(&self) -> Option<FillOptions> {
-        Some(self.options)
+        Some(self.options.clone())
     }
 
     fn set_fill_options(&mut self, options: FillOptions) {
@@ -1580,7 +1619,12 @@ impl InteractionMode for FillMode {
 
     /// `ACTION_NAME`（`fill.py:45`）。
     fn action_name(&self) -> Option<&'static str> {
-        Some("FloodFillMode")
+        Some(ACTION_NAME)
+    }
+
+    /// `fill.py:93-97` 的 `cursor` 属性：缺口检测开/关对应两个动作 id。
+    fn cursor_action_name(&self) -> Option<&'static str> {
+        Some(self.cursor_action_name())
     }
 
     /// `pointer_behavior = Behavior.PAINT_NOBRUSH`（`fill.py:76`）。
@@ -2123,6 +2167,24 @@ mod tests {
         doc
     }
 
+    /// 缺口检测开关切换光标动作 id（`fill.py:93-97`）。
+    #[test]
+    fn cursor_action_follows_gap_closing() {
+        let mut mode = FillMode::new();
+        assert_eq!(mode.cursor_action_name(), ACTION_NAME);
+        assert_eq!(
+            InteractionMode::cursor_action_name(&mode),
+            Some(ACTION_NAME)
+        );
+        mode.options.gap_closing = true;
+        assert_eq!(mode.cursor_action_name(), GC_ACTION_NAME);
+        assert_eq!(GC_ACTION_NAME, "FloodFillGCMode");
+        assert_eq!(
+            InteractionMode::cursor_action_name(&mode),
+            Some("FloodFillGCMode")
+        );
+    }
+
     /// 单击（按下 → 松开）在空白层上填出一块，且**一条**命令入栈、可撤销。
     #[test]
     fn click_fills_and_undo_restores_the_layer() {
@@ -2422,6 +2484,134 @@ mod tests {
             ctx.doc.undo();
             assert_eq!(ctx.doc.layers().len(), before_layers);
         }
+    }
+
+    /// "Source" 下拉：显式指定取样源图层（`fill.py:965-970` 的 `src_path`）。
+    ///
+    /// 目标层是空的，源层只有左半边不透明；填充范围必须按**源层**算，
+    /// 结果写进目标层。
+    #[test]
+    fn explicit_source_layer_controls_the_filled_region() {
+        use pigment_surface::layer::Layer;
+
+        let mut doc = Document::new();
+        doc.layers_mut().set_background_visible(false);
+        // 当前层（源）：左半边不透明黑，右半边透明
+        {
+            let surface = doc.surface_mut();
+            let tile = surface.tile_request_start(0, 0);
+            for row in tile.iter_mut() {
+                for (x, px) in row.iter_mut().enumerate() {
+                    *px = if x < 32 { opaque(0, 0, 0) } else { [0; 4] };
+                }
+            }
+            surface.tile_request_end(0, 0);
+        }
+        let src_id = doc.layers().current_id();
+        // 目标层：上方空白层
+        let top = Layer::new();
+        let top_id = top.id;
+        doc.layers_mut().insert(0, top);
+        assert!(doc.layers_mut().set_current_by_id(top_id));
+
+        let mut brush = crate::brushlib::default_brush();
+        brush.get_mut(BrushSetting::ColorS).base_value = 0.0;
+        brush.get_mut(BrushSetting::ColorV).base_value = 1.0;
+        let mut state = crate::hokusai::BrushState::default();
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
+        };
+        let mut mode = FillMode::new();
+        mode.options.src_layer = Some(src_id);
+        InteractionMode::button_press(&mut mode, &mut ctx, &PointerEvent::button(2.0, 2.0, 0.0, 1));
+        InteractionMode::button_release(
+            &mut mode,
+            &mut ctx,
+            &PointerEvent::button(2.0, 2.0, 16.0, 1),
+        );
+
+        let target = ctx.doc.layers().layer_at(&[0]).unwrap().surface().unwrap();
+        assert_eq!(
+            dst_px(target, 10, 10)[3],
+            OPAQUE,
+            "源层不透明区应决定填充范围"
+        );
+        assert_eq!(
+            dst_px(target, 40, 10)[3],
+            0,
+            "源层透明区不该被填（目标层自身是空的）"
+        );
+        // 源层原样不动
+        let src = ctx.doc.layers().layer_at(&[1]).unwrap().surface().unwrap();
+        assert_eq!(dst_px(src, 10, 10), opaque(0, 0, 0));
+        assert_eq!(dst_px(src, 40, 10), [0; 4]);
+        assert_eq!(ctx.doc.current_path(), &[0]);
+    }
+
+    /// "New Layer (once)" 时取样源仍是**填充前的当前层**：新层插在原层
+    /// 位置会把原层路径往后挤，命令必须按 id 重新解析路径
+    /// （`command.py:596-599` 持图层对象引用）。
+    #[test]
+    fn new_layer_fill_keeps_the_original_layer_as_source() {
+        let mut doc = Document::new();
+        doc.layers_mut().set_background_visible(false);
+        {
+            let surface = doc.surface_mut();
+            let tile = surface.tile_request_start(0, 0);
+            for row in tile.iter_mut() {
+                for (x, px) in row.iter_mut().enumerate() {
+                    *px = if x < 32 { opaque(0, 0, 0) } else { [0; 4] };
+                }
+            }
+            surface.tile_request_end(0, 0);
+        }
+        let before_layers = doc.layers().len();
+        let mut brush = crate::brushlib::default_brush();
+        brush.get_mut(BrushSetting::ColorS).base_value = 0.0;
+        brush.get_mut(BrushSetting::ColorV).base_value = 1.0;
+        let mut state = crate::hokusai::BrushState::default();
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
+        };
+        let mut mode = FillMode::new();
+        mode.options.make_new_layer = true;
+        InteractionMode::button_press(&mut mode, &mut ctx, &PointerEvent::button(2.0, 2.0, 0.0, 1));
+        InteractionMode::button_release(
+            &mut mode,
+            &mut ctx,
+            &PointerEvent::button(2.0, 2.0, 16.0, 1),
+        );
+
+        assert_eq!(ctx.doc.layers().len(), before_layers + 1);
+        let new = ctx.doc.layers().current().surface().expect("新绘画层");
+        assert_eq!(
+            dst_px(new, 10, 10)[3],
+            OPAQUE,
+            "新层应填满源层的不透明左半边"
+        );
+        assert_eq!(
+            dst_px(new, 40, 10)[3],
+            0,
+            "源层右半边透明，新层也不该填（旧实现会错取空的新层当源）"
+        );
     }
 
     /// 锁定层：`_fill_permitted` = `visible and not locked` → 默认收不到种子；

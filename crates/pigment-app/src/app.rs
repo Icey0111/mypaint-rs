@@ -273,6 +273,8 @@ pub struct PigmentApp {
     /// 编辑器本身没有窗口 —— 它是偏好窗口 "Keys" 页的页面体
     /// （`gui/preferenceswindow.glade:439-450`），见 [`Self::prefs_window`]。
     pub(crate) key_editor: crate::shell::accelmap::KeyEditorState,
+    /// 偏好窗口 Buttons 页的按钮映射编辑器（`gui/buttonmap.py`）。
+    pub(crate) button_editor: crate::shell::buttonmap_editor::ButtonEditorState,
     // ---- 偏好窗口（B6-3）----
     /// 偏好窗口的界面状态 —— `gui/preferenceswindow.py` 那个
     /// `windowing.Dialog`（当前页签 / 是否可见 / 状态文字）。
@@ -389,6 +391,10 @@ pub struct PigmentApp {
     /// 由按钮映射压栈的临时模式（如 `Ctrl+Shift+Button3 → FrameEditMode`）：
     /// 记录触发它的鼠标键，之后把该键的按下/移动/松开翻译成主键事件。
     pub(crate) mapped_mode_button: Option<egui::PointerButton>,
+    /// 本次主键按下被 `input.button_mapping` 里带修饰键的绑定吃掉了
+    /// （例如 `<Control>Button1` → `BrushResizeMode`）：按住的这段时间不喂给
+    /// 绘画模式，避免"改笔刷尺寸的同时画一笔"。
+    pub(crate) primary_action_active: bool,
     /// 视图工具上一帧的指针位置（画布局部坐标，逐帧增量用）。
     pub(crate) view_drag_prev: Option<egui::Pos2>,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
@@ -741,6 +747,7 @@ impl PigmentApp {
             // 之后才 `Gtk.AccelMap.load()`）
             accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
             key_editor: Default::default(),
+            button_editor: Default::default(),
             prefs_window: Default::default(),
             background_window: Default::default(),
             layer_view_rename: None,
@@ -780,6 +787,7 @@ impl PigmentApp {
             popup_menu: None,
             popup_opened: 0.0,
             mapped_mode_button: None,
+            primary_action_active: false,
             view_drag_prev: None,
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
@@ -1743,40 +1751,41 @@ impl PigmentApp {
     }
 
     /// 鼠标弹出主菜单（`ShowPopupMenu`，`resources.xml:1311-1316` 的
-    /// `popupmenu_show_cb`）。这里是精简版：列出最常用的顶层动作。
+    /// `popupmenu_show_cb`）。
+    ///
+    /// 源码 `popupmenu_show_cb`（`drawwindow.py`）把 `app.menubar` 的**整棵
+    /// menu.xml 树**拿到鼠标位置弹出，不是一份精简动作表。这里复用菜单栏
+    /// 的 [`PigmentApp::menu_node`]，所以 9 个顶级菜单、子菜单、分隔线、
+    /// 加速键文本、置灰规则与顶栏完全一致；弹出的是一列顶级菜单，
+    /// 点其中一项再展开子菜单（GTK 的 popup 也是这个形态）。
     #[allow(deprecated)] // egui 0.37 的 Id::new 只是被 IdSalt 取代，稳定 id 仍可用
     pub(crate) fn popup_menu(&mut self, ctx: &egui::Context, now: f64) {
         let Some(pos) = self.popup_menu else {
             return;
         };
-        let mut close = false;
-        let mut action: Option<&'static str> = None;
-        egui::Area::new(egui::Id::new("main-popup-menu-v1"))
+        let area = egui::Area::new(egui::Id::new("main-popup-menu-v2"))
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::popup(ui.style()).show(ui, |ui| {
-                    for (label, id) in [
-                        ("Freehand", "FreehandMode"),
-                        ("Eraser", "BlendModeEraser"),
-                        ("Brush Settings Editor", "BrushEditorWindow"),
-                        ("Background Chooser", "BackgroundWindow"),
-                        ("Preferences", "PreferencesWindow"),
-                        ("Reset View", "ResetView"),
-                        ("Fullscreen", "Fullscreen"),
-                    ] {
-                        if ui.button(label).clicked() {
-                            action = Some(id);
-                            close = true;
-                        }
+                    ui.set_min_width(230.0);
+                    for node in crate::shell::menubar::MENUBAR {
+                        self.menu_node(ui, node);
                     }
                 });
             });
-        if let Some(id) = action {
-            self.run_action(id, ctx, now);
-        }
-        let clicked_later = ctx.input(|i| i.pointer.any_click()) && now - self.popup_opened > 0.05;
-        if close || clicked_later || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // 条目自己的 `ui.close()` 会关菜单；这里兜底"点空白/Esc"。
+        // 点菜单内部（包括展开子菜单）不能关，否则子菜单永远打不开。
+        let pointer = ctx.input(|i| i.pointer.interact_pos());
+        let inside = pointer
+            .map(|p| area.response.rect.contains(p))
+            .unwrap_or(false);
+        let menu_open = egui::Popup::is_any_open(ctx);
+        let clicked_later = ctx.input(|i| i.pointer.any_click())
+            && !inside
+            && !menu_open
+            && now - self.popup_opened > 0.05;
+        if clicked_later || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.popup_menu = None;
         }
     }
@@ -1805,7 +1814,15 @@ impl PigmentApp {
         let pan = crate::view::wheel_action_is_pan(default_pan, modifiers.ctrl, modifiers.alt);
         let local = pos - rect.min;
         if modifiers.shift {
-            self.wheel_accum += delta;
+            // 平移分支两个分量都要；缩放分支只认纵向，但 Windows 的
+            // Shift+滚轮常只剩水平分量，按平台适配折算（见
+            // `view::shift_wheel_vertical`）。
+            self.wheel_accum.x += delta.x;
+            self.wheel_accum.y += if pan {
+                delta.y
+            } else {
+                crate::view::shift_wheel_vertical(delta.x, delta.y)
+            };
             let mut steps_y = crate::view::wheel_units(self.wheel_accum.y).trunc();
             let mut steps_x = crate::view::wheel_units(self.wheel_accum.x).trunc();
             if steps_y != 0.0 {
@@ -2552,7 +2569,7 @@ fn layout_ink_buttons(
             "ShowBackgroundToggle" | "BackgroundWindow" => true,
             // ---- 工具模式（B3：无线电动作 + 它们的 Flip 快捷键版本）----
             "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
-            | "FloodFillMode" | "LayerMoveMode" => true,
+            | "FloodFillMode" | "FloodFillGCMode" | "LayerMoveMode" => true,
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
             | "FlipEllipseMode" | "FlipFloodFillMode" | "FlipLayerMoveMode" => true,
             "FrameEditMode" | "FlipFrameEditMode" => true,
@@ -2902,6 +2919,22 @@ fn layout_ink_buttons(
                 self.switch_mode(id, now);
                 ctx.request_repaint();
             }
+            // `FloodFillGCMode`（`resources.xml:1952-1957`）在源码里只是给光标
+            // 用的无处理器动作；本移植没有自绘光标，但既然它是一个独立动作
+            // id，就让它能真正进入"缺口检测开启"的填充模式：
+            // 切模式后把本次会话的 FillOptions.gap_closing 打开（不写偏好，
+            // 与源码"只换光标、不改选项"的保守差异见交付记账）。
+            "FloodFillGCMode" => {
+                self.switch_mode("FloodFillMode", now);
+                self.with_mode(|modes, _ctx| {
+                    if let Some(mut o) = modes.top().fill_options() {
+                        o.gap_closing = true;
+                        modes.top_mut().set_fill_options(o);
+                    }
+                });
+                self.set_status("Flood Fill: 缺口检测已开启".to_string(), now);
+                ctx.request_repaint();
+            }
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
             | "FlipEllipseMode" | "FlipFloodFillMode" | "FlipLayerMoveMode"
             | "FlipFrameEditMode" | "FlipSymmetryEditMode" => {
@@ -3165,9 +3198,14 @@ fn layout_ink_buttons(
             // `_subwindow_hide_cb` 会把动作取消勾选，`application.py:752-756`）。
             "PreferencesWindow" => {
                 self.prefs_window.open = !self.prefs_window.open;
-                if !self.prefs_window.open {
+                if self.prefs_window.open {
+                    // `preferenceswindow.py:222-223`：每次 show 都重读
+                    // `input.button_mapping`（回退/外部改文件后也能看到）
+                    self.reload_button_editor();
+                } else {
                     // 窗口藏起来时捕获对话框也收（见 prefs_window 的关窗语义）
                     self.key_editor.capture = None;
+                    self.button_editor.capture = None;
                 }
                 ctx.request_repaint();
             }
