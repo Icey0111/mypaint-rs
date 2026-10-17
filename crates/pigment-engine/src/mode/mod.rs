@@ -32,6 +32,7 @@ pub mod ink;
 pub mod layermove;
 pub mod line;
 pub mod pick;
+pub mod symmetryedit;
 
 use crate::hokusai::BrushState;
 use crate::command::Brushwork;
