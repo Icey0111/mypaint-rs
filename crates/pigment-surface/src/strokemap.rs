@@ -65,6 +65,7 @@ impl StrokeShape {
             let b = after.tile(c.0, c.1);
             let mut mask = vec![0u8; N * N];
             let mut any = false;
+            let mut changed = false;
             for y in 0..N {
                 for x in 0..N {
                     let pa = a.map(|t| t[y][x]).unwrap_or([0; 4]);
@@ -72,6 +73,7 @@ impl StrokeShape {
                     if pa == pb {
                         continue;
                     }
+                    changed = true;
                     let aa = pa[3] as i32;
                     let ab = pb[3] as i32;
                     let mut color_change = 0i32;
@@ -90,7 +92,7 @@ impl StrokeShape {
                     }
                 }
             }
-            if any {
+            if any || changed {
                 shape.tiles.insert(c, mask);
             }
         }
@@ -317,6 +319,28 @@ mod tests {
         s.tile_request_end(0, 0);
         let after = s.save_snapshot();
         (before, after)
+    }
+
+    #[test]
+    fn eraser_only_diff_keeps_an_empty_shape_like_source() {
+        // 源码 `_Tile.new_from_diff` 只要 tile 变了就插入一块（即使掩码全 0），
+        // `add_stroke_shape` 因此会记录一条空形状；擦除笔画的 alpha 递减
+        // 不会点亮任何阈值位，但 tile 变化本身仍要留痕。
+        let mut s = PigmentSurface::new();
+        let red = vec![255u8, 0, 0, 255].repeat(64 * 64);
+        s.load_from_rgba8(&red, 0, 0, 64, 64);
+        let before = s.save_snapshot();
+        s.replace_from_rgba8(&vec![0u8; 64 * 64 * 4], 0, 0, 64, 64);
+        let after = s.save_snapshot();
+        let shape = StrokeShape::from_snapshots(&before, &after).expect("擦除也要有形状");
+        assert!(!shape.is_empty());
+        assert!(shape.tiles.contains_key(&(0, 0)));
+        assert!(shape.tiles[&(0, 0)].iter().all(|b| *b == 0), "掩码全 0");
+        // 写盘后仍保留这块全 0 的 tile（源码不丢弃）
+        let dat = write_dat(&[shape], 0, 0);
+        let back = read_dat(&dat, 0, 0).unwrap();
+        assert_eq!(back.len(), 1);
+        assert!(back[0].tiles[&(0, 0)].iter().all(|b| *b == 0));
     }
 
     #[test]
