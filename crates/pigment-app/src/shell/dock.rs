@@ -9,6 +9,9 @@
 //!   按 **浮动窗口 → 右栈 → 左栈** 的顺序找第一个放得下的组
 //!   （组内页数 < maxpages，从 1 逐步放宽；每栈最多 3 个组，
 //!   `maxnotebooks=3`），找到后 reveal（切到该页、展开所在侧栏）。
+//!   浮动窗口只算**已经存在的**（用户拖出标签才有，workspace.py:649-）；
+//!   没有浮动窗口时新面板落到右侧栏 —— B4-3 修正了 `add` 之前会给任何新
+//!   面板新建一个浮动窗口的偏差。
 //! - **移除**：`toggle_dockpanel_cb`（drawwindow.py:352-367）——
 //!   `Toggle*Tool` 动作 active 时 add、inactive 时 remove；组空了整个
 //!   侧栏收起（`_sidebar_stack_hide_cb`，workspace.py:685）。
@@ -51,6 +54,14 @@ pub enum PanelId {
     PreviewTool,
     /// `MyPaintHistoryPanel` —— 最近笔刷与颜色（`gui/history.py:220`）。
     HistoryPanel,
+    /// `MyPaintComponentSlidersTool` —— 分量滑条颜色器
+    /// （`gui/colortools.py:99-101` 的 `ComponentSlidersTool` 动作，
+    /// 页面 `gui/colors/sliders.py:25-160` 的 `ComponentSlidersAdjusterPage`）。
+    ///
+    /// 源码里颜色器是**一页一个工具**（`_PageToolAdapter`，`gui/colortools.py:31-101`），
+    /// 本块只注册了分量滑条这一页；其余五页在面板内以禁用页签表示
+    /// （见 `shell/color_panel.rs` 的 `COLOR_PAGES`）。
+    ComponentSlidersTool,
 }
 
 impl PanelId {
@@ -65,6 +76,9 @@ impl PanelId {
             PanelId::PreviewTool => "Preview",
             PanelId::ScratchpadTool => "Scratchpad",
             PanelId::HistoryPanel => "Recent Brushes & Colors",
+            // 分量滑条页的 `get_page_title()`（sliders.py:111-113），也是
+            // `resources.xml:1435` 的 `ComponentSlidersTool` 动作 label
+            PanelId::ComponentSlidersTool => "Component Sliders",
             // BrushGroupTool 的标题 = 组名（brushselectionwindow.py:384）；
             // 本项目单面板显示全部组，用工具条动作的 label
             PanelId::BrushGroups => "Brush Groups",
@@ -83,6 +97,9 @@ impl PanelId {
             PanelId::PreviewTool => "mypaint-view-symbolic",
             PanelId::ScratchpadTool => "mypaint-scratchpad-symbolic",
             PanelId::HistoryPanel => "mypaint-history-symbolic",
+            // 分量滑条的页面图标（sliders.py:107-109），同
+            // `resources.xml:1434` 的 icon-name
+            PanelId::ComponentSlidersTool => "mypaint-tool-component-sliders",
             // brushselectionwindow.py:398 的 fallback
             PanelId::BrushGroups => "mypaint-brushes-symbolic",
             // 应用本地
@@ -98,6 +115,8 @@ impl PanelId {
             PanelId::PreviewTool => "Show preview of the whole drawing area",
             PanelId::ScratchpadTool => "Paint sketches and try things out",
             PanelId::HistoryPanel => "Recently used brushes and colors",
+            // 页面描述（sliders.py:115-120），同 `resources.xml:1436` 的 tooltip
+            PanelId::ComponentSlidersTool => "Adjust individual components of the color.",
             PanelId::BrushGroups => "List of brushes, grouped",
             PanelId::BrushEditor => "Adjust the current brush's settings",
         }
@@ -170,9 +189,13 @@ impl DockState {
 
     /// 添加面板 —— 复刻 `toolstack.py:673-721` 的 `add_tool_widget` 逐栈放宽：
     ///
-    /// - 栈顺序 **浮动 → 右 → 左**（`_get_tool_stacks`，workspace.py:642）；
+    /// - 栈顺序 **浮动 → 右 → 左**（`_get_tool_stacks`，workspace.py:642-648）；
+    ///   浮动栈只在**已有浮动窗口**时参与：源码里的浮动 `ToolStackWindow` 只能
+    ///   由用户把标签拖出去产生（`_tool_tab_drag_begin_cb`，workspace.py:649-），
+    ///   `add_tool_widget` 自己不会新建浮动窗口。B4-3 修正了这一点 —— 否则任何
+    ///   面板第一次打开都会飘成独立窗口，而源码里它是停进右侧栏的。
     /// - 每轮 maxpages 从 1 逐步放宽，找**第一个页数 < maxpages 的组**；
-    /// - 每栈末尾总有一个空占位组（GTK 的 placeholder notebook），等价于
+    /// - 侧栏每栈末尾总有一个空占位组（GTK 的 placeholder notebook），等价于
     ///   "可新建组"——受 `maxnotebooks=3` 约束：**非空组**达到 3 个就不能再建；
     /// - 页数放宽到 3 仍放不下才考虑更松（源码放宽到 100，组数/页数实际上限
     ///   由 maxnotebooks 保证）。
@@ -184,11 +207,23 @@ impl DockState {
         while maxpages < 100 {
             for stack in [Stack::Floating, Stack::Right, Stack::Left] {
                 let groups = self.stack_groups(stack);
+                // 浮动"栈"只在有浮动窗口时才存在：源码里 `_get_tool_stacks()`
+                // 只 yield 已经存在的 ToolStackWindow（workspace.py:642-648），
+                // 而浮动窗口是用户拖出标签才产生的（workspace.py:649-）。
+                let stack_exists = stack != Stack::Floating || !self.floating.is_empty();
+                if !stack_exists {
+                    continue;
+                }
                 // 已有组：页数 < maxpages 的第一个（空占位组不算，它在下面处理）
                 let existing = groups
                     .iter()
                     .position(|g| !g.panels.is_empty() && g.panels.len() < maxpages);
                 // 栈尾空占位组：可新建组的前提 = 非空组数 < maxnotebooks
+                //
+                // 注意 maxpages = 1 时**总**能新建组（空占位组的页数 0 < 1），
+                // 所以新面板会先占新组，只有该栈的非空组到 3 个才轮到下一栈
+                // （`toolstack.py:700-715`：先找 `get_n_pages() < maxpages` 的
+                // notebook，找不到才 split 占位组）。
                 let populated = groups.iter().filter(|g| !g.panels.is_empty()).count();
                 let can_create = populated < MAX_GROUPS_PER_STACK;
                 if let Some(gi) = existing.or(if can_create { Some(groups.len()) } else { None }) {
@@ -455,6 +490,7 @@ impl PigmentApp {
                     PanelId::BrushEditor => self.brush_editor_content(ui),
                     PanelId::HistoryPanel => self.history_panel_content(ui),
                     PanelId::LayersTool => self.layers_panel_content(ui),
+                    PanelId::ComponentSlidersTool => self.color_panel_content(ui),
                     other => placeholder_panel(ui, *other),
                 });
         }
@@ -518,38 +554,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn add_prefers_floating_then_right_then_left() {
-        // workspace.py:642-648 的 _get_tool_stacks 顺序：浮动 → 右 → 左；
-        // maxpages=1 时只落空占位组（= 新建组），maxnotebooks=3 卡非空组数
+    fn add_docks_into_sidebars_and_never_creates_floating_windows() {
+        // workspace.py:642-648 的 _get_tool_stacks 顺序是"浮动 → 右 → 左"，但
+        // 浮动栈只能由用户拖出标签产生（workspace.py:649-），`add_tool_widget`
+        // 不会新建浮动窗口 —— 所以新面板第一次打开落在**右侧栏**。
         let mut d = DockState::default();
-        d.add(PanelId::LayersTool);
-        assert_eq!(d.floating.len(), 1, "浮动栈优先");
-        assert_eq!(d.floating[0].panels, vec![PanelId::LayersTool]);
+        d.add(PanelId::ComponentSlidersTool);
+        assert!(d.floating.is_empty(), "新增面板不得自建浮动窗口");
+        assert_eq!(d.right.len(), 1, "右栈接收");
+        assert_eq!(d.right[0].panels, vec![PanelId::ComponentSlidersTool]);
         d.add(PanelId::PreviewTool);
-        assert_eq!(
-            d.floating[1].panels,
-            vec![PanelId::PreviewTool],
-            "maxpages=1 时新面板各占一组"
-        );
-        // 浮动栈非空组满 3 → 右栈
+        assert_eq!(d.right.len(), 2, "maxpages=1 时新面板各占一组");
+        // 已有浮动窗口（用户拖出的组）时，浮动态排在最前、可再开一个组
+        // （`toolstack.py:700-715`：maxpages=1 时新面板落"空占位组"）；
+        // 浮动窗口非空组满 3 个后才轮到右栈。
         let mut d2 = DockState::default();
+        d2.floating.push(Group {
+            panels: vec![PanelId::LayersTool],
+            active: 0,
+        });
+        d2.add(PanelId::PreviewTool);
+        assert_eq!(d2.floating.len(), 2, "浮动窗口里新开一个组");
+        assert!(d2.right.is_empty(), "右栈此时不该被用到");
+        // 浮动栈满 3 组 → 右栈
+        let mut d3 = DockState::default();
         for _ in 0..MAX_GROUPS_PER_STACK {
-            d2.floating.push(Group {
+            d3.floating.push(Group {
                 panels: vec![PanelId::PreviewTool; 3],
                 active: 0,
             });
         }
-        d2.add(PanelId::LayersTool);
-        assert_eq!(d2.right.len(), 1, "右栈接收");
+        d3.add(PanelId::LayersTool);
+        assert_eq!(d3.right.len(), 1, "右栈接收");
         // 右栈也满 → 左栈
         for _ in 0..MAX_GROUPS_PER_STACK {
-            d2.right.push(Group {
+            d3.right.push(Group {
                 panels: vec![PanelId::PreviewTool; 3],
                 active: 0,
             });
         }
-        d2.add(PanelId::ScratchpadTool);
-        assert_eq!(d2.left.len(), 1, "左栈接收");
+        d3.add(PanelId::ScratchpadTool);
+        assert_eq!(d3.left.len(), 1, "左栈接收");
     }
 
     #[test]
@@ -606,6 +651,12 @@ mod tests {
         assert_eq!(PanelId::ScratchpadTool.title(), "Scratchpad");
         assert_eq!(PanelId::HistoryPanel.title(), "Recent Brushes & Colors");
         assert_eq!(PanelId::HistoryPanel.icon_name(), "mypaint-history-symbolic");
+        // B4-3：分量滑条页（sliders.py:107-120）
+        assert_eq!(PanelId::ComponentSlidersTool.title(), "Component Sliders");
+        assert_eq!(
+            PanelId::ComponentSlidersTool.icon_name(),
+            "mypaint-tool-component-sliders"
+        );
         // 图标文件都存在（toolsbars 的内嵌表）
         for p in [
             PanelId::BrushGroups,
@@ -615,6 +666,7 @@ mod tests {
             PanelId::ScratchpadTool,
             PanelId::PreviewTool,
             PanelId::HistoryPanel,
+            PanelId::ComponentSlidersTool,
         ] {
             let name = p.icon_name();
             assert!(

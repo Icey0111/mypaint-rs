@@ -1092,6 +1092,11 @@ impl PigmentApp {
                 self.dock.is_added(crate::shell::dock::PanelId::HistoryPanel)
             }
             "BrushGroups" => self.dock.is_added(crate::shell::dock::PanelId::BrushGroups),
+            // 颜色器（B4-3）：GtkToggleAction 的 active = 面板已添加
+            // （`get_tool_widget_added`，drawwindow.py:357-358）
+            "ComponentSlidersTool" => self
+                .dock
+                .is_added(crate::shell::dock::PanelId::ComponentSlidersTool),
             _ => false,
         }
     }
@@ -1121,6 +1126,13 @@ impl PigmentApp {
             // ---- 停靠面板（S6）----
             "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
             | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
+            // ---- 颜色器（B4-3）----
+            // `ComponentSlidersTool` 是 `GtkToggleAction`（resources.xml:1433），
+            // 打开的就是本块移植的分量滑条面板；`ColorAdjusters` 是 toolbar2 的
+            // 工厂动作（resources.xml:198，label "Color Adjusters"/short "Colors"），
+            // 源码弹一个九种颜色器的菜单 —— 本项目只实现了其中一页，动作直接
+            // reveal 该面板并记账（见 B4-3 交付说明）。
+            "ComponentSlidersTool" | "ColorAdjusters" => true,
             // ---- 图层（B2-5/B2-6；动态 sensitivity 照源码 enable 语义）----
             "NewPaintingLayerAbove" | "NewLayerGroupAbove" | "DuplicateLayer" | "RemoveLayer" => {
                 true
@@ -1208,6 +1220,27 @@ impl PigmentApp {
             // active 状态 = 偏好 `misc.context_restores_color`（`document.py:367-370`
             // 启动时用偏好初始化它，`:1721-1724` 反向写回）。
             "ContextRestoreColor" => Some(self.color_manager.context_restores_color()),
+            // 停靠面板开关都是 `GtkToggleAction`（resources.xml 的
+            // Toggle*Tool / ComponentSlidersTool），active = 面板已添加
+            // （`toggle_dockpanel_cb` 读的就是 `get_tool_widget_added`，
+            // drawwindow.py:357-358）。B4-3 一并补上，菜单里才有勾选标记。
+            "ToggleModeOptionsTool" => {
+                Some(self.dock.is_added(crate::shell::dock::PanelId::ModeOptionsTool))
+            }
+            "ToggleLayersTool" => Some(self.dock.is_added(crate::shell::dock::PanelId::LayersTool)),
+            "ToggleScratchpadTool" => {
+                Some(self.dock.is_added(crate::shell::dock::PanelId::ScratchpadTool))
+            }
+            "TogglePreviewTool" => {
+                Some(self.dock.is_added(crate::shell::dock::PanelId::PreviewTool))
+            }
+            "ToggleHistoryPanel" => {
+                Some(self.dock.is_added(crate::shell::dock::PanelId::HistoryPanel))
+            }
+            "ComponentSlidersTool" => Some(
+                self.dock
+                    .is_added(crate::shell::dock::PanelId::ComponentSlidersTool),
+            ),
             _ => None,
         }
     }
@@ -1472,6 +1505,26 @@ impl PigmentApp {
             "TogglePreviewTool" => self.dock.toggle(crate::shell::dock::PanelId::PreviewTool),
             "ToggleHistoryPanel" => self.dock.toggle(crate::shell::dock::PanelId::HistoryPanel),
             "BrushGroups" => self.dock.toggle(crate::shell::dock::PanelId::BrushGroups),
+            // ---- 颜色器（B4-3）----
+            // `ComponentSlidersTool`（resources.xml:1433-1438）的 activate 走
+            // `toggle_window_cb` → `toggle_dockpanel_cb`（drawwindow.py:364-375）：
+            // 动作 active 就 add、取消就 remove —— 与 `Toggle*Tool` 同一套语义。
+            "ComponentSlidersTool" => {
+                self.dock
+                    .toggle(crate::shell::dock::PanelId::ComponentSlidersTool)
+            }
+            // `ColorAdjusters`（resources.xml:198-204）在源码里是弹菜单的工厂动作
+            // （`gui/colortools.py:207-235` 的 `ColorAdjustersToolItem`）。egui 的
+            // 菜单不能在动作回调里弹出，这里直接 reveal 唯一已移植的那一页，
+            // 其余页面在面板内以禁用页签列出（差异记账）。
+            "ColorAdjusters" => {
+                self.dock
+                    .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
+                self.set_status(
+                    "颜色器：本移植只完成 Component Sliders 页（其余页签禁用）".to_string(),
+                    now,
+                );
+            }
             // ---- 窗口 ----
             "Fullscreen" => {
                 self.fullscreen = !self.fullscreen;

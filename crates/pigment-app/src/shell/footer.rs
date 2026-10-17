@@ -15,20 +15,17 @@
 //! （[`SymbolicIcon`]），**只求形态可辨、命中区域与源码一致**。
 
 use eframe::egui;
+use pigment_engine::color::UIColor;
 
 use crate::app::PigmentApp;
-use crate::color;
 
 use super::{
-    mode_icon_tooltip, mode_status_text, scale_label_text, BRUSH_INDICATOR_DEFAULT_NAME,
-    BRUSH_INDICATOR_EDGE_HIGHLIGHT_RGBA, BRUSH_INDICATOR_MASK_STOPS,
-    BRUSH_INDICATOR_OUTLINE_RGBA, COLOR_INDICATOR_BORDER_WIDTH,
-    COLOR_INDICATOR_HIGHLIGHT_RGBA, COLOR_INDICATOR_HIGHLIGHT_WIDTH,
-    COLOR_INDICATOR_OUTLINE_RGBA, COLOR_INDICATOR_OUTLINE_WIDTH,
-    FOOTER_BRUSH_INDICATOR_WIDTH, FOOTER_COLOR_INDICATOR_WIDTH, FOOTER_ICON_SIZE,
-    FOOTER_SCALE_LABEL_TEXT_SCALE, FOOTER_SCALE_LABEL_WIDTH, FOOTER_SEPARATOR_PADDING,
-    TIP_COLOR_BOOKMARK, TIP_COLOR_DETAILS, TIP_COLOR_INDICATOR, TIP_COLOR_PICKER,
-    TIP_CONTEXT_PICKER, TIP_SCALE_LABEL,
+    mode_icon_tooltip, mode_status_text, scale_label_text, ADJUSTER_BORDER_WIDTH,
+    BRUSH_INDICATOR_DEFAULT_NAME, BRUSH_INDICATOR_EDGE_HIGHLIGHT_RGBA, BRUSH_INDICATOR_MASK_STOPS,
+    BRUSH_INDICATOR_OUTLINE_RGBA, FOOTER_BRUSH_INDICATOR_WIDTH, FOOTER_COLOR_INDICATOR_WIDTH,
+    FOOTER_ICON_SIZE, FOOTER_SCALE_LABEL_TEXT_SCALE, FOOTER_SCALE_LABEL_WIDTH,
+    FOOTER_SEPARATOR_PADDING, TIP_COLOR_BOOKMARK, TIP_COLOR_DETAILS, TIP_COLOR_INDICATOR,
+    TIP_COLOR_PICKER, TIP_CONTEXT_PICKER, TIP_SCALE_LABEL,
 };
 
 /// 底栏一行的高度。
@@ -57,16 +54,7 @@ enum SymbolicIcon {
     TargetBrush,
 }
 
-/// 把 HSV 打成 egui 颜色。
-fn rgb32(hsv: [f32; 3]) -> egui::Color32 {
-    let [r, g, b] = color::hsv_to_rgb(hsv);
-    egui::Color32::from_rgb(
-        (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-        (b.clamp(0.0, 1.0) * 255.0).round() as u8,
-    )
-}
-
+/// 把带 alpha 的 RGBA（0..1）打成 egui 颜色。
 fn rgba32(c: [f32; 4]) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(
         (c[0] * 255.0).round() as u8,
@@ -193,77 +181,60 @@ impl PigmentApp {
 
     /// 1 号部件：当前色 / 上一色指示器。
     ///
-    /// 照搬 `PreviousCurrentColorAdjuster.render_background_cb`
-    /// （`gui/colors/adjbases.py:875-903`）：左半 = 当前色（`mgr.get_color()`），
-    /// 右半 = 上一色（`mgr.get_previous_color()` = 历史末项，即"最近一次作画用的色"），
-    /// 先描 `OUTLINE_RGBA` 的 3px 外框，再描 `EDGE_HIGHLIGHT_RGBA` 的 1px 内高光，
-    /// 两者都按 `BORDER_WIDTH = 2` 内缩。
+    /// 控件本体是 `PreviousCurrentColorAdjuster`（`gui/colors/adjbases.py:854-930`），
+    /// 底栏里装的是它的子类 `BrushColorIndicator`（`gui/colorpreview.py:18-53`）。
+    /// 绘制照 `render_background_cb`（`:875-903`）：左半 = 当前色
+    /// （`mgr.get_color()`）、右半 = 上一色（`mgr.get_previous_color()` = 历史
+    /// 末项，即"最近一次作画用的色"），先描 `OUTLINE_RGBA` 的 3px 外框、再填两半、
+    /// 最后描 `EDGE_HIGHLIGHT_RGBA` 的 1px 内高光，都按 `BORDER_WIDTH = 2` 内缩。
+    /// 画法与面板里那一份共用 [`crate::shell::color_panel::paint_previous_current`]。
     ///
-    /// 点击行为照 `BrushColorIndicator._clicked_cb`（`gui/colorpreview.py:39`）：
-    /// 左半弹颜色选择器（`ColorChooserPopup`，属 B4），右半直接 `return`（无动作）。
+    /// 交互语义（**按下**即生效，不是抬起）：
+    /// - 右半：`get_color_at_position()` 取上一色（`adjbases.py:918-925`），
+    ///   按钮 1 按下时 `set_managed_color()`（`:671-672`）→ **恢复上一色**；
+    /// - 左半：取当前色（等于没变），抬起后 `clicked` 事件弹颜色选择器
+    ///   （`colorpreview.py:39-53`；`ColorChooserPopup` 未移植，落到状态栏）。
     fn footer_color_indicator(&mut self, ui: &mut egui::Ui, row_h: f32) {
+        use crate::shell::color_panel::{hit_half, paint_previous_current, ColorHalf};
+
         let (rect, resp) = ui.allocate_exact_size(
             egui::vec2(FOOTER_COLOR_INDICATOR_WIDTH, row_h),
             egui::Sense::click(),
         );
-        let b = COLOR_INDICATOR_BORDER_WIDTH;
-        let eff_w = rect.width() - b * 2.0;
-        let eff_h = rect.height() - b * 2.0;
-        if eff_w <= 0.0 || eff_h <= 0.0 {
+        let current = self.color_manager.get_color();
+        let previous = self.color_manager.get_previous_color();
+        let b = ADJUSTER_BORDER_WIDTH;
+        if rect.width() - b * 2.0 <= 0.0 || rect.height() - b * 2.0 <= 0.0 {
             return;
         }
-        let painter = ui.painter();
-        let body = egui::Rect::from_min_size(rect.min + egui::vec2(b, b), egui::vec2(eff_w, eff_h));
-
-        // 左半 = 当前色，右半 = 上一色
-        let half = (eff_w / 2.0).floor();
-        let prev = crate::color::hsv_of(&self.color_manager.get_previous_color());
-        painter.rect_filled(
-            egui::Rect::from_min_size(body.min, egui::vec2(half, eff_h)),
-            0.0,
-            rgb32(self.color_hsv()),
-        );
-        painter.rect_filled(
-            egui::Rect::from_min_size(
-                egui::pos2(body.min.x + half, body.min.y),
-                egui::vec2(eff_w - half, eff_h),
-            ),
-            0.0,
-            rgb32(prev),
-        );
-
-        // 外描边（3px，按 BORDER_WIDTH 内缩后再描）+ 内高光（1px）
-        let outline_rect = egui::Rect::from_min_size(
-            body.min + egui::vec2(0.5, 0.5),
-            egui::vec2(eff_w - 1.0, eff_h - 1.0),
-        );
-        painter.rect_stroke(
-            outline_rect,
-            0.0,
-            egui::Stroke::new(COLOR_INDICATOR_OUTLINE_WIDTH, rgba32(COLOR_INDICATOR_OUTLINE_RGBA)),
-            egui::StrokeKind::Middle,
-        );
-        painter.rect_stroke(
-            outline_rect,
-            0.0,
-            egui::Stroke::new(
-                COLOR_INDICATOR_HIGHLIGHT_WIDTH,
-                rgba32(COLOR_INDICATOR_HIGHLIGHT_RGBA),
-            ),
-            egui::StrokeKind::Middle,
+        paint_previous_current(
+            ui.painter(),
+            rect,
+            current.get_rgb(),
+            previous.get_rgb(),
         );
 
         let tip = format!(
-            "{TIP_COLOR_INDICATOR}\n左半 = 当前色 {}（点击应弹颜色选择器，属 B4）\n右半 = 上一色 {}",
-            color::hex_from_hsv(self.color_hsv()),
-            color::hex_from_hsv(prev),
+            "{TIP_COLOR_INDICATOR}\n左半 = 当前色 {}（点击弹颜色选择器，属 B4）\n右半 = 上一色 {}（按下即恢复）",
+            current.to_hex_str(),
+            previous.to_hex_str(),
         );
         let resp = resp.on_hover_text(tip);
-        if resp.clicked() {
-            // 照 `BrushColorIndicator._clicked_cb`：只有左半响应，右半没有动作。
+        // 按下即恢复上一色（`adjbases.py:671-672` + `:918-925`）
+        if resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_pressed()) {
             if let Some(pos) = resp.interact_pointer_pos() {
-                if pos.x - rect.min.x <= rect.width() / 2.0 {
-                    // B4 到位前先落到状态栏，让"点了但没反应"变成"点了知道为什么"
+                if hit_half(rect, pos) == ColorHalf::Previous {
+                    // 恢复上一色：设成当前色并重推笔刷（`set_color` 内会 `derive_active`）
+                    self.set_color(previous);
+                }
+            }
+        }
+        if resp.clicked() {
+            // 照 `BrushColorIndicator._clicked_cb`（colorpreview.py:39-53）：
+            // 只有左半响应，右半没有额外动作（恢复已在按下时完成）。
+            if let Some(pos) = resp.interact_pointer_pos() {
+                if hit_half(rect, pos) == ColorHalf::Current {
+                    // B4 的颜色选择器弹层未移植前，让"点了没反应"变成"点了知道为什么"
                     let now = ui.input(|i| i.time);
                     self.set_status(
                         "未移植：颜色选择器 ColorChooserPopup（属 B4 颜色器）".to_string(),

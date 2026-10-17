@@ -24,6 +24,7 @@
 //! 数值一律不在此文件出现。
 
 pub(crate) mod actions;
+pub(crate) mod color_panel;
 pub(crate) mod dock;
 pub(crate) mod layers_panel;
 pub(crate) mod footer;
@@ -103,18 +104,21 @@ pub(crate) const TIP_CONTEXT_PICKER: &str =
 pub(crate) const TIP_COLOR_INDICATOR: &str =
     "Current brush color, and the color most recently used for painting";
 
-// ---- 颜色指示器的绘制常量（`gui/colors/adjbases.py`）----
+// ---- 颜色调整器控件的绘制常量（`gui/colors/adjbases.py` 的 `ColorAdjusterWidget`）----
+//
+// 这些是**类常量**（`adjbases.py:449-461`），底栏的当前/上一色指示器与
+// 颜色面板的分量滑条共用同一套描边/高光参数（B4-3 起两处共用）。
 
 /// `adjbases.py:455` `BORDER_WIDTH = 2`。
-pub(crate) const COLOR_INDICATOR_BORDER_WIDTH: f32 = 2.0;
+pub(crate) const ADJUSTER_BORDER_WIDTH: f32 = 2.0;
 /// `adjbases.py:457` `OUTLINE_WIDTH = 3`。
-pub(crate) const COLOR_INDICATOR_OUTLINE_WIDTH: f32 = 3.0;
+pub(crate) const ADJUSTER_OUTLINE_WIDTH: f32 = 3.0;
 /// `adjbases.py:458` `OUTLINE_RGBA = (0, 0, 0, 0.4)`。
-pub(crate) const COLOR_INDICATOR_OUTLINE_RGBA: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
+pub(crate) const ADJUSTER_OUTLINE_RGBA: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
 /// `adjbases.py:459` `EDGE_HIGHLIGHT_WIDTH = 1.0`。
-pub(crate) const COLOR_INDICATOR_HIGHLIGHT_WIDTH: f32 = 1.0;
+pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_WIDTH: f32 = 1.0;
 /// `adjbases.py:460` `EDGE_HIGHLIGHT_RGBA = (1, 1, 1, 0.25)`。
-pub(crate) const COLOR_INDICATOR_HIGHLIGHT_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.25];
+pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.25];
 
 // ---- 笔刷指示器的绘制常量（`gui/footer.py`）----
 
