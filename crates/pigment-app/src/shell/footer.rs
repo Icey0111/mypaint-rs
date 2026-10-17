@@ -340,7 +340,9 @@ impl PigmentApp {
             })
             .unwrap_or_else(|| "未命名".to_string());
 
-        let mut text = mode_status_text();
+        // B3-1 起状态栏第一段用**当前模式**的 usage（`mode.get_usage()`，
+        // 与 `_update_status_bar_mode_widgets` 同源），不再写死文案。
+        let mut text = format!("{}  —  {}", self.modes.top().name(), mode_status_text());
         if let Some(msg) = &transient {
             text.push_str("  ·  ");
             text.push_str(msg);

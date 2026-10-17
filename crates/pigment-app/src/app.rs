@@ -47,7 +47,7 @@ use eframe::egui;
 
 use pigment_engine::brushlib::NUM_BRUSHKEYS;
 use pigment_engine::hokusai::{Brush, BrushSetting, BrushState};
-use pigment_engine::{Brushwork, CommandUpdate, Document, StrokeEvent};
+use pigment_engine::{CommandUpdate, Document};
 
 use crate::brushes::BrushPanel;
 use crate::color::{self, ColorHistory};
@@ -168,10 +168,18 @@ pub struct PigmentApp {
     /// 对应物，改用内嵌的路径输入弹层；语义仍是"给个文件名再存/开"）。
     pub(crate) file_prompt: Option<FilePrompt>,
     // ---- 交互与渲染 ----
-    /// 正在绘制时的引擎状态（每次起笔新建，落笔丢弃）。
-    pub(crate) stroke_state: Option<BrushState>,
-    /// 正在记录的作画命令（`gui/mode.py` 的 `__active_brushwork`）。
-    pub(crate) brushwork: Option<Brushwork>,
+    /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
+    /// （源码 `brush.reset()` 的等价物）。
+    pub(crate) stroke_state: BrushState,
+    /// 交互模式栈（`gui/mode.py:1327` 的 `ModeStack`；B3-1 起接管作画路径）。
+    pub(crate) modes: pigment_engine::mode::ModeStack,
+    /// 指针时间戳的单调基准（毫秒）。egui 的输入时间没有 MyPaint 那样的
+    /// 事件时间戳，这里用"应用启动以来的毫秒"并把倒退夹住
+    /// （`DrawingState::queue_motion` 里还有一层夹逼）。
+    pub(crate) pending_pointer_time: f64,
+    /// 模式层的可配置项（假压力/假旋转/桶旋转/隐藏光标；
+    /// `gui/userconfig.py` 的默认值，B6 起接偏好系统）。
+    pub(crate) mode_prefs: ModePrefs,
     pub(crate) view: View,
     /// 画布在窗口里的矩形（egui 点）。上一帧 `canvas()` 记下的。
     ///
@@ -218,6 +226,30 @@ pub struct PigmentApp {
     pub(crate) layer_drag: Option<Vec<usize>>,
     /// 当前落点（deepinsert 路径）。
     pub(crate) layer_drop_target: Option<Vec<usize>>,
+}
+
+/// 模式层的可配置项（`gui/userconfig.py` + `app.fakepressure/fakerotation`）。
+///
+/// B6 引入偏好系统前先放这几个默认值（源码默认值见 `userconfig.py:61-67`
+/// 与 `application.py:299-300`）。
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModePrefs {
+    /// 鼠标/无压感设备的假压力（默认 0.5）。
+    pub fakepressure: f32,
+    /// 假桶旋转（默认 0.5）。
+    pub fakerotation: f32,
+    /// 画的时候隐藏系统光标（默认 false）。
+    pub hide_cursor_while_painting: bool,
+}
+
+impl Default for ModePrefs {
+    fn default() -> Self {
+        Self {
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+        }
+    }
 }
 
 // ---- 文档 I/O ----
@@ -352,8 +384,12 @@ impl PigmentApp {
             status: None,
             current_file: None,
             file_prompt: None,
-            stroke_state: None,
-            brushwork: None,
+            stroke_state: BrushState::default(),
+            modes: pigment_engine::mode::ModeStack::new(|| {
+                Box::new(pigment_engine::mode::freehand::FreehandMode::new())
+            }),
+            pending_pointer_time: 0.0,
+            mode_prefs: ModePrefs::default(),
             view: View::default(),
             canvas_rect: None,
             renderer: Arc::new(Mutex::new(renderer)),
@@ -652,71 +688,122 @@ impl PigmentApp {
 
     // ---- 笔画生命周期 ----
 
-    /// 组装一个笔画事件。
+    /// 当前修饰键（`mode.py:403` 的 `current_modifiers`）。
+    pub(crate) fn pointer_modifiers(&self, ctx: &egui::Context) -> pigment_engine::mode::Modifiers {
+        ctx.input(|i| pigment_engine::mode::Modifiers {
+            shift: i.modifiers.shift,
+            ctrl: i.modifiers.command,
+            alt: i.modifiers.alt,
+        })
+    }
+
+    /// 把一个 egui 指针位置投影成模式层事件（模型坐标 + 毫秒时间戳）。
     ///
-    /// 参数表与 `gui/freehand.py:601-611` 一致；压力/倾角的钳位对齐它在
-    /// `stroke_to` 之前的 `clamp()`。我们还没有倾角、视图旋转与笔杆旋转
-    /// 输入（数位板属 M6），这三项填 0。
-    pub(crate) fn stroke_event(&self, x: f32, y: f32, pressure: f32, dtime: f64) -> StrokeEvent {
-        StrokeEvent::new(
-            dtime,
+    /// 压力/倾角/桶旋转都是 `None`：本应用目前只接鼠标（数位板输入属 M6），
+    /// 自由手绘模式会给它们补假压力（`freehand.py:433-442`）。
+    pub(crate) fn pointer_event(
+        &self,
+        pos: egui::Pos2,
+        rect: egui::Rect,
+        time_ms: f64,
+        button: u32,
+        modifiers: pigment_engine::mode::Modifiers,
+    ) -> pigment_engine::mode::PointerEvent {
+        let local = pos - rect.min;
+        let [x, y] = self.view.screen_to_world(local.x, local.y);
+        pigment_engine::mode::PointerEvent {
+            time_ms,
             x,
             y,
-            pressure.clamp(0.0, 1.0),
-            0.0,
-            0.0,
-            self.view.zoom, // viewzoom ← MyPaint 的 tdw.scale
-            0.0,
-            0.0,
-        )
+            pressure: None,
+            xtilt: None,
+            ytilt: None,
+            viewzoom: self.view.zoom,
+            viewrotation: 0.0,
+            barrel_rotation: None,
+            button,
+            modifiers,
+        }
     }
 
-    /// 把一个事件喂给当前作画命令：记录事件流 + 落到画布。
+    /// 把一个指针事件交给当前交互模式（`gui/mode.py` 的 `button_press_cb` 等）。
     ///
-    /// 当前层不可画（组 / 锁 / 祖先隐藏）时**什么都不画**——照
-    /// `Brushwork._check_recording_started` 对非可画层 `_stroke_target_layer =
-    /// None`（`command.py:403-408`）的语义，事件流也不记录。
-    pub(crate) fn paint_event(&mut self, ev: StrokeEvent) {
-        let (Some(mut bw), Some(mut st)) = (self.brushwork.take(), self.stroke_state.take()) else {
-            return;
-        };
-        match self.doc.paintable_surface_mut() {
-            Some(surface) => {
-                bw.stroke_to(surface, &self.brush, &self.brush_name, &mut st, ev);
-            }
-            None => {
-                // 不可画：整段作画作废（MyPaint 同样不产生命令）
-                self.brushwork = None;
-                self.stroke_state = None;
-                return;
-            }
-        }
-        self.brushwork = Some(bw);
-        self.stroke_state = Some(st);
+    /// B3-1：作画路径不再由 GUI 手写，而是走 [`ModeStack`] —— 栈顶模式
+    /// （默认 [`FreehandMode`]）负责排队、插值、`brushwork` 的原子提交。
+    /// 当前层不可画时模式自己不画（`get_paintable`），所以这里无需特判。
+    pub(crate) fn mode_button_press(&mut self, ev: pigment_engine::mode::PointerEvent) -> bool {
+        self.pending_pointer_time = self.pending_pointer_time.max(ev.time_ms);
+        let mut handled = false;
+        self.with_mode(|modes, ctx| {
+            handled = modes.top_mut().button_press(ctx, &ev);
+        });
+        self.mode_process_pending();
+        handled
     }
 
-    /// 落笔：收尾并把这段作画提交给撤销栈
-    /// （`gui/mode.py:766-768` 的 `brushwork_commit`）。
-    pub(crate) fn commit_stroke(&mut self) {
-        let (Some(mut bw), Some(st)) = (self.brushwork.take(), self.stroke_state.take()) else {
-            self.brushwork = None;
-            self.stroke_state = None;
-            return;
-        };
-        // 没画到东西的命令直接丢弃（`if changed: model.do(cmd)`）
-        let Some(surface) = self.doc.paintable_surface_mut() else {
-            return;
-        };
-        if bw.stop_recording(surface, &st, false) {
-            self.doc.do_brushwork(bw);
-        }
+    /// 指针移动（`motion_notify_cb`）。
+    pub(crate) fn mode_motion(&mut self, ev: pigment_engine::mode::PointerEvent) -> bool {
+        self.pending_pointer_time = self.pending_pointer_time.max(ev.time_ms);
+        let mut handled = false;
+        self.with_mode(|modes, ctx| {
+            handled = modes.top_mut().motion(ctx, &ev);
+        });
+        self.mode_process_pending();
+        handled
     }
 
-    /// 把在途作画收尾（撤销/重做前的清账，对应 `Document.sync_pending_changes()`）。
+    /// 指针松开（`button_release_cb`）。
+    pub(crate) fn mode_button_release(&mut self, ev: pigment_engine::mode::PointerEvent) -> bool {
+        self.pending_pointer_time = self.pending_pointer_time.max(ev.time_ms);
+        let mut handled = false;
+        self.with_mode(|modes, ctx| {
+            handled = modes.top_mut().button_release(ctx, &ev);
+        });
+        self.mode_process_pending();
+        handled
+    }
+
+    /// 处理模式排队的输入（`GLib.idle_add` 的等价物：每帧一次）。
+    pub(crate) fn mode_process_pending(&mut self) {
+        self.with_mode(|modes, ctx| modes.process_pending(ctx));
+    }
+
+    /// 把在途作画落账（撤销/重做前、切笔刷前的清账；
+    /// 对应 `Document.sync_pending_changes()` → `mode.checkpoint()`）。
     fn flush_pending_stroke(&mut self) {
-        if self.brushwork.is_some() {
-            self.commit_stroke();
-        }
+        self.with_mode(|modes, ctx| modes.checkpoint(ctx));
+    }
+
+    /// 构造模式上下文（等价 Python 里模式通过 `self.doc` 拿到的一切）。
+    ///
+    /// 字段级拆分借用：`doc` 可变、笔刷只读、笔刷状态可变，三者互不重叠。
+    pub(crate) fn with_mode<R>(
+        &mut self,
+        f: impl FnOnce(
+            &mut pigment_engine::mode::ModeStack,
+            &mut pigment_engine::mode::ModeContext<'_>,
+        ) -> R,
+    ) -> R {
+        let PigmentApp {
+            modes,
+            doc,
+            brush,
+            brush_name,
+            stroke_state,
+            mode_prefs,
+            ..
+        } = self;
+        let mut ctx = pigment_engine::mode::ModeContext {
+            doc,
+            brush,
+            brush_name,
+            brush_state: stroke_state,
+            fakepressure: mode_prefs.fakepressure,
+            fakerotation: mode_prefs.fakerotation,
+            hide_cursor_while_painting: mode_prefs.hide_cursor_while_painting,
+            status: None,
+        };
+        f(modes, &mut ctx)
     }
 
     // ---- 撤销 / 重做 ----
@@ -743,7 +830,8 @@ impl PigmentApp {
     /// 笔刷编辑器的 Live Update：用当前笔刷重绘上一笔
     /// （`gui/brusheditor.py:1135` 的 `_live_update_idle_cb`）。
     pub(crate) fn apply_live_update(&mut self) {
-        if self.brushwork.is_some() {
+        let painting = self.modes.top().is_painting();
+        if painting {
             // 正在画的一笔不是"上一笔"，且它还没收尾（`sshot_after` 未取）
             // → 交给下一次编辑动作。照搬源码的 `get_last_command()` 语义。
             return;

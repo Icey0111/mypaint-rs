@@ -9,6 +9,7 @@ pub mod brushlib;
 pub mod command;
 pub mod document;
 pub mod fileio;
+pub mod mode;
 pub mod stroke;
 pub mod zip;
 

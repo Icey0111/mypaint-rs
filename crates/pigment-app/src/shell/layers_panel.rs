@@ -261,6 +261,8 @@ impl PigmentApp {
                 // 拖动重排的落点提示 + 释放处理
                 self.layer_drag_feedback(ui, ctx);
             });
+        // 释放鼠标一定要处理（即便指针已经离开列表区域）
+        self.layer_drag_finish(ctx);
     }
 
     /// 单行：缩进 + 展开箭头 + 眼 | 预览 | 名字 | 锁（列序照 `layers.py:405-455`）。

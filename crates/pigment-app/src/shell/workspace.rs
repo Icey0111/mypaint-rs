@@ -286,43 +286,45 @@ impl PigmentApp {
         }
 
         // ---- 绘制 ----
-        // 一次拖拽 = 一条 Brushwork（`gui/mode.py:722` 的 brushwork_begin/commit）：
-        // 起笔取画前快照，落笔取画后快照并提交给撤销栈。
+        // B3-1：输入交给交互模式栈（`gui/mode.py`）。栈顶（默认 FreehandMode）
+        // 自己排队、做压力/倾角插值，再由 `BrushworkModeMixin` 原子提交
+        // （一次拖拽 = 一条 Brushwork，`lib/command.py:250`）。
         //
-        // 文件弹层开着时禁掉画布交互（GTK 的模态对话框也是这个效果）。
+        // 文件弹层开着时禁掉画布交互（GTK 的模态对话框也是这个效果）；
+        // 按住空格是"抓手"平移，不算绘画（`DragMode.key_press_cb` 的 space 分支
+        // 在本移植里由 view 平移直接处理）。
         let space_down = ui.input(|i| i.key_down(egui::Key::Space));
         let modal = self.file_prompt.is_some();
-        if !modal && !space_down && response.drag_started_by(egui::PointerButton::Primary) {
-            // 本应用的笔画开局：新建一份引擎状态（见 app.rs 文件头「撤销模型」注释）
-            self.stroke_state = Some(pigment_engine::hokusai::BrushState::default());
-            let mut bw = pigment_engine::Brushwork::new();
-            // 目标层 = 起笔时的当前层（等价 command.py 的 layer=None → current）
-            bw.target_layer = Some(self.doc.layers().current_id());
-            self.brushwork = Some(bw);
-            if let Some(pos) = response.interact_pointer_pos() {
-                let local = pos - rect.min;
-                let [wx, wy] = self.view.screen_to_world(local.x, local.y);
-                let ev = self.stroke_event(wx, wy, 1.0, 0.01);
-                self.paint_event(ev);
+        // 指针时间戳：用应用启动以来的毫秒（没有 GTK 事件时间可用）
+        let now_ms = ui.input(|i| i.time) * 1000.0;
+        let mods = self.pointer_modifiers(ui.ctx());
+        if !modal && !space_down {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                // 起笔：重置笔刷引擎状态（源码 `brush.reset()` + 新 stroke）
+                self.stroke_state = pigment_engine::hokusai::BrushState::default();
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_press(ev);
+                }
+                self.stroke_dirty = true;
             }
-            self.stroke_dirty = true;
-        }
-        if !modal && !space_down && response.dragged_by(egui::PointerButton::Primary) {
-            if let Some(pos) = response.interact_pointer_pos() {
-                let local = pos - rect.min;
-                let [wx, wy] = self.view.screen_to_world(local.x, local.y);
-                let dt = ui.input(|i| i.stable_dt).clamp(0.001, 0.05) as f64;
-                let ev = self.stroke_event(wx, wy, 1.0, dt);
-                self.paint_event(ev);
+            if response.dragged_by(egui::PointerButton::Primary) {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let ev = self.pointer_event(pos, rect, now_ms, 0, mods);
+                    self.mode_motion(ev);
+                }
+                self.stroke_dirty = true;
             }
-            self.stroke_dirty = true;
-        }
-        if response.drag_stopped_by(egui::PointerButton::Primary) {
-            self.commit_stroke();
-            // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
-            // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
-            if !self.eraser {
-                self.color_history.push(self.color);
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                if let Some(pos) = response.interact_pointer_pos() {
+                    let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
+                    self.mode_button_release(ev);
+                }
+                // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
+                // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
+                if !self.eraser {
+                    self.color_history.push(self.color);
+                }
             }
         }
 
@@ -446,7 +448,7 @@ impl PigmentApp {
         // 绘制中持续重绘（dab 沿笔画插值）；上传有欠账（命中每帧上限）时也要继续，
         // 否则剩下的 tile 会一直停在旧状态
         let backlog = self.pending_uploads >= crate::gpu::MAX_UPLOADS_PER_FRAME;
-        if self.stroke_state.is_some() || self.stroke_dirty || backlog {
+        if self.stroke_dirty || backlog {
             self.stroke_dirty = false;
             ui.ctx().request_repaint();
         }
