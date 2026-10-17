@@ -54,10 +54,12 @@ pub mod color;
 pub mod combine;
 pub mod layer;
 pub mod png;
+pub mod strokemap;
 pub mod symmetry;
 pub mod thumb;
 
 pub use layer::{Layer, LayerStack};
+pub use strokemap::StrokeShape;
 pub use symmetry::{SymmetryData, SymmetryState, SymmetryType, Transform};
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
@@ -177,6 +179,8 @@ pub struct PigmentSurface {
     /// 由表面自己展开成 N 个 dab（`mypaint-tiled-surface.c:690-800`），
     /// 见 [`symmetry`] 模块。
     symmetry: SymmetryData,
+    /// 笔画形状图（`lib/layer/data.py:1481` 的 `self.strokes`）。
+    strokes: Vec<StrokeShape>,
 }
 
 /// 克隆：与快照一样按 tile 共享 `Arc`（写借出时 COW 自动分离）。
@@ -192,6 +196,7 @@ impl Clone for PigmentSurface {
             in_atomic: false,
             clock: self.clock,
             symmetry: self.symmetry.clone(),
+            strokes: self.strokes.clone(),
         }
     }
 }
@@ -199,6 +204,48 @@ impl Clone for PigmentSurface {
 impl PigmentSurface {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 已记录的笔画形状（按绘制顺序）。
+    #[inline]
+    pub fn strokes(&self) -> &[StrokeShape] {
+        &self.strokes
+    }
+
+    /// 记录一笔的形状（`StrokemappedPaintingLayer.add_stroke_shape`）。
+    pub fn add_stroke_shape(
+        &mut self,
+        before: &SurfaceSnapshot,
+        after: &SurfaceSnapshot,
+        brush: &str,
+    ) -> bool {
+        let Some(mut shape) = StrokeShape::from_snapshots(before, after) else {
+            return false;
+        };
+        shape.brush = brush.to_string();
+        self.strokes.push(shape);
+        true
+    }
+
+    /// 撤销时移除最后一笔形状（`strokes.pop()`）。
+    pub fn pop_stroke(&mut self) -> Option<StrokeShape> {
+        self.strokes.pop()
+    }
+
+    /// 重做时把命令保存的形状放回（顺序与绘制一致）。
+    pub fn push_stroke(&mut self, shape: StrokeShape) {
+        self.strokes.push(shape);
+    }
+
+    /// 多笔 `.dat` 字节串（`_write_strokemap`），`dx/dy` 为图层原点。
+    pub fn strokemap_dat(&self, dx: i32, dy: i32) -> Vec<u8> {
+        strokemap::write_dat(&self.strokes, dx, dy)
+    }
+
+    /// 从 `.dat` 读入（`_load_strokemap_from_file`）。
+    pub fn load_strokemap_dat(&mut self, data: &[u8], dx: i32, dy: i32) -> Result<(), String> {
+        self.strokes = strokemap::read_dat(data, dx, dy)?;
+        Ok(())
     }
 
     /// 只读访问 tile 像素（不存在则 `None`）。
@@ -423,6 +470,8 @@ impl PigmentSurface {
     }
 
     pub fn load_from_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) {
+        // 源码 `load_from_surface` 会清空 strokes（data.py:1494-1499）
+        self.strokes.clear();
         let (w, h) = (w as i32, h as i32);
         let ts = TILE_SIZE as i32;
         // 行内按 tile 分段处理：一段只做一次 tile 请求与 fix15 转换缓冲，

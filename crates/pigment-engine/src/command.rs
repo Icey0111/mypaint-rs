@@ -21,9 +21,9 @@
 //! 2. **`layer_path` / `layer` 参数取消**：目前文档只有一层表面，命令直接
 //!    作用于它。P1 引入图层栈后按 `lib/command.py:341` 的 `_target_layer`
 //!    恢复"路径寻址 + 显式目标"两种模式。
-//! 3. **`add_stroke_shape` 未移植**：它把笔画外接框记进图层的 strokemap
-//!    （服务 trim 与 `.ora` 导出里的 `mypaint_strokemap`），我们还没有
-//!    strokemap 层。属已知缺口，随 `.ora` 读写一并补。
+//! 3. **`add_stroke_shape` 已补（C3-1）**：`stop_recording()` 用前后快照做
+//!    tile 位图 diff，把形状存进 `PigmentSurface::strokes`；撤销/重做随快照
+//!    一起摘挂（`lib/layer/data.py:1577`）。
 
 use std::collections::VecDeque;
 
@@ -339,6 +339,8 @@ pub struct Brushwork {
     /// 切换用的两个状态。
     sshot_before: Option<SurfaceSnapshot>,
     sshot_after: Option<SurfaceSnapshot>,
+    /// 这一笔的 strokemap 形状（撤销/重做时随快照一起摘/挂）。
+    stroke_shape: Option<pigment_surface::StrokeShape>,
     time_before: f64,
     time_after: f64,
     sshot_after_applied: bool,
@@ -487,6 +489,15 @@ impl Brushwork {
         let time_after = self.time_before + seq.total_painting_time();
         self.time_after = time_after;
         self.sshot_after = Some(surface.save_snapshot());
+        // `add_stroke_shape`（`lib/layer/data.py:1577`）：形状从前后快照 diff 得出
+        if let (Some(before), Some(after)) = (&self.sshot_before, &self.sshot_after) {
+            let brush = seq.brush_settings().to_string();
+            if let Some(mut shape) = pigment_surface::StrokeShape::from_snapshots(before, after) {
+                shape.brush = brush;
+                surface.push_stroke(shape.clone());
+                self.stroke_shape = Some(shape);
+            }
+        }
         // 画作在记录期就已落到画布上，所以 redo() 不该再画一遍
         // （`lib/command.py:548` 的 `_sshot_after_applied = True`）
         self.sshot_after_applied = true;
@@ -521,6 +532,9 @@ impl Command for Brushwork {
         if !self.sshot_after_applied {
             if let Some(surface) = ctx.surface_for(id) {
                 surface.load_snapshot(after);
+                if let Some(shape) = &self.stroke_shape {
+                    surface.push_stroke(shape.clone());
+                }
             }
             self.sshot_after_applied = true;
         }
@@ -534,6 +548,10 @@ impl Command for Brushwork {
         if let Some(before) = &self.sshot_before {
             if let Some(surface) = ctx.surface_for(id) {
                 surface.load_snapshot(before);
+                // 撤销这一笔时把它的 strokemap 也摘掉（源码快照包含 strokes）
+                if self.stroke_shape.is_some() {
+                    surface.pop_stroke();
+                }
             }
         }
         *ctx.unsaved_painting_time = self.time_before;
@@ -571,10 +589,20 @@ impl Command for Brushwork {
         };
         // 回到画前状态，再用新笔重放整条事件流
         surface.load_snapshot(&before);
+        if self.stroke_shape.is_some() {
+            surface.pop_stroke();
+        }
         if !stroke.render(surface) {
             return false;
         }
         self.sshot_after = Some(surface.save_snapshot());
+        if let (Some(before), Some(after)) = (&self.sshot_before, &self.sshot_after) {
+            if let Some(mut shape) = pigment_surface::StrokeShape::from_snapshots(before, after) {
+                shape.brush = stroke.brush_settings().to_string();
+                surface.push_stroke(shape.clone());
+                self.stroke_shape = Some(shape);
+            }
+        }
         self.stroke_seq = Some(stroke);
         true
     }

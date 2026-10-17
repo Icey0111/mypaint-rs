@@ -306,6 +306,39 @@ fn loading_missing_file_reports_not_found() {
 // ---- ORA 容器结构 ----
 
 #[test]
+fn strokemap_follows_undo_redo() {
+    let mut doc = Document::new();
+    paint(&mut doc, 40.0, 4.0);
+    assert_eq!(doc.surface().strokes().len(), 1);
+    doc.undo().unwrap();
+    assert!(doc.surface().strokes().is_empty(), "撤销应摘掉这一笔的 strokemap");
+    doc.redo().unwrap();
+    assert_eq!(doc.surface().strokes().len(), 1, "重做应挂回形状");
+}
+
+#[test]
+fn ora_strokemap_round_trips() {
+    let path = tmp("strokemap.ora");
+    let mut doc = Document::new();
+    paint(&mut doc, 40.0, 4.0);
+    assert_eq!(doc.surface().strokes().len(), 1, "一笔应记录一个 StrokeShape");
+
+    doc.save(&path, None).unwrap();
+    let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
+    let xml = String::from_utf8(z.read("stack.xml").unwrap()).unwrap();
+    assert!(xml.contains("mypaint:strokemap=\"data/layer-00-strokemap.dat\""));
+    let dat = z.read("data/layer-00-strokemap.dat").unwrap();
+    assert!(!dat.is_empty());
+    assert_eq!(*dat.last().unwrap(), b'}');
+
+    let mut doc2 = Document::new();
+    doc2.load(&path).unwrap();
+    assert_eq!(doc2.surface().strokes().len(), 1, "载入后应恢复 strokemap");
+    assert_eq!(doc2.surface().strokes()[0].tiles.len(), doc.surface().strokes()[0].tiles.len());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn ora_has_the_expected_entries_in_order() {
     let path = tmp("entries.ora");
     let mut doc = Document::new();
@@ -319,6 +352,7 @@ fn ora_has_the_expected_entries_in_order() {
         vec![
             "mimetype",
             "data/layer-00.png",
+            "data/layer-00-strokemap.dat",
             // 背景层：整幅 + 单块 tile（tree.py:2513-2526，bg_path=(len,)=(1,)）
             "data/background-01.png",
             "data/background-01-tile.png",

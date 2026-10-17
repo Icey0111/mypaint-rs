@@ -35,10 +35,9 @@
 //!
 //! 1. **单图层**：文档只有一层，路径固定 `(0,)`，所以图层文件名恒为
 //!    `data/layer-00.png`。P1 引入图层栈后按真实路径生成 `layer-00-01.png` 之类。
-//! 2. **无 strokemap**：源码会额外写 `data/layer-00-strokemap.dat` 并挂
-//!    `mypaint:strokemap` 属性（`lib/layer/data.py:1676`）；我们还没有 strokemap
-//!    层，故不写。读侧对缺这一项的文件完全兼容（MyPaint 自己也是
-//!    "有就读、没有就跳过"，`data.py:1545`）。
+//! 2. **strokemap 已补（C3-1）**：写 `data/layer-00-strokemap.dat` 并挂
+//!    `mypaint:strokemap` 属性（`lib/layer/data.py:1676`）；读侧认新属性与
+//!    旧属性 `mypaint_strokemap_v2`，缺这一项的文件照旧兼容（`data.py:1545`）。
 //! 3. **`mypaint:version` 写 `"2.0.0"` 而不是上游源码字面量 `"2.1.0-alpha"`**：
 //!    该属性会被对方 `Document._compat_check`（`:1788`）拿去做
 //!    `lib.meta.compatibility()` 判定，写"未来版本的预发布号"会让真正的
@@ -88,6 +87,10 @@ pub const ATTR_NS_FRAME_ACTIVE: &str = "mypaint:frame-active";
 pub const ATTR_NS_JSON_SETTINGS: &str = "mypaint:json-settings";
 /// 背景层单块平铺 tile（`data.py:1047` `ORA_BGTILE_ATTR`）。
 pub const ATTR_NS_BG_TILE: &str = "mypaint:background-tile";
+/// `mypaint:strokemap`：图层笔画形状图 `.dat` 的 zip 路径（`data.py:1473`）。
+pub const ATTR_NS_STROKEMAP: &str = "mypaint:strokemap";
+/// 旧版无命名空间属性（`data.py:1474`，v1.2 之前）。
+pub const ATTR_STROKEMAP_LEGACY: &str = "mypaint_strokemap_v2";
 /// 背景层的 legacy 属性名（`data.py:1046`，读侧兼容）。
 pub const ATTR_BG_TILE_LEGACY: &str = "background_tile";
 
@@ -770,6 +773,13 @@ fn save_layer_elems(
                     attrs.push(("composite-op", name.to_string()));
                 }
                 attrs.push(("src", entry));
+                // strokemap：空画笔迹不写（`data.py:1679-1701`）
+                let dat = surface.strokemap_dat(lx, ly);
+                if !dat.is_empty() {
+                    let dat_name = make_refname("layer", &p, "strokemap.dat");
+                    zip.add_stored(&format!("data/{dat_name}"), &dat)?;
+                    attrs.push((ATTR_NS_STROKEMAP, format!("data/{dat_name}")));
+                }
                 if layer.locked {
                     attrs.push(("edit-locked", "true".to_string()));
                 }
@@ -1099,6 +1109,13 @@ fn build_ora_layers(
         let (px, w, h) = pigment_surface::png::decode_rgba8_png(&png).map_err(FileError::Png)?;
         let mut surface = PigmentSurface::new();
         surface.load_from_rgba8(&px, l.x, l.y, w, h);
+        if let Some(name) = &l.strokemap {
+            if let Ok(dat) = z.read(name) {
+                surface
+                    .load_strokemap_dat(&dat, l.x, l.y)
+                    .map_err(|e| FileError::Malformed(format!("strokemap {name:?}: {e}")))?;
+            }
+        }
         let mode = l
             .composite_op
             .as_deref()
@@ -1175,6 +1192,8 @@ pub struct XmlLayer {
     pub composite_op: Option<String>,
     /// `mypaint:background-tile` 或 legacy `background_tile`。
     pub bg_tile: Option<String>,
+    /// `mypaint:strokemap` 或 legacy `mypaint_strokemap_v2` 的 zip 路径。
+    pub strokemap: Option<String>,
     /// 是 `<stack>` 元素（组）。
     pub is_group: bool,
     /// `isolation` 属性（缺省语义 = "auto"，`group.py:119`）。
@@ -1351,6 +1370,7 @@ fn layer_from_attrs(attrs: &[(String, String)], is_group: bool) -> XmlLayer {
         selected: get("selected").map(|v| xsd2bool(&v)).unwrap_or(false),
         composite_op: get("composite-op"),
         bg_tile: get(ATTR_NS_BG_TILE).or_else(|| get(ATTR_BG_TILE_LEGACY)),
+        strokemap: get(ATTR_NS_STROKEMAP).or_else(|| get(ATTR_STROKEMAP_LEGACY)),
         is_group,
         isolation: get("isolation"),
         children: Vec::new(),
