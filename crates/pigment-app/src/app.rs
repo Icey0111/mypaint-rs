@@ -1490,7 +1490,9 @@ impl PigmentApp {
             xtilt: None,
             ytilt: None,
             viewzoom: self.view.zoom,
-            viewrotation: 0.0,
+            // 源码 `freehand.py:403-404`：`viewzoom = tdw.scale`、
+            // `viewrotation = tdw.rotation`（弧度，cairo 的 `Matrix.rotate`）。
+            viewrotation: self.view.rotation,
             barrel_rotation: None,
             button,
             modifiers,
@@ -1531,7 +1533,20 @@ impl PigmentApp {
             handled = modes.top_mut().button_release(ctx, &ev);
         });
         self.mode_process_pending();
+        // 笔刷尺寸模式在 `drag_stop_cb` 里写回半径（`brushmanip.py:287-290`）。
+        // 必须在 `finish_oneshot()` 弹栈**之前**取走，否则模式带着请求一起没了。
+        self.apply_pending_brush_radius();
         handled
+    }
+
+    /// 把模式请求的 `radius_logarithmic` 落到应用（`brush_adjustment`
+    /// 的对应物：`radius_override` + `derive_active()`）。
+    fn apply_pending_brush_radius(&mut self) {
+        let request = self.with_mode(|modes, _ctx| modes.top_mut().take_brush_radius());
+        if let Some(radius) = request {
+            self.radius_override = Some(radius);
+            self.derive_active();
+        }
     }
 
     /// 一次拖拽结束后按 Oneshot 规则出栈（`OneshotDragMode.drag_stop_cb`，
@@ -1613,6 +1628,29 @@ impl PigmentApp {
             ViewTool::Rotate => ("Rotate View", "Rotate the canvas view"),
         };
         self.set_status(format!("{name}: {usage}"), now);
+    }
+
+    /// 进入笔刷尺寸拖拽模式（`gui/brushmanip.py:159` 的 `BrushResizeMode`）。
+    ///
+    /// 源码是从按钮映射（`input.button_mapping`）里以 `mode_class` 处理器
+    /// **压栈**进入的（`document.py:765-772`），拖完由
+    /// `OneshotDragMode.drag_stop_cb` 弹回原模式。这里照搬压栈/弹栈：
+    /// - `ModeStack::push` 保留下面那个模式，所以弹回后仍是原来的画笔/直线；
+    /// - 因为 `ButtonMappingEditor` 还没移植（见路线图），暂由应用本地键
+    ///   `Ctrl+Shift+R` 触发；接上按钮映射后应撤掉这个键。
+    pub(crate) fn begin_brush_resize(&mut self, now: f64) {
+        if self.modes.top().action_name() == Some("BrushResizeMode") {
+            return;
+        }
+        let mode: Box<dyn pigment_engine::mode::InteractionMode> =
+            Box::new(pigment_engine::mode::brushresize::BrushResizeMode::new());
+        let label = mode.name().to_string();
+        let usage = mode.usage().to_string();
+        // 起手前取消未完成的视图手势（与 `switch_mode` 的规则一致）
+        self.view_tool = None;
+        self.view_drag_prev = None;
+        self.with_mode(|modes, ctx| modes.push(mode, ctx));
+        self.set_status(format!("{label}: {usage}"), now);
     }
 
     /// 视图操纵的一次拖拽增量（`viewmanip.py` 的三个 `drag_update_cb`）。
@@ -1800,8 +1838,13 @@ fn layout_ink_buttons(
     }
 
     /// 当前模式的图标名（`mode.get_icon_name()`：取关联动作的 icon-name）。
+    ///
+    /// `BrushResizeMode` 没有自己的 GtkAction，源码直接返回上一个模式的图标
+    /// （`brushmanip.py:192-193` 的 `get_icon_name()`），所以这里走
+    /// [`pigment_engine::mode::ModeStack::options_mode`]。
     pub(crate) fn mode_icon_name(&self) -> Option<&'static str> {
-        crate::shell::actions::by_id(self.modes.top().action_name()?).and_then(|a| a.icon_name)
+        crate::shell::actions::by_id(self.modes.options_mode().action_name()?)
+            .and_then(|a| a.icon_name)
     }
 
     /// 构造模式上下文（等价 Python 里模式通过 `self.doc` 拿到的一切）。
@@ -2961,6 +3004,9 @@ fn layout_ink_buttons(
                     self.reload_selected_brush();
                 }
             }
+            // 笔刷尺寸拖拽（`gui/brushmanip.py` 的 `BrushResizeMode`）。
+            // 源码经按钮映射进入，本应用暂用本地键（见 `begin_brush_resize`）。
+            "pigment:brush-resize" => self.begin_brush_resize(now),
             _ => return false,
         }
         true

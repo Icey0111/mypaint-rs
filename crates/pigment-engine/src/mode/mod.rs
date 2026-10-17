@@ -15,7 +15,8 @@
 //! - `FreehandMode`（`gui/freehand.py`）→ [`freehand::FreehandMode`]；
 //! - `LineModeBase`（`gui/linemode.py`）→ [`line::LineMode`]；
 //! - `FloodFillMode`（`gui/fill.py`）→ [`fill::FillMode`]；
-//! - `ColorPickMode`（`gui/colorpicker.py`）→ [`pick::ColorPickMode`]。
+//! - `ColorPickMode`（`gui/colorpicker.py`）→ [`pick::ColorPickMode`]；
+//! - `BrushResizeMode`（`gui/brushmanip.py`）→ [`brushresize::BrushResizeMode`]。
 //!
 //! 记账差异：
 //! - GTK 的 `pointer_grab`/`keyboard_grab`/`grab-broken` 没有对应物：egui 的
@@ -25,6 +26,7 @@
 //! - `GLib.idle_add` 的排队处理改成显式的 [`ModeStack::process_pending`]，
 //!   由 GUI 每帧调用一次（等价于 idle 优先级回调）。
 
+pub mod brushresize;
 pub mod fill;
 pub mod frameedit;
 pub mod freehand;
@@ -324,6 +326,26 @@ pub trait InteractionMode {
     /// [`ModeStack::set_freehand_config`] 在启动/偏好变化时重推。
     /// 其余模式没有这类配置，默认什么都不做。
     fn set_freehand_config(&mut self, _config: freehand::FreehandConfig) {}
+
+    /// 选项面板是否沿用**栈里下面那个模式**的控件
+    /// （`BrushResizeMode.get_options_widget()`，`gui/brushmanip.py:296-297`）。
+    fn delegates_options(&self) -> bool {
+        false
+    }
+
+    /// 取走模式请求的 `radius_logarithmic`（`BrushResizeMode.drag_stop_cb`
+    /// 的 `base_radius_adj.set_value(...)`，`gui/brushmanip.py:287-290`）。
+    ///
+    /// 模式在引擎层拿不到应用的 `radius_override`，所以把结果留在自己身上，
+    /// 由 GUI 在事件后取走并落地。
+    fn take_brush_radius(&mut self) -> Option<f32> {
+        None
+    }
+
+    /// 笔刷尺寸覆盖层状态（`gui/brushmanip.py` 的 `BrushSizeOverlay`）。
+    fn brush_size_overlay(&self) -> Option<crate::mode::brushresize::BrushSizeOverlayState> {
+        None
+    }
 
     /// 是否是"一键式拖拽模式"（`OneshotDragMode`，`mode.py:1277`）。
     ///
@@ -778,6 +800,20 @@ impl ModeStack {
     /// 栈里是否有某个模式（按 `name()` 比较；调试/测试用）。
     pub fn names(&self) -> Vec<&'static str> {
         self.stack.iter().map(|m| m.name()).collect()
+    }
+
+    /// 选项面板应该显示哪个模式的选项。
+    ///
+    /// 默认就是栈顶；像 `BrushResizeMode` 这种把自己声明为
+    /// [`InteractionMode::delegates_options`] 的模式会跳过，沿用下面那个
+    /// 模式的控件（`gui/brushmanip.py:296-297` 的 `get_options_widget()`）。
+    pub fn options_mode(&self) -> &dyn InteractionMode {
+        self.stack
+            .iter()
+            .rev()
+            .find(|m| !m.delegates_options())
+            .map(|m| m.as_ref())
+            .unwrap_or_else(|| self.top())
     }
 
     /// 栈顶是否要求"松开按键即出栈"（仅键盘起手的 Oneshot 模式）。

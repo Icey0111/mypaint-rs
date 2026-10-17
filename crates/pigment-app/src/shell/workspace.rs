@@ -41,18 +41,27 @@ fn brush_setting_slider(
     range: std::ops::RangeInclusive<f32>,
 ) -> bool {
     let mut value = brush.get(setting).base_value;
-    let resp = ui
-        .horizontal(|ui| {
-            ui.label(label);
-            ui.add(egui::Slider::new(&mut value, range).show_value(true))
-        })
-        .inner;
-    if resp.changed() {
+    if value_slider(ui, label, &mut value, range) {
         brush.get_mut(setting).base_value = value;
         true
     } else {
         false
     }
+}
+
+/// 一行 `label + Slider`（不绑定笔刷设置，用于有效半径这类派生值）。
+fn value_slider(
+    ui: &mut egui::Ui,
+    label: &str,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(egui::Slider::new(value, range).show_value(true))
+    })
+    .inner
+    .changed()
 }
 
 /// 一帧的画布同步结果：显存增量 + 可见 tile 列表 + 世界→裁剪空间矩阵。
@@ -618,7 +627,13 @@ impl PigmentApp {
 
     pub(crate) fn mode_options_panel_content(&mut self, ui: &mut egui::Ui) {
         let mode_name = self.modes.top().name().to_string();
-        let action = self.modes.top().action_name();
+        // 选项控件来自哪个模式：`BrushResizeMode.get_options_widget()` 直接
+        // 返回上一个模式的控件（`gui/brushmanip.py:296-297`），所以这里用
+        // `options_mode()` 而不是栈顶。标题/图标仍按源码：标题是当前模式名
+        // （`get_name()`），图标沿用上一个模式（`get_icon_name()`，`:192-193`）。
+        let options_mode = self.modes.options_mode();
+        let options_name = options_mode.name().to_string();
+        let action = options_mode.action_name();
         let icon_name = action
             .and_then(crate::shell::actions::by_id)
             .and_then(|a| a.icon_name);
@@ -634,17 +649,17 @@ impl PigmentApp {
         });
         ui.separator();
 
-        if mode_name == "Flood Fill" {
+        if options_name == "Flood Fill" {
             self.fill_options_panel(ui);
             return;
         }
-        if mode_name == "Inking" {
+        if options_name == "Inking" {
             self.inking_options(ui);
             return;
         }
 
         let painting = matches!(
-            mode_name.as_str(),
+            options_name.as_str(),
             "Freehand Drawing" | "Lines and Curves" | "Connected Lines" | "Ellipses and Circles"
         );
         if !painting {
@@ -654,13 +669,15 @@ impl PigmentApp {
 
         // ---- 公共设置（mode.py:591-601）----
         let mut changed = false;
-        changed |= brush_setting_slider(
-            ui,
-            &mut self.base_brush,
-            "Size:",
-            BrushSetting::Radius,
-            -2.0..=6.0,
-        );
+        // Size 滑条绑定**当前有效半径**（`app.brush_adjustment["radius_logarithmic"]`，
+        // `document.py:1571-1590`）：`BrushResizeMode` 与 `f`/`d` 都是改这个值。
+        // 本应用把"笔刷被改过尺寸"记在 `radius_override` 上，所以这里写覆盖值，
+        // 而不是 base_brush —— 否则 resize 之后滑条会失效（被覆盖值盖回去）。
+        let mut effective_radius = self.brush.get(BrushSetting::Radius).base_value;
+        if value_slider(ui, "Size:", &mut effective_radius, -2.0..=6.0) {
+            self.radius_override = Some(effective_radius);
+            changed = true;
+        }
         changed |= brush_setting_slider(
             ui,
             &mut self.base_brush,
@@ -691,7 +708,7 @@ impl PigmentApp {
         );
 
         // ---- 自由手绘专用（freehand.py:633-695）----
-        if mode_name == "Freehand Drawing" {
+        if options_name == "Freehand Drawing" {
             changed |= brush_setting_slider(
                 ui,
                 &mut self.base_brush,
@@ -752,6 +769,9 @@ impl PigmentApp {
                     let v = parent.get(s).base_value;
                     self.base_brush.get_mut(s).base_value = v;
                 }
+                // 源码重置的是 `brush_adjustment`（有效值）；`radius_override`
+                // 就是它的对应物，所以一并清掉。
+                self.radius_override = None;
                 self.derive_active();
             }
         }
@@ -1101,6 +1121,9 @@ impl PigmentApp {
                     self.mode_button_release(ev);
                     // Oneshot（取色）拖完按修饰键规则回原工具（mode.py:1302-1317）
                     self.finish_oneshot(mods, now_ms / 1000.0);
+                    // 出栈可能让覆盖层（笔刷尺寸圆圈）消失；请求一帧重绘，
+                    // 否则窗口会停在"还带着圆圈"的上一帧，直到下次输入。
+                    ui.ctx().request_repaint();
                 }
                 // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
                 // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
@@ -1192,13 +1215,27 @@ impl PigmentApp {
         //
         // 裁剪到画布矩形：画框/轴线在视口外还有几何，不裁会画到侧栏上
         // （源码的 cairo 上下文本来就被裁剪到 TDW 的分配区域）。
+        let overlay_style = crate::shell::overlays::OverlayStyle::from_prefs(&self.prefs);
         crate::shell::overlays::paint_canvas_overlays(
             &ui.painter().with_clip_rect(rect),
             rect,
             &self.view,
             &self.doc,
-            crate::shell::overlays::OverlayStyle::from_prefs(&self.prefs),
+            overlay_style,
         );
+
+        // ---- 笔刷尺寸圆圈（`gui/brushmanip.py` 的 `BrushSizeOverlay`）----
+        // 只在 `BrushResizeMode` 拖拽期间存在；源码把它 append 到
+        // `display_overlays`（`:70-71`），所以画在画框/对称轴之上。
+        if let Some(state) = self.modes.top().brush_size_overlay() {
+            crate::shell::overlays::paint_brush_size(
+                &ui.painter().with_clip_rect(rect),
+                rect,
+                &self.view,
+                state,
+                overlay_style,
+            );
+        }
 
         // ---- Inking ADJUST 节点（`inktool.py:1074-1116`）----
         if self.modes.top().ink_editing() {

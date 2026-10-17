@@ -33,6 +33,7 @@
 //! （`LineType.DIRECTIONAL`）而不是整条直线"这个细节。
 
 use eframe::egui;
+use pigment_engine::mode::brushresize::BrushSizeOverlayState;
 use pigment_engine::prefs::{self, Prefs};
 use pigment_engine::Document;
 use pigment_surface::symmetry::SymmetryType;
@@ -75,12 +76,27 @@ const FRAME_OUTLINE_WIDTH: f32 = 1.0;
 /// `"frame.color_rgba": (0.12, 0.12, 0.12, 0.92)`。
 const DEFAULT_FRAME_RGBA: [f32; 4] = [0.12, 0.12, 0.12, 0.92];
 
+// ---- 笔刷尺寸覆盖层（`gui/brushmanip.py:33-58`）----
+
+/// 手柄半径 —— `BrushSizeOverlay.HANDLE_RADIUS = 3`（`brushmanip.py:27`）。
+const BRUSH_HANDLE_RADIUS: f32 = 3.0;
+/// 外圈颜色出厂值 —— `prefs.get("cursor.freehand.outer_line_color", (0,0,0,1))`。
+const DEFAULT_BRUSH_OUTER_RGBA: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+/// 内圈颜色出厂值 —— `prefs.get("cursor.freehand.inner_line_color", (1,1,1,0.75))`。
+const DEFAULT_BRUSH_INNER_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.75];
+/// 内外圈线宽出厂值 —— `prefs.get(..., 1.25)`（`brushmanip.py:44-45`）。
+const DEFAULT_BRUSH_LINE_WIDTH: f32 = 1.25;
+/// 内圈内缩出厂值 —— `prefs.get("cursor.freehand.inner_line_inset", 2)`。
+const DEFAULT_BRUSH_INSET: f32 = 2.0;
+
 /// 覆盖层的外观偏好（B6-1）。
 ///
 /// 两处都有源码：对称轴线透明度读 `symmetry.line_alpha`（`symmetry.py:46-47`
 /// 的软键，默认 `_DEFAULT_ALPHA = 0.333`，读取处 `:648-649`），画框颜色读
 /// `frame.color_rgba`（`userconfig.py:92` 的默认键，读取处
 /// `framewindow.py:502-505` / `:826`，并把每个通道夹到 `[0, 1]`）。
+/// 笔刷尺寸圆圈读 `cursor.freehand.*`（`brushmanip.py:37-56`；这些键只有
+/// `thin/medium/thick` 光标预设才写，缺省值就在读取处）。
 ///
 /// egui 是立即模式，每帧现算一次即可（源码在 `SymmetryOverlay.__init__`
 /// 里读一次、`FrameOverlay.paint` 里每帧读一次，见 `:648` / `:826`）。
@@ -90,6 +106,16 @@ pub(crate) struct OverlayStyle {
     pub(crate) symmetry_line_alpha: f32,
     /// 画框颜色 RGBA（已夹到 `[0, 1]`）。
     pub(crate) frame_rgba: [f32; 4],
+    /// 笔刷尺寸圆圈外圈颜色（RGBA）。
+    pub(crate) brush_outer_rgba: [f32; 4],
+    /// 笔刷尺寸圆圈内圈颜色（RGBA）。
+    pub(crate) brush_inner_rgba: [f32; 4],
+    /// 外圈线宽（显示像素）。
+    pub(crate) brush_outer_width: f32,
+    /// 内圈线宽（显示像素）。
+    pub(crate) brush_inner_width: f32,
+    /// 内圈相对半径的内缩量（显示像素）。
+    pub(crate) brush_inset: f32,
 }
 
 impl Default for OverlayStyle {
@@ -97,6 +123,11 @@ impl Default for OverlayStyle {
         Self {
             symmetry_line_alpha: DEFAULT_SYMMETRY_ALPHA,
             frame_rgba: DEFAULT_FRAME_RGBA,
+            brush_outer_rgba: DEFAULT_BRUSH_OUTER_RGBA,
+            brush_inner_rgba: DEFAULT_BRUSH_INNER_RGBA,
+            brush_outer_width: DEFAULT_BRUSH_LINE_WIDTH,
+            brush_inner_width: DEFAULT_BRUSH_LINE_WIDTH,
+            brush_inset: DEFAULT_BRUSH_INSET,
         }
     }
 }
@@ -117,8 +148,44 @@ impl OverlayStyle {
                 }
             }
         }
+        // `brushmanip.py:40-56`：颜色/线宽/内缩都从 `cursor.freehand.*` 读，
+        // 缺键就用与源码相同的默认值。源码没夹颜色通道，这里照样只做
+        // `[0,1]` 的安全夹取（绘制函数的 `color32` 也会夹）。
+        style.brush_outer_rgba = read_rgba(
+            prefs,
+            "cursor.freehand.outer_line_color",
+            DEFAULT_BRUSH_OUTER_RGBA,
+        );
+        style.brush_inner_rgba = read_rgba(
+            prefs,
+            "cursor.freehand.inner_line_color",
+            DEFAULT_BRUSH_INNER_RGBA,
+        );
+        style.brush_outer_width = prefs.f64_or(
+            "cursor.freehand.outer_line_width",
+            DEFAULT_BRUSH_LINE_WIDTH as f64,
+        ) as f32;
+        style.brush_inner_width = prefs.f64_or(
+            "cursor.freehand.inner_line_width",
+            DEFAULT_BRUSH_LINE_WIDTH as f64,
+        ) as f32;
+        style.brush_inset =
+            prefs.f64_or("cursor.freehand.inner_line_inset", DEFAULT_BRUSH_INSET as f64) as f32;
         style
     }
+}
+
+/// 读一个 RGBA 数组（JSON 里是 `[r, g, b, a]`，每项数字）。
+fn read_rgba(prefs: &Prefs, key: &str, fallback: [f32; 4]) -> [f32; 4] {
+    let mut out = fallback;
+    if let Some(arr) = prefs.get_array(key) {
+        for (i, v) in arr.iter().take(4).enumerate() {
+            if let Some(f) = v.as_f64() {
+                out[i] = f as f32;
+            }
+        }
+    }
+    out
 }
 
 /// 画布覆盖层（顺序 = 绘制顺序）。
@@ -298,6 +365,80 @@ fn paint_symmetry(
             );
         }
     }
+}
+
+/// 笔刷尺寸圆圈（`gui/brushmanip.py:100-156` 的 `BrushSizeOverlay.paint`）。
+///
+/// 与其它覆盖层不同，它**不是**常驻在 `display_overlays` 里的：源码只在
+/// `BrushResizeMode.drag_start_cb` 里新建、`leave()` 里 `cleanup()`
+/// （`:242-253` / `:264-267`）。所以调用方只在模式返回状态时画。
+///
+/// 几何全部在显示坐标里：中心 = 起点的显示位置，半径 = `visual_radius *
+/// scale`（引擎状态里已经是显示像素），手柄 = 中心 + 手柄显示位移。
+/// 源码的 `_x/_y` 是整数（`:29-30` 的 `int(round(...))`），这里也取整。
+pub(crate) fn paint_brush_size(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    view: &View,
+    state: BrushSizeOverlayState,
+    style: OverlayStyle,
+) {
+    let [sx, sy] = view.world_to_screen(state.center.0, state.center.1);
+    let center = rect.min + egui::vec2(sx.round(), sy.round());
+    let r0 = state.radius_px.max(0.0);
+
+    // 外圈：`r = r0 - line_width_outer / 2`（`:109-112`）
+    let outer = style.brush_outer_width.max(0.0);
+    if outer > 0.0 {
+        let stroke = egui::Stroke::new(
+            outer,
+            color32(
+                style.brush_outer_rgba[0],
+                style.brush_outer_rgba[1],
+                style.brush_outer_rgba[2],
+                style.brush_outer_rgba[3],
+            ),
+        );
+        painter.circle_stroke(center, (r0 - outer * 0.5).max(0.0), stroke);
+    }
+    // 内圈：`r = r0 - inset + line_width_inner / 2`（`:114-118`）
+    let inner = style.brush_inner_width.max(0.0);
+    if inner > 0.0 {
+        let stroke = egui::Stroke::new(
+            inner,
+            color32(
+                style.brush_inner_rgba[0],
+                style.brush_inner_rgba[1],
+                style.brush_inner_rgba[2],
+                style.brush_inner_rgba[3],
+            ),
+        );
+        let r = (r0 - style.brush_inset + inner * 0.5).max(0.0);
+        painter.circle_stroke(center, r, stroke);
+    }
+
+    // 手柄：外圈色实心圆 + 内圈色小一圈（`:121-126`）
+    let handle = center + egui::vec2(state.handle.0, state.handle.1);
+    painter.circle_filled(
+        handle,
+        BRUSH_HANDLE_RADIUS,
+        color32(
+            style.brush_outer_rgba[0],
+            style.brush_outer_rgba[1],
+            style.brush_outer_rgba[2],
+            style.brush_outer_rgba[3],
+        ),
+    );
+    painter.circle_filled(
+        handle,
+        BRUSH_HANDLE_RADIUS - 1.0,
+        color32(
+            style.brush_inner_rgba[0],
+            style.brush_inner_rgba[1],
+            style.brush_inner_rgba[2],
+            style.brush_inner_rgba[3],
+        ),
+    );
 }
 
 /// 视口四角在**模型坐标**里的位置 `[TL, TR, BR, BL]`
