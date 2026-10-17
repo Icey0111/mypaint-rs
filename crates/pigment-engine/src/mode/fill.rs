@@ -14,6 +14,7 @@
 //! | `lib/floodfill.py:535` | `_TileFillSkipper` | [`TileFillSkipper`] |
 //! | `lib/floodfill.py:371` | `composite`（把填充合成进目标层） | [`composite`] |
 //! | `lib/floodfill.py:297` | `_flood_fill` 的编排 | [`flood_fill`] |
+//! | `lib/fill/gap_detection.cpp` + `gap_closing_fill.cpp` | 缺口检测 / 闭合 / 回吸 | [`super::fill_gap`] |
 //! | `gui/fill.py:40` | `FloodFillMode` | [`FillMode`] |
 //! | `lib/command.py:561` | `FloodFill` 命令 | [`crate::command::FloodFill`] |
 //!
@@ -51,9 +52,6 @@
 //!
 //! # 记账（本块未移植 / 用最保守做法的地方）
 //!
-//! - **gap closing**（`floodfill.py:606`、`fill/gap_closing_fill.cpp`、
-//!   `fill/gap_detection.cpp`）：整条"缺口检测 + 回吸"链路未移植（下一轮）；
-//!   [`Filler::flood`] 是它用到的整块 alpha flood，一并保留但当前无人调用。
 //! - **src_path**（`fill.py:249` 的"取样源图层"下拉）：引擎的
 //!   [`LayerSource`] 已能按路径渲染单层/组，但 GUI 还没有图层下拉框；
 //!   `sample merged` 与"当前层"两条源路径已接。
@@ -61,8 +59,8 @@
 //!   我们的填充是同步的，没有线程与取消点；形态学/模糊同样同步。
 //! - **种子叠加预览**（`fill.py:361` 的 `FloodFillOverlay`，黑白虚线）与
 //!   光标族（`fill.py:61-72`）：GUI 叠加层与光标是另一块，未移植。
-//! - **Gap Detection 选项**（`fill.py:828-960`）：面板上只留说明，三个键
-//!   （gap_closing / gap_size / retract_seeps）未接 [`FillOptions`]。
+//! - **Gap Detection 的进度/取消**：`_GCTileHandler` 每块 tile 都可能做
+//!   9 邻域缺口搜索，源码可取消；本移植同步执行，只有选项没有取消按钮。
 //! - **BlendModes 管理器**（`gui/blendmodehandler.py`，决定"橡皮/锁 alpha/
 //!   着色"三个修饰键的当前态）：未移植，[`FillOptions::blend_mode`] 由调用方
 //!   直接给（默认 Normal），[`FillArgs::blend_parameters`] 的映射逻辑则逐行
@@ -309,8 +307,8 @@ impl Filler {
 
     /// `flood`（`floodfill.cpp:377-385`）：把整块 tile 的 alpha 值算出来。
     ///
-    /// 源码里这是 gap closing 的输入（`_GCTileHandler.alpha_grid`），本移植
-    /// 未接 gap closing，保留为算法的一部分（也被单元测试用来整块校验阈值）。
+    /// 源码里这是 gap closing 的输入（`_GCTileHandler.alpha_grid`），
+    /// [`super::fill_gap::alpha_grid`] 用它生成 9 邻域 alpha tile。
     pub fn flood(&self, src: &TilePixels, dst: &mut [u16; PIXELS]) {
         for y in 0..TILE_SIZE {
             for x in 0..TILE_SIZE {
@@ -817,7 +815,7 @@ impl AlphaTile {
     ///
     /// 正常流程里不会对 `Full`/`Uniform` 走到这里（它们一律进 `final`，
     /// 不会重跑填充），这里只是让 `filled` 的类型在借出时没有分支。
-    fn as_data_mut(&mut self) -> &mut [u16; PIXELS] {
+    pub(crate) fn as_data_mut(&mut self) -> &mut [u16; PIXELS] {
         match self {
             AlphaTile::Data(data) => return data.as_mut(),
             AlphaTile::Full => *self = AlphaTile::Data(Box::new([OPAQUE; PIXELS])),
@@ -1028,8 +1026,7 @@ pub struct FillBlendParams {
 
 /// 一次填充的全部参数（`floodfill.py:198-275` 的 `FloodFillArguments`）。
 ///
-/// 与源码的差异（都是"这块功能未移植"造成的）：
-/// - 没有 `gap_closing_options`（缺口检测未移植，恒为 `None`）；
+/// 与源码的差异：
 /// - `mode` + `lock_alpha` 不直接存，由 [`FillArgs::blend_parameters`] 从
 ///   [`FillArgs::comp_mode`] + [`FillArgs::blend_mode`] 现算（与源码每次
 ///   `fill()` 现算一致）。
@@ -1051,6 +1048,9 @@ pub struct FillArgs {
     ///
     /// 只影响"膨胀/模糊之后是否按 bbox 裁剪结果"（`floodfill.py:346`）。
     pub framed: bool,
+    /// 缺口闭合选项（`fill.py:237` 的 `opts.gap_closing_options`）；
+    /// `None` = 普通扫描线填充。
+    pub gap_closing: Option<super::fill_gap::GapClosingOptions>,
     /// 目标合成模式（`fill.py:228` 的 `opts.blend_mode`，默认
     /// `DEFAULT_BLEND_MODE = 0` = CombineNormal）。
     pub comp_mode: CombineMode,
@@ -1135,7 +1135,11 @@ pub fn flood_fill(src: &impl TileSource, args: &FillArgs, dst: &mut PigmentSurfa
     let mut filler = Filler::new(target, args.tolerance as f64);
     let seed_lists = seeds_by_tile(&args.seeds);
 
-    let mut filled = scanline_fill(src, &mut filler, &seed_lists, &tiles_bbox);
+    let mut filled = if let Some(gc) = args.gap_closing {
+        super::fill_gap::gap_closing_fill(src, &filler, &seed_lists, &tiles_bbox, gc)
+    } else {
+        scanline_fill(src, &mut filler, &seed_lists, &tiles_bbox)
+    };
     // Dilate/Erode（floodfill.py:336-338）
     if offset != 0 {
         filled = super::fill_morphology::morph(offset, filled);
@@ -1163,7 +1167,11 @@ pub fn flood_fill_surface(surface: &mut PigmentSurface, args: &FillArgs) -> usiz
     let target = get_target_color(&*surface, tx, ty, px, py);
     let mut filler = Filler::new(target, args.tolerance as f64);
     let seed_lists = seeds_by_tile(&args.seeds);
-    let mut filled = scanline_fill(&*surface, &mut filler, &seed_lists, &tiles_bbox);
+    let mut filled = if let Some(gc) = args.gap_closing {
+        super::fill_gap::gap_closing_fill(&*surface, &filler, &seed_lists, &tiles_bbox, gc)
+    } else {
+        scanline_fill(&*surface, &mut filler, &seed_lists, &tiles_bbox)
+    };
     if offset != 0 {
         filled = super::fill_morphology::morph(offset, filled);
     }
@@ -1324,8 +1332,7 @@ pub const DISPLAY_NAME: &str = "Flood Fill";
 
 /// 填充模式的可调项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
 ///
-/// 默认值照源码类常量（`fill.py:450-462`）。`gap_closing*` 三项仍未移植
-/// （见模块头的记账清单），其余全部可用。
+/// 默认值照源码类常量（`fill.py:450-462`）。
 #[derive(Clone, Copy, Debug)]
 pub struct FillOptions {
     /// 容差（`DEFAULT_TOLERANCE = 0.05`）。
@@ -1346,6 +1353,12 @@ pub struct FillOptions {
     pub offset: i32,
     /// 高斯模糊半径（`DEFAULT_FEATHER = 0`）。
     pub feather: i32,
+    /// 是否启用缺口检测（`DEFAULT_GAP_CLOSING = False`）。
+    pub gap_closing: bool,
+    /// 最大缺口长度（`DEFAULT_GAP_SIZE = 5`）。
+    pub gap_size: i32,
+    /// 是否回吸渗漏（`DEFAULT_RETRACT_SEEPS = True`）。
+    pub retract_seeps: bool,
 }
 
 impl Default for FillOptions {
@@ -1360,6 +1373,9 @@ impl Default for FillOptions {
             make_new_layer: false,
             offset: 0,
             feather: 0,
+            gap_closing: false,
+            gap_size: 5,
+            retract_seeps: true,
         }
     }
 }
@@ -1499,6 +1515,14 @@ impl FillMode {
             offset: self.options.offset,
             feather: self.options.feather,
             framed: ctx.doc.get_frame_enabled(),
+            gap_closing: if self.options.gap_closing {
+                Some(super::fill_gap::GapClosingOptions {
+                    max_gap_size: self.options.gap_size,
+                    retract_seeps: self.options.retract_seeps,
+                })
+            } else {
+                None
+            },
             comp_mode: self.options.comp_mode,
             blend_mode: self.options.blend_mode,
             opacity: self.options.opacity,
@@ -1731,6 +1755,7 @@ mod tests {
             offset: 0,
             feather: 0,
             framed: false,
+            gap_closing: None,
             comp_mode: CombineMode::Normal,
             blend_mode: FillBlendMode::Normal,
             opacity: 1.0,

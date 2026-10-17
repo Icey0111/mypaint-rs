@@ -28,6 +28,7 @@
 
 pub mod brushresize;
 pub mod fill;
+pub mod fill_gap;
 pub mod fill_morphology;
 pub mod frameedit;
 pub mod freehand;

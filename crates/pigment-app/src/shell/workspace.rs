@@ -543,11 +543,19 @@ impl PigmentApp {
                 .changed();
         });
         ui.separator();
-        ui.label(
-            egui::RichText::new("Gap Detection 未移植（gap closing / max gap / retract seeps）")
-                .italics()
-                .weak(),
-        );
+        changed |= ui
+            .checkbox(&mut opt.gap_closing, "Use Gap Detection")
+            .on_hover_text("检测线稿缺口并避免填充漏过去；比普通填充慢很多")
+            .changed();
+        ui.add_enabled_ui(opt.gap_closing, |ui| {
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.gap_size, 1..=64).text("Max Gap Size"))
+                .changed();
+            changed |= ui
+                .checkbox(&mut opt.retract_seeps, "Retract Seeps")
+                .on_hover_text("从渗漏边缘往回擦，填到缺口前停下")
+                .changed();
+        });
         if changed {
             self.with_mode(|modes, _ctx| modes.top_mut().set_fill_options(opt));
             // 源码各回调只写 preferences dict，落盘由 app 关闭时统一做；
@@ -564,6 +572,12 @@ impl PigmentApp {
                 .set_f64("flood_fill.feather", opt.feather as f64);
             self.prefs
                 .set_f64("flood_fill.opacity", opt.opacity as f64);
+            self.prefs
+                .set_bool("flood_fill.gap_closing", opt.gap_closing);
+            self.prefs
+                .set_f64("flood_fill.gap_size", opt.gap_size as f64);
+            self.prefs
+                .set_bool("flood_fill.retract_seeps", opt.retract_seeps);
             self.prefs.set_f64(
                 "flood_fill.blend_mode",
                 CombineMode::ALL

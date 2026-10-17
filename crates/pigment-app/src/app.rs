@@ -1661,6 +1661,9 @@ impl PigmentApp {
         o.sample_merged = self.prefs.bool_or("flood_fill.sample_merged", false);
         o.offset = self.prefs.f64_or("flood_fill.offset", 0.0) as i32;
         o.feather = self.prefs.f64_or("flood_fill.feather", 0.0) as i32;
+        o.gap_closing = self.prefs.bool_or("flood_fill.gap_closing", false);
+        o.gap_size = self.prefs.f64_or("flood_fill.gap_size", 5.0) as i32;
+        o.retract_seeps = self.prefs.bool_or("flood_fill.retract_seeps", true);
         let mode = self.prefs.f64_or("flood_fill.blend_mode", 0.0) as u8;
         o.comp_mode = CombineMode::from_index(mode).unwrap_or(CombineMode::Normal);
         o
