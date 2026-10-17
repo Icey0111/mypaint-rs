@@ -148,6 +148,19 @@ pub(crate) fn color_swatch(
     resp.on_hover_text(format!("{tip}\n{}", color::hex_from_hsv(hsv)))
 }
 
+/// 预览面板的可变状态（`gui/previewwindow.py` 的 `PreviewTool`）。
+///
+/// 纹理缓存键 = `(合成版本, 有效外接框, mip 级)`；拖动状态记
+/// `(按下时的模型坐标, 按下时的主视图中心)`，与源码 `_drag_start`
+/// （`previewwindow.py:418`）同构。
+#[derive(Default)]
+pub(crate) struct PreviewState {
+    pub(crate) tex: Option<egui::TextureHandle>,
+    pub(crate) key: Option<(u64, [i32; 4], u32)>,
+    pub(crate) size: [u32; 2],
+    pub(crate) drag: Option<([f32; 2], [f32; 2])>,
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -177,6 +190,9 @@ pub struct PigmentApp {
     /// 偏好窗口的界面状态 —— `gui/preferenceswindow.py` 那个
     /// `windowing.Dialog`（当前页签 / 是否可见 / 状态文字）。
     pub(crate) prefs_window: crate::shell::prefs_window::PrefsWindowState,
+    // ---- 预览面板 ----
+    /// 预览面板的纹理/拖动状态（`gui/previewwindow.py`）。
+    pub(crate) preview: PreviewState,
     // ---- 暂存区（B5）----
     /// 暂存区：**第二份文档** + 独立模式栈 + 独立视图。
     ///
@@ -190,8 +206,7 @@ pub struct PigmentApp {
     /// 渲染器本身不绑文档，但它带一份显存 tile 缓存 —— 两个画布共用一份会互相
     /// 覆盖对方的 tile，所以各一个实例（见 `shell/scratch_panel.rs` 的模块文档）。
     pub(crate) scratch_renderer: Arc<Mutex<TileRenderer>>,
-    /// 上一帧暂存区面板是否还在停靠系统里。
-    ///
+    /// 上一帧暂存区面板是否还在停靠系统里。    ///
     /// 面板从"在"变成"不在"时要存盘 —— `scratchwindow.py:57-58` 把
     /// `destroy-event` / `delete-event` 接到 `_save_cb`（`:64-67`）。
     pub(crate) scratch_was_added: bool,
@@ -568,6 +583,7 @@ impl PigmentApp {
             accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
             key_editor: Default::default(),
             prefs_window: Default::default(),
+            preview: Default::default(),
             scratch,
             scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),
             scratch_was_added: false,
@@ -729,6 +745,43 @@ impl PigmentApp {
         }
         self.derive_active();
     }
+
+    /// 记录一笔结束后的笔刷历史 —— `BrushManager._input_stroke_ended_cb`
+    /// （`brushmanager.py:1064-1100`）。
+    ///
+    /// 源码的 `input_stroke_ended` **只由自由手绘模式发出**
+    /// （`freehand.py:352`；填充/直线/取色不发），所以这里也只在栈顶是
+    /// 自由手绘时记录。
+    pub(crate) fn record_brush_history(&mut self) {
+        if self.modes.top().name() != "Freehand Drawing" {
+            return;
+        }
+        let brush = self.brush.clone();
+        let name = self.brush_name.clone();
+        let preview = self.brushes.selected;
+        self.brushes.push_history(brush, name, preview);
+    }
+
+    /// 选中一条笔刷历史 —— `BrushHistoryView._history_button_clicked_cb`
+    /// （`gui/history.py:66-76`）：`bm.select_brush(history[i])`。
+    pub(crate) fn select_brush_history(&mut self, i: usize) -> bool {
+        let Some(entry) = self.brushes.history_entry(i).cloned() else {
+            return false;
+        };
+        self.base_brush = entry.brush;
+        self.brush_name = entry.name;
+        self.radius_override = None;
+        self.eraser = false;
+        self.paint_override = None;
+        // 面板高亮跟着历史项对应的库条目走（源码里历史笔刷不在任何分组，
+        // 选中后列表不高亮；这里退一步，让预览与工具条指示器一致）。
+        if entry.preview < self.brushes.library.entries.len() {
+            self.brushes.selected = entry.preview;
+        }
+        self.derive_active();
+        true
+    }
+
 
     /// 当前生效的光谱混色开关状态。
     pub(crate) fn paint_active(&self) -> bool {

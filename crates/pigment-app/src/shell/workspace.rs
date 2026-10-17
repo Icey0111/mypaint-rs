@@ -375,9 +375,262 @@ impl PigmentApp {
         });
         ui.label(egui::RichText::new("最近用的在最后").weak().small());
         ui.separator();
+        // 下半：笔刷历史 —— `BrushHistoryView`（gui/history.py:33-76），
+        // 5 格、32px、点一下切回该笔刷（含当时编辑器里的设置）。
+        ui.label("Brushes");
+        let brush_history: Vec<(usize, String)> = self
+            .brushes
+            .history
+            .iter()
+            .map(|e| (e.preview, e.name.clone()))
+            .collect();
+        ui.horizontal_wrapped(|ui| {
+            for (i, (preview, name)) in brush_history.into_iter().enumerate() {
+                let tex = self.brushes.icon(ui.ctx(), preview);
+                let img = egui::Image::new(&tex).fit_to_exact_size(egui::vec2(32.0, 32.0));
+                let resp = ui
+                    .add(egui::Button::image(img).frame(false))
+                    .on_hover_text(&name);
+                if resp.clicked() {
+                    self.select_brush_history(i);
+                }
+            }
+        });
         ui.label(
-            egui::RichText::new("最近用过的笔刷属 B3（笔刷历史跟踪）。").weak().small(),
+            egui::RichText::new("每笔结束后记录；同一支笔只保留最新设置").weak().small(),
         );
+    }
+
+    /// 预览面板 —— `PreviewTool`（`gui/previewwindow.py:183`）。
+    ///
+    /// 核心行为逐条对应源码：
+    /// - 预览画布按**有效外接框**（画框启用则画框，否则内容框）缩放居中，
+    ///   四周留 12px 边（`_update_preview_transformation`，`:653-664`）；
+    /// - 视口框 = 主画布四角投到预览坐标（`_update_viewport_overlay`，`:492-533`），
+    ///   四角有 `1/4·PHI` 长的角标；
+    /// - 框内拖动平移主视图、框外单击把主视图中心挪到点击处
+    ///   （`:409-451`）；滚轮缩放主视图（`:382-407`）。
+    ///
+    /// 未移植：旋转/镜像方向点、`preview.show_viewfinder` 在偏好窗口里的条目。
+    pub(crate) fn preview_panel_content(&mut self, ui: &mut egui::Ui) {
+        const PAD: f32 = 6.0;
+        /// `previewwindow.py:42`：`PHI = (1.0 + sqrt(2)) / 2.0`（不是黄金比）。
+        const PHI: f32 = (1.0 + 1.414_213_6) / 2.0;
+
+        let mut show = self
+            .prefs
+            .get_bool("preview.show_viewfinder")
+            .unwrap_or(true);
+        let avail = ui.available_size();
+        let canvas_h = (avail.y - 26.0).clamp(48.0, 220.0);
+        let (rect, resp) = ui.allocate_exact_size(
+            egui::vec2(avail.x.max(32.0), canvas_h),
+            egui::Sense::click_and_drag(),
+        );
+        let inner = rect.shrink(PAD);
+
+        // ---- 有效外接框（`get_effective_bbox`）----
+        let mut bbox = if self.doc.get_frame_enabled() {
+            self.doc.get_frame()
+        } else {
+            self.doc.data_bbox()
+        };
+        if bbox.2 <= 0 {
+            bbox.2 = 64;
+        }
+        if bbox.3 <= 0 {
+            bbox.3 = 64;
+        }
+
+        // ---- 预览缩略图（mipmap 级刚好塞进面板）----
+        let rev = self.doc.layers().composite_revision();
+        let max_dim = inner.width().max(inner.height()).max(1.0) as i32;
+        let mut level = 0u32;
+        while level < 8 {
+            let shift = 1i32 << level;
+            let w = (bbox.2 + shift - 1) / shift;
+            let h = (bbox.3 + shift - 1) / shift;
+            if w.max(h) <= max_dim {
+                break;
+            }
+            level += 1;
+        }
+        let key = (rev, [bbox.0, bbox.1, bbox.2, bbox.3], level);
+        if self.preview.key != Some(key) {
+            let (rgba, w, h) = self.doc.layers().render_thumbnail_rgba8(bbox, level);
+            if w > 0 && h > 0 {
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [w as usize, h as usize],
+                    &rgba,
+                );
+                self.preview.tex = Some(ui.ctx().load_texture(
+                    format!("preview-{rev}-{level}"),
+                    img,
+                    egui::TextureOptions::LINEAR,
+                ));
+                self.preview.size = [w, h];
+            }
+            self.preview.key = Some(key);
+        }
+
+        // ---- 摆放（等比放进 inner）----
+        let [tw, th] = self.preview.size;
+        let image_rect = if tw > 0 && th > 0 {
+            let s = (inner.width() / tw as f32)
+                .min(inner.height() / th as f32)
+                .max(1e-6);
+            egui::Rect::from_center_size(
+                inner.center(),
+                egui::vec2(tw as f32 * s, th as f32 * s),
+            )
+        } else {
+            inner
+        };
+        let sx = image_rect.width() / bbox.2 as f32;
+        let sy = image_rect.height() / bbox.3 as f32;
+        let to_panel = |w: [f32; 2]| {
+            egui::pos2(
+                image_rect.min.x + (w[0] - bbox.0 as f32) * sx,
+                image_rect.min.y + (w[1] - bbox.1 as f32) * sy,
+            )
+        };
+        let to_world = |p: egui::Pos2| -> [f32; 2] {
+            [
+                bbox.0 as f32 + (p.x - image_rect.min.x) / sx,
+                bbox.1 as f32 + (p.y - image_rect.min.y) / sy,
+            ]
+        };
+
+        // ---- 画预览 + 外框阴影 ----
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(
+            image_rect.expand(1.0),
+            0.0,
+            egui::Color32::from_black_alpha(70),
+        );
+        if let Some(tex) = self.preview.tex.clone() {
+            painter.image(
+                tex.id(),
+                image_rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+
+        // ---- 视口框（主画布四角 + 角标）----
+        let mut viewport_rect: Option<egui::Rect> = None;
+        if show {
+            if let Some(cr) = self.canvas_rect {
+                let tl = self.view.screen_to_world(cr.min.x, cr.min.y);
+                let br = self.view.screen_to_world(cr.max.x, cr.max.y);
+                let vp = egui::Rect::from_two_pos(
+                    to_panel([tl[0], tl[1]]),
+                    to_panel([br[0], br[1]]),
+                );
+                viewport_rect = Some(vp);
+                let hovered = resp.hover_pos().is_some_and(|p| vp.contains(p));
+                let line = if hovered {
+                    egui::Color32::from_rgb(255, 255, 255)
+                } else {
+                    egui::Color32::from_rgb(190, 190, 190)
+                };
+                let clip = painter.with_clip_rect(rect.intersect(image_rect));
+                // 投影 + 主线（源码 `render_drop_shadow` + EDITABLE/ACTIVE 颜色）
+                clip.rect_stroke(
+                    vp,
+                    0.0,
+                    egui::Stroke::new(2.0, egui::Color32::from_black_alpha(90)),
+                    egui::StrokeKind::Middle,
+                );
+                clip.rect_stroke(
+                    vp,
+                    0.0,
+                    egui::Stroke::new(1.0, line),
+                    egui::StrokeKind::Middle,
+                );
+                // 四角角标：`nw = w/4*PHI` 是**主画布**的显示像素长度，
+                // 换算到模型再投到预览（源码就是在主画布坐标里裁的）。
+                let ax = (cr.width() / 4.0 * PHI * sx / self.view.zoom).min(vp.width() * 0.5);
+                let ay = (cr.height() / 4.0 * PHI * sy / self.view.zoom).min(vp.height() * 0.5);
+                let (l, t, r, b) = (vp.left(), vp.top(), vp.right(), vp.bottom());
+                let pts = [
+                    ([l, t], [l + ax, t]),
+                    ([l, t], [l, t + ay]),
+                    ([r, t], [r - ax, t]),
+                    ([r, t], [r, t + ay]),
+                    ([l, b], [l + ax, b]),
+                    ([l, b], [l, b - ay]),
+                    ([r, b], [r - ax, b]),
+                    ([r, b], [r, b - ay]),
+                ];
+                for (a, c) in pts {
+                    clip.line_segment(
+                        [egui::pos2(a[0], a[1]), egui::pos2(c[0], c[1])],
+                        egui::Stroke::new(1.0, line),
+                    );
+                }
+            }
+        }
+
+        // ---- 交互 ----
+        let canvas_rect = self.canvas_rect;
+        if resp.drag_started() {
+            if let (Some(p), Some(cr), Some(vp)) =
+                (resp.interact_pointer_pos(), canvas_rect, viewport_rect)
+            {
+                if vp.contains(p) {
+                    let start_world = to_world(p);
+                    let center = self.view.screen_to_world(cr.center().x, cr.center().y);
+                    self.preview.drag = Some((start_world, center));
+                }
+            }
+        }
+        if resp.dragged() {
+            if let (Some((start_world, start_center)), Some(p), Some(cr)) =
+                (self.preview.drag, resp.interact_pointer_pos(), canvas_rect)
+            {
+                let now = to_world(p);
+                let center = [
+                    start_center[0] + now[0] - start_world[0],
+                    start_center[1] + now[1] - start_world[1],
+                ];
+                self.preview_recenter(center[0], center[1], cr);
+                ui.ctx().request_repaint();
+            }
+        }
+        if resp.drag_stopped() {
+            self.preview.drag = None;
+        }
+        if resp.clicked() && self.preview.drag.is_none() {
+            if let (Some(p), Some(cr)) = (resp.interact_pointer_pos(), canvas_rect) {
+                let w = to_world(p);
+                self.preview_recenter(w[0], w[1], cr);
+                ui.ctx().request_repaint();
+            }
+        }
+        // 滚轮：缩放主视图，锚点 = 预览里指针对应的世界点（`previewwindow.py:382`）
+        if resp.hovered() {
+            let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll.abs() > 1.0 {
+                if let (Some(p), Some(_cr)) = (resp.hover_pos(), canvas_rect) {
+                    let w = to_world(p);
+                    let anchor = self.view.world_to_screen(w[0], w[1]);
+                    let z = self.view.stepped_zoom(scroll > 0.0);
+                    self.view.set_zoom_at(z, anchor[0], anchor[1]);
+                    ui.ctx().request_repaint();
+                }
+            }
+        }
+
+        if ui.checkbox(&mut show, "Show Viewfinder").changed() {
+            self.prefs.set_bool("preview.show_viewfinder", show);
+        }
+    }
+
+    /// 把主视图中心挪到模型坐标 `(wx, wy)` —— `recenter_on_model_coords`。
+    pub(crate) fn preview_recenter(&mut self, wx: f32, wy: f32, canvas: egui::Rect) {
+        let c = canvas.center();
+        self.view.offset = [c.x - wx * self.view.zoom, c.y - wy * self.view.zoom];
     }
 
     /// 画布（`TiledDrawWidget`）—— 工作区的中央，`expand=True`。
@@ -465,6 +718,8 @@ impl PigmentApp {
                 if !self.eraser {
                     self.color_manager.push_current_history();
                 }
+                // 笔刷历史同理（`brushmanager.py:1064`），由自由手绘模式发出。
+                self.record_brush_history();
             }
             // 单击（按下即松开、指针几乎没动）：
             //
@@ -491,6 +746,7 @@ impl PigmentApp {
                     if !self.eraser {
                         self.color_manager.push_current_history();
                     }
+                    self.record_brush_history();
                 }
             }
         }

@@ -486,6 +486,10 @@ impl PigmentApp {
                 // 画布），源码这个面板也没有滚动容器（`scratchwindow.py:59-62`
                 // 是 EventBox + TDW）。
                 self.scratchpad_panel_content(ui);
+            } else if *panel == PanelId::PreviewTool {
+                // 预览面板同理：滚轮要驱动主视图缩放（`previewwindow.py:382`），
+                // 不能被 ScrollArea 吃掉。
+                self.preview_panel_content(ui);
             } else {
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])

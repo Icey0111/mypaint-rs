@@ -37,7 +37,7 @@
 //!
 //! 权限：官方包图标为 CC0，见 `assets/brushes/COPYING`。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use eframe::egui;
 use pigment_engine::brushlib::{translate_group_name, BrushEntry, BrushLibrary};
@@ -121,6 +121,21 @@ fn index_at(x: f32, y: f32, tiles_w: usize, count: usize) -> usize {
     i.min(count - 1)
 }
 
+/// 笔刷历史长度（`brushmanager.py:_BRUSH_HISTORY_SIZE = 5`）。
+pub const BRUSH_HISTORY_SIZE: usize = 5;
+
+/// 一条笔刷历史：源码存的是 `ManagedBrush` 克隆（含当时的全部设置），
+/// 预览图取**被选中笔刷**的 `preview`（`brushmanager.py:1089-1093`）。
+#[derive(Clone)]
+pub struct BrushHistoryEntry {
+    /// 作画时的实际笔刷（含编辑器改动）。
+    pub brush: Brush,
+    /// `parent_brush_name` —— 历史去重的身份（源码首选判据）。
+    pub name: String,
+    /// 预览图对应的 library 下标（用于 `BrushPanel::icon`）。
+    pub preview: usize,
+}
+
 /// 一个分组面板 —— MyPaint 的 `BrushGroupTool`（`gui/brushselectionwindow.py:347`）。
 pub struct BrushPanel {
     pub library: BrushLibrary,
@@ -151,6 +166,8 @@ pub struct BrushPanel {
     /// 在 [`Self::rebuild_visible`] 里一并算好：tooltip 需要闭包读它，
     /// 提前算好就不必在绘制闭包里再借 `&self`。
     tooltips: Vec<String>,
+    /// 最近用过的笔刷（最旧 → 最新，`_BRUSH_HISTORY_SIZE` 条）。
+    pub history: VecDeque<BrushHistoryEntry>,
 }
 
 impl BrushPanel {
@@ -174,7 +191,31 @@ impl BrushPanel {
             previews: HashMap::new(),
             visible: Vec::new(),
             tooltips: Vec::new(),
+            history: VecDeque::new(),
         };
+        // `_init_default_brushkeys_and_history`（brushmanager.py:463-474）：
+        // 空的历史槽位用启动分组的前 5 支补满（`group_i = i % len`）。
+        let seed: Vec<usize> = p
+            .library
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.group == p.group)
+            .map(|(i, _)| i)
+            .take(BRUSH_HISTORY_SIZE)
+            .collect();
+        for idx in seed {
+            if let Some(entry) = p.library.entries.get(idx) {
+                if let Ok(brush) = entry.load() {
+                    let name = entry.mypaint_name();
+                    p.history.push_back(BrushHistoryEntry {
+                        brush,
+                        name,
+                        preview: idx,
+                    });
+                }
+            }
+        }
         p.rebuild_visible();
         p
     }
@@ -217,6 +258,32 @@ impl BrushPanel {
             .ok_or_else(|| "笔刷库为空".to_string())?
             .load()
             .map_err(|e| e.to_string())
+    }
+
+    /// 记录一笔用过的笔刷 —— `BrushManager._input_stroke_ended_cb`
+    /// （`brushmanager.py:1064-1100`）。
+    ///
+    /// 源码的判据：**优先比对 `parent_brush_name`**（同一支笔在编辑器里改过
+    /// 设置也只算一条，历史里保留最新设置）；没有 parent 名时退回
+    /// `brushinfo.matches()`。本移植的笔刷都有 MyPaint 名，所以只做前者；
+    /// 后者（老 `.ora` 里没有 parent 名的笔画）记账。
+    pub fn push_history(&mut self, brush: Brush, name: String, preview: usize) {
+        if let Some(i) = self.history.iter().position(|e| e.name == name) {
+            self.history.remove(i);
+        }
+        self.history.push_back(BrushHistoryEntry {
+            brush,
+            name,
+            preview,
+        });
+        while self.history.len() > BRUSH_HISTORY_SIZE {
+            self.history.pop_front();
+        }
+    }
+
+    /// 历史里的 `i` 项（最旧 = 0）—— `BrushHistoryView` 的 `bm.history[i]`。
+    pub fn history_entry(&self, i: usize) -> Option<&BrushHistoryEntry> {
+        self.history.get(i)
     }
 
     /// 在面板内容中前后移动选择，返回是否发生变化。
@@ -902,6 +969,24 @@ mod tests {
         assert_eq!(TAB_ICON_SIZE, 16.0);
         // 220px 至少放得下 4 列 52px 格（BrushList.NATURAL_WIDTH_NICONS = 4）
         assert!(TOOL_WIDGET_MIN_WIDTH >= cell() * 4.0);
+    }
+
+    /// 笔刷历史：按 `parent_brush_name` 去重、追加到尾部、裁到 5
+    /// （`brushmanager.py:1064-1100`）。
+    #[test]
+    fn brush_history_dedupes_by_name_and_caps_at_five() {
+        let mut p = BrushPanel::new();
+        p.history.clear();
+        assert_eq!(BRUSH_HISTORY_SIZE, 5);
+        for i in 0..7 {
+            let name = format!("brush{}", i % 5);
+            p.push_history(pigment_engine::brushlib::default_brush(), name, i % 5);
+        }
+        let names: Vec<&str> = p.history.iter().map(|e| e.name.as_str()).collect();
+        // 0..6 依次推入，0/1 被第二次推入时删掉 → [2,3,4,0,1]
+        assert_eq!(names, vec!["brush2", "brush3", "brush4", "brush0", "brush1"]);
+        assert!(p.history_entry(0).is_some());
+        assert!(p.history_entry(5).is_none());
     }
 
     /// 面板开在启动分组上 —— `_init_default_brushkeys_and_history` 挑分组的规则。
