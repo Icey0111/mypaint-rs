@@ -27,6 +27,7 @@
 
 pub mod fill;
 pub mod freehand;
+pub mod ink;
 pub mod line;
 pub mod pick;
 

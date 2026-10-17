@@ -1482,9 +1482,11 @@ impl PigmentApp {
     pub(crate) fn switch_mode(&mut self, action: &str, now: f64) {
         use pigment_engine::mode::fill::FillMode;
         use pigment_engine::mode::freehand::FreehandMode;
+        use pigment_engine::mode::ink::InkingMode;
         use pigment_engine::mode::line::{LineKind, LineMode};
         let new_mode: Box<dyn pigment_engine::mode::InteractionMode> = match action {
             "FreehandMode" => Box::new(FreehandMode::new()),
+            "InkingMode" => Box::new(InkingMode::new()),
             "StraightMode" => Box::new(LineMode::new(LineKind::Straight)),
             "SequenceMode" => Box::new(LineMode::new(LineKind::Sequence)),
             "EllipseMode" => Box::new(LineMode::new(LineKind::Ellipse)),
@@ -1906,6 +1908,10 @@ impl PigmentApp {
     pub(crate) fn toolbar_pressed(&self, id: &str) -> bool {
         match id {
             "BlendModeEraser" => self.eraser,
+            // 绘画模式单选按钮保持按下态（`_modestack_changed_cb`）
+            "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
+            | "FloodFillMode" | "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC"
+            | "ColorPickModeY" => self.modes.top().action_name() == Some(id),
             "Fullscreen" => self.fullscreen,
             // 面板开关（toggle_dockpanel_cb 的动作 active 状态 = 已添加）
             "ToggleModeOptionsTool" => {
@@ -2024,11 +2030,10 @@ impl PigmentApp {
             }
             "ShowBackgroundToggle" | "BackgroundWindow" => true,
             // ---- 工具模式（B3：无线电动作 + 它们的 Flip 快捷键版本）----
-            "FreehandMode" | "StraightMode" | "SequenceMode" | "EllipseMode" | "FloodFillMode" => {
-                true
-            }
-            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode"
-            | "FlipFloodFillMode" => true,
+            "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
+            | "FloodFillMode" => true,
+            "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
+            | "FlipEllipseMode" | "FlipFloodFillMode" => true,
             // ---- 取色（B3-4：`gui/colorpicker.py` 的四个单选动作 + 四个 Flip）----
             "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC" | "ColorPickModeY" => true,
             "FlipColorPickMode" | "FlipColorPickModeH" | "FlipColorPickModeC"
@@ -2367,8 +2372,8 @@ impl PigmentApp {
                 self.switch_mode(id, now);
                 ctx.request_repaint();
             }
-            "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode"
-            | "FlipFloodFillMode" => {
+            "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
+            | "FlipEllipseMode" | "FlipFloodFillMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
                 ctx.request_repaint();
