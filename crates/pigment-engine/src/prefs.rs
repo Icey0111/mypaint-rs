@@ -673,6 +673,11 @@ impl Prefs {
             .unwrap_or(fallback)
     }
 
+    /// 写一个浮点数组（例如 `frame.color_rgba`）。
+    pub fn set_f64_array(&mut self, key: &str, values: &[f64]) -> Option<Value> {
+        self.set(key, serde_json::json!(values))
+    }
+
     /// 取对象；不是对象 → `None`。
     pub fn get_object(&self, key: &str) -> Option<&serde_json::Map<String, Value>> {
         self.values.get(key)?.as_object()

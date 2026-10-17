@@ -1676,6 +1676,22 @@ impl PigmentApp {
         if action == "FloodFillMode" {
             new_mode.set_fill_options(self.fill_options_from_prefs());
         }
+        if action == "SymmetryEditMode" && !self.doc.symmetry_active() {
+            // `symmetry.py:162-167`：进入编辑模式自动开启对称；中心放在
+            // 当前视口中心（源码的默认中心可能来自上次会话，本移植取视口）。
+            let center = self.canvas_rect.map(|r| {
+                let c = r.center() - r.min;
+                let [x, y] = self.view.screen_to_world(c.x, c.y);
+                (x.round() as i32, y.round() as i32)
+            });
+            self.doc.set_symmetry_state(
+                Some(true),
+                center,
+                None,
+                None,
+                None,
+            );
+        }
         let label = new_mode.name().to_string();
         let usage = new_mode.usage().to_string();
         // 选绘画模式即取消未完成的视图手势（源码里是模式栈 pop/替换）

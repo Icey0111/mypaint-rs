@@ -367,6 +367,59 @@ fn paint_symmetry(
     }
 }
 
+/// 对称编辑模式的垃圾桶按钮位置（`symmetry.py:833-860` 的
+/// `_recalculate_edit_data`）：中心在视口内就放在中心一侧，否则放在
+/// 离中心最近的视口位置，再向"远离视口中心"的方向偏 2×半径。
+pub(crate) fn symmetry_disable_pos(
+    rect: egui::Rect,
+    view: &View,
+    center: (i32, i32),
+) -> egui::Pos2 {
+    let [sx, sy] = view.world_to_screen(center.0 as f32, center.1 as f32);
+    let p = rect.min + egui::vec2(sx, sy);
+    let nearest = egui::pos2(
+        p.x.clamp(rect.left(), rect.right()),
+        p.y.clamp(rect.top(), rect.bottom()),
+    );
+    let margin = 2.0 * 16.0; // _DISABLE_RADIUS * 2
+    let dir = if rect.center().x - nearest.x >= 0.0 {
+        1.0
+    } else {
+        -1.0
+    };
+    let x = nearest.x + margin * dir;
+    let y = nearest.y;
+    let clamp_or_center = |v: f32, lo: f32, hi: f32, mid: f32| {
+        if hi < lo {
+            mid
+        } else {
+            v.clamp(lo, hi)
+        }
+    };
+    egui::pos2(
+        clamp_or_center(x, rect.left() + margin, rect.right() - margin, rect.center().x),
+        clamp_or_center(y, rect.top() + margin, rect.bottom() - margin, rect.center().y),
+    )
+}
+
+/// 画框编辑模式的垃圾桶按钮位置（`framewindow.py:725-732`）：
+/// 画框四角显示坐标的质心，再夹到视口内（留 2×半径边距）。
+pub(crate) fn frame_remove_pos(rect: egui::Rect) -> egui::Pos2 {
+    let margin = 2.0 * 16.0;
+    let c = rect.center();
+    let clamp_or_center = |v: f32, lo: f32, hi: f32, mid: f32| {
+        if hi < lo {
+            mid
+        } else {
+            v.clamp(lo, hi)
+        }
+    };
+    egui::pos2(
+        clamp_or_center(c.x, rect.left() + margin, rect.right() - margin, c.x),
+        clamp_or_center(c.y, rect.top() + margin, rect.bottom() - margin, c.y),
+    )
+}
+
 /// 笔刷尺寸圆圈（`gui/brushmanip.py:100-156` 的 `BrushSizeOverlay.paint`）。
 ///
 /// 与其它覆盖层不同，它**不是**常驻在 `display_overlays` 里的：源码只在
@@ -1022,6 +1075,25 @@ mod tests {
         }
         // 第一遍的末尾（5）到第二遍的开头（12）正好是 _DASH_GAP
         assert!(((second[0].0 - first[0].1) - DASH_GAP).abs() < 1e-4);
+    }
+
+    #[test]
+    fn symmetry_and_frame_floating_buttons_stay_inside_the_view() {
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(800.0, 600.0));
+        let view = View::default();
+        // 中心在视口内：按钮在中心左侧或右侧 32px
+        let d = symmetry_disable_pos(rect, &view, (400, 300));
+        assert!((d.x - (rect.center().x - 32.0)).abs() < 1.0 || (d.x - (rect.center().x + 32.0)).abs() < 1.0);
+        assert!(rect.contains(d));
+        // 中心远在视口外：按钮仍被夹在视口内
+        let d = symmetry_disable_pos(rect, &view, (-100000, 300));
+        assert!(rect.shrink(32.0).contains(d), "按钮应夹在视口内: {d:?}");
+        // 画框垃圾桶在画布中心
+        let f = frame_remove_pos(rect);
+        assert!((f - rect.center()).length() < 1e-3);
+        // 极小视口也不能越界
+        let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(40.0, 40.0));
+        assert!(tiny.contains(frame_remove_pos(tiny)));
     }
 }
 

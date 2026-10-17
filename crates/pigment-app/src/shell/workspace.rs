@@ -590,6 +590,126 @@ impl PigmentApp {
         }
     }
 
+    /// 对称轴编辑选项（`symmetry.py:346-545` 的 `SymmetryEditOptionsWidget`）。
+    fn symmetry_options(&mut self, ui: &mut egui::Ui) {
+        use pigment_surface::symmetry::SymmetryType;
+        let mut active = self.doc.symmetry_active();
+        if ui.checkbox(&mut active, "Enabled").changed() {
+            self.doc.set_symmetry_state(Some(active), None, None, None, None);
+        }
+        let (cx, cy) = self.doc.symmetry_center();
+        let (mut x, mut y) = (cx, cy);
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("X Position:");
+            changed |= ui.add(egui::DragValue::new(&mut x)).changed();
+            ui.label("Y Position:");
+            changed |= ui.add(egui::DragValue::new(&mut y)).changed();
+        });
+        if changed {
+            self.doc.set_symmetry_state(None, Some((x, y)), None, None, None);
+        }
+        let mut angle = self.doc.symmetry_angle().to_degrees();
+        if ui
+            .add(egui::Slider::new(&mut angle, -180.0..=180.0).text("Angle"))
+            .changed()
+        {
+            self.doc
+                .set_symmetry_state(None, None, None, None, Some(angle.to_radians()));
+        }
+        let mut alpha = self
+            .prefs
+            .f64_or("symmetry.line_alpha", 0.333) as f32;
+        if ui
+            .add(egui::Slider::new(&mut alpha, 0.0..=1.0).text("Alpha"))
+            .changed()
+        {
+            self.prefs
+                .set_f64("symmetry.line_alpha", alpha as f64);
+        }
+        let mut kind = self.doc.symmetry_type();
+        egui::ComboBox::from_label("Symmetry Type")
+            .selected_text(symmetry_label(kind))
+            .show_ui(ui, |ui| {
+                for t in SymmetryType::ALL {
+                    if ui.selectable_label(kind == t, symmetry_label(t)).clicked() {
+                        kind = t;
+                    }
+                }
+            });
+        if kind != self.doc.symmetry_type() {
+            self.doc.set_symmetry_state(None, None, Some(kind), None, None);
+        }
+        let mut lines = self.doc.symmetry_lines();
+        if ui
+            .add(egui::Slider::new(&mut lines, 1..=16).text("Rotational lines"))
+            .changed()
+        {
+            self.doc
+                .set_symmetry_state(None, None, None, Some(lines), None);
+        }
+    }
+
+    /// 画框编辑选项（`framewindow.py:415-560` 的 `FrameEditOptionsWidget`）。
+    fn frame_options(&mut self, ui: &mut egui::Ui) {
+        let mut enabled = self.doc.get_frame_enabled();
+        if ui.checkbox(&mut enabled, "Enabled").changed() {
+            self.doc.set_frame_enabled(enabled);
+        }
+        let (fx, fy, mut w, mut h) = self.doc.get_frame();
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Width:");
+            changed |= ui.add(egui::DragValue::new(&mut w).range(1..=32000)).changed();
+            ui.label("Height:");
+            changed |= ui.add(egui::DragValue::new(&mut h).range(1..=32000)).changed();
+        });
+        if changed {
+            self.doc.set_frame(fx, fy, w, h);
+        }
+        let mut dpi = self.doc.xres.unwrap_or(96) as i32;
+        if ui
+            .horizontal(|ui| {
+                ui.label("Resolution:");
+                ui.add(egui::DragValue::new(&mut dpi).range(1..=9600)).changed()
+            })
+            .inner
+        {
+            self.doc.xres = Some(dpi.max(1) as u32);
+            self.doc.yres = Some(dpi.max(1) as u32);
+        }
+        let rgba = crate::shell::overlays::OverlayStyle::from_prefs(&self.prefs).frame_rgba;
+        let mut rgb = [
+            (rgba[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (rgba[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+            (rgba[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        ];
+        ui.horizontal(|ui| {
+            ui.label("Color:");
+            if ui.color_edit_button_srgb(&mut rgb).changed() {
+                self.prefs.set_f64_array(
+                    "frame.color_rgba",
+                    &[
+                        rgb[0] as f64 / 255.0,
+                        rgb[1] as f64 / 255.0,
+                        rgb[2] as f64 / 255.0,
+                        rgba[3] as f64,
+                    ],
+                );
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui.button("Set Frame to Layer").clicked() {
+                let (x, y, w, h) = self.doc.current_layer().data_bbox();
+                self.doc.set_frame(x, y, w, h);
+            }
+            if ui.button("Set Frame to Document").clicked() {
+                let (x, y, w, h) = self.doc.data_bbox();
+                self.doc.set_frame(x, y, w, h);
+            }
+        });
+    }
+
     /// Inking 的 `OptionsUI`（`gui/inktool.py:1259-1380`）：节点压力/时间/倾角
     /// 滑条 + 插点/删点/简化/剔除。源码是 GTK 的 `point_values_grid`，这里用
     /// egui 的同一组控件。
@@ -724,6 +844,14 @@ impl PigmentApp {
         }
         if options_name == "Inking" {
             self.inking_options(ui);
+            return;
+        }
+        if options_name == "Edit Symmetry Axis" {
+            self.symmetry_options(ui);
+            return;
+        }
+        if options_name == "Edit Frame" {
+            self.frame_options(ui);
             return;
         }
 
@@ -1278,8 +1406,31 @@ impl PigmentApp {
             // CLICKED），`dispatched_drag` 只是防御性双保险。
             if !dispatched_drag && response.clicked_by(egui::PointerButton::Primary) {
                 if let Some(pos) = response.interact_pointer_pos() {
-                    // Inking 画布 OK/垃圾桶优先于绘画（`inktool.py:317-356`）
+                    // 对称/画框编辑模式的垃圾桶按钮（`symmetry.py:736-740`、
+                    // `framewindow.py:182-187`）优先于绘画。
                     let mut consumed = false;
+                    match self.modes.top().action_name() {
+                        Some("SymmetryEditMode") => {
+                            let d = crate::shell::overlays::symmetry_disable_pos(
+                                rect,
+                                &self.view,
+                                self.doc.symmetry_center(),
+                            );
+                            if pos.distance(d) <= 16.0 {
+                                self.doc.set_symmetry_state(Some(false), None, None, None, None);
+                                consumed = true;
+                            }
+                        }
+                        Some("FrameEditMode") => {
+                            let d = crate::shell::overlays::frame_remove_pos(rect);
+                            if pos.distance(d) <= 16.0 {
+                                self.doc.set_frame_enabled(false);
+                                consumed = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                    // Inking 画布 OK/垃圾桶优先于绘画（`inktool.py:317-356`）
                     if let Some(accept) = self.ink_button_at(rect, pos) {
                         consumed = self.with_mode(|modes, ctx| {
                             if accept {
@@ -1308,6 +1459,14 @@ impl PigmentApp {
                         }
                         self.record_brush_history();
                     }
+                }
+            }
+            // 无按键悬停：Inking ADJUST 的节点预亮需要它
+            // （`inktool.py:356-362` 的 `motion_notify_cb`）。
+            if response.hovered() && !ui.input(|i| i.pointer.any_down()) {
+                if let Some(pos) = response.hover_pos() {
+                    let ev = self.pointer_event(pos, rect, now_ms, 0, mods);
+                    self.mode_motion(ev);
                 }
             }
         }
@@ -1399,6 +1558,42 @@ impl PigmentApp {
             }
         }
 
+        // ---- 对称/画框编辑模式的浮动按钮（`symmetry.py:955-975`、
+        // `framewindow.py:888-899`）----
+        match self.modes.top().action_name() {
+            Some("SymmetryEditMode") => {
+                let painter = ui.painter().with_clip_rect(rect);
+                let center = self.doc.symmetry_center();
+                let d = crate::shell::overlays::symmetry_disable_pos(rect, &self.view, center);
+                painter.circle_filled(d, 16.0, egui::Color32::from_rgb(0xEC, 0xF0, 0xF1));
+                painter.text(
+                    d,
+                    egui::Align2::CENTER_CENTER,
+                    "×",
+                    egui::FontId::proportional(18.0),
+                    egui::Color32::BLACK,
+                );
+                let [sx, sy] = self.view.world_to_screen(center.0 as f32, center.1 as f32);
+                let c = rect.min + egui::vec2(sx, sy);
+                if rect.contains(c) {
+                    painter.circle_filled(c, 8.0, egui::Color32::from_rgb(0xF1, 0xC4, 0x0F));
+                }
+            }
+            Some("FrameEditMode") => {
+                let painter = ui.painter().with_clip_rect(rect);
+                let d = crate::shell::overlays::frame_remove_pos(rect);
+                painter.circle_filled(d, 16.0, egui::Color32::from_rgb(0xEC, 0xF0, 0xF1));
+                painter.text(
+                    d,
+                    egui::Align2::CENTER_CENTER,
+                    "🗑",
+                    egui::FontId::proportional(14.0),
+                    egui::Color32::BLACK,
+                );
+            }
+            _ => {}
+        }
+
         // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----
         if let Some(pos) = response.hover_pos() {
             let r = self
@@ -1424,6 +1619,18 @@ impl PigmentApp {
             self.stroke_dirty = false;
             ui.ctx().request_repaint();
         }
+    }
+}
+
+/// 对称类型在选项面板里的显示名（`symmetry.py:368` 的 `Symmetry Type` 条目）。
+fn symmetry_label(t: pigment_surface::symmetry::SymmetryType) -> &'static str {
+    use pigment_surface::symmetry::SymmetryType as T;
+    match t {
+        T::Vertical => "Vertical",
+        T::Horizontal => "Horizontal",
+        T::VertHorz => "Vertical + Horizontal",
+        T::Rotational => "Rotational",
+        T::Snowflake => "Snowflake",
     }
 }
 

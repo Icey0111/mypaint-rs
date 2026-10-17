@@ -570,6 +570,15 @@ impl InteractionMode for InkingMode {
 
     fn motion(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent) -> bool {
         if !self.dragging {
+            // 悬停预亮（`inktool.py:356-362` 的 `_update_zone_and_target`）：
+            // ADJUST 阶段不按键移动也更新目标节点，覆盖层据此高亮。
+            if self.phase == InkPhase::Adjust {
+                let target = self.node_at(ev);
+                if target != self.target_node {
+                    self.target_node = target;
+                    return true;
+                }
+            }
             return false;
         }
         if self.phase == InkPhase::Adjust {
@@ -870,6 +879,47 @@ mod tests {
                 .unwrap_or(0)
                 > 0
         );
+    }
+
+    /// 悬停预亮（`inktool.py:356-362`）：ADJUST 阶段不按键移动也会更新
+    /// `target_node`，覆盖层据此高亮节点。
+    #[test]
+    fn adjust_phase_prelights_the_node_under_the_cursor() {
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut picked = None;
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: Some(&mut picked),
+        };
+        let mut mode = InkingMode::new();
+        mode.button_press(&mut ctx, &PointerEvent::button(0.0, 0.0, 0.0, 1));
+        for i in 1..=10 {
+            let ev = PointerEvent::motion(i as f32 * 40.0, 0.0, i as f64 * 40.0);
+            mode.motion(&mut ctx, &ev);
+        }
+        mode.button_release(&mut ctx, &PointerEvent::button(400.0, 0.0, 440.0, 1));
+        assert!(mode.ink_editing());
+        assert_eq!(mode.ink_target_node(), None, "收笔后无悬停目标");
+
+        let node = mode.nodes()[3];
+        let hover = PointerEvent::motion(node.x + 2.0, node.y + 1.0, 500.0);
+        assert!(mode.motion(&mut ctx, &hover), "悬停应报告状态变化");
+        assert_eq!(mode.ink_target_node(), Some(3));
+
+        // 移开后取消预亮
+        let away = PointerEvent::motion(node.x + 200.0, node.y + 200.0, 516.0);
+        mode.motion(&mut ctx, &away);
+        assert_eq!(mode.ink_target_node(), None);
     }
 }
 
