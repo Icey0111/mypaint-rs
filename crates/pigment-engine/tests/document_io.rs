@@ -182,6 +182,30 @@ fn png_round_trips_pixels() {
 }
 
 #[test]
+fn jpg_round_trips_as_lossy_opaque() {
+    let path = tmp("roundtrip.jpg");
+    let mut doc = Document::new();
+    paint(&mut doc, 40.0, 4.0);
+
+    let outcome = doc.save(&path, None).unwrap();
+    let SaveOutcome::Jpg { bbox } = outcome else {
+        panic!("应识别为 JPEG");
+    };
+    assert!(bbox.2 > 0 && bbox.3 > 0);
+    let bytes = std::fs::read(&path).unwrap();
+    assert_eq!(&bytes[..2], b"\xff\xd8", "JPEG SOI");
+
+    let mut doc2 = Document::new();
+    let loaded = doc2.load(&path).unwrap();
+    let LoadOutcome::Jpg { bbox: lb } = loaded else {
+        panic!("应识别为 JPEG");
+    };
+    assert_eq!((bbox.2, bbox.3), (lb.2, lb.3));
+    assert!(doc2.surface().tile_count() > 0, "JPEG 载入后应有像素");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn ora_round_trips_pixels() {
     let path = tmp("roundtrip.ora");
     let mut doc = Document::new();
@@ -270,7 +294,6 @@ fn unsupported_extension_is_rejected() {
     assert!(err.is_err());
     let err = doc.load(tmp("x.tiff"));
     assert!(err.is_err());
-    assert!(doc.save(tmp("x.jpg"), None).is_err(), "jpg 尚未移植");
 }
 
 #[test]

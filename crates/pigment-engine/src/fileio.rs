@@ -101,6 +101,8 @@ pub enum FileError {
     Io(std::io::Error),
     Zip(crate::zip::ZipError),
     Png(String),
+    /// JPEG 编解码错误。
+    Jpg(String),
     /// 格式不支持（`Document._unsupported`）。
     Unsupported(String),
     /// 文件不存在（`load` 的前置检查，`:1513`）。
@@ -115,10 +117,11 @@ impl std::fmt::Display for FileError {
             Self::Io(e) => write!(f, "{e}"),
             Self::Zip(e) => write!(f, "{e}"),
             Self::Png(e) => write!(f, "{e}"),
+            Self::Jpg(e) => write!(f, "{e}"),
             Self::Unsupported(ext) => write!(
                 f,
                 "无法保存或打开这种格式的文件（扩展名 {ext:?}）。\n\
-                 支持：.ora（OpenRaster）、.png（PNG）"
+                 支持：.ora（OpenRaster）、.png（PNG）、.jpg/.jpeg（JPEG）"
             ),
             Self::NotFound(p) => write!(f, "文件不存在：{p}"),
             Self::Malformed(m) => write!(f, "文件结构非法：{m}"),
@@ -511,6 +514,55 @@ pub fn save_png(
         .save_as_png(filename.as_ref(), bbox, alpha, CANVAS_BG)
         .map_err(FileError::Png)?;
     Ok(PngSaved { bbox: (x, y, w, h) })
+}
+
+/// 导出 JPEG（照搬 `lib/document.py:1747` `save_jpg`，默认 quality=90）。
+///
+/// JPEG 无 alpha：先按 `CANVAS_BG` 合成成不透明 RGB，再以画质编码。
+pub fn save_jpg(
+    surface: &PigmentSurface,
+    filename: impl AsRef<Path>,
+    bbox: (i32, i32, i32, i32),
+    quality: u8,
+) -> Result<PngSaved, FileError> {
+    let (x, y, mut w, mut h) = bbox;
+    if w <= 0 || h <= 0 {
+        w = 1;
+        h = 1;
+    }
+    let rgba = surface.render_rect_rgba8((x, y, w, h), false, CANVAS_BG);
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for p in rgba.chunks_exact(4) {
+        rgb.extend_from_slice(&p[..3]);
+    }
+    let file = std::fs::File::create(filename.as_ref()).map_err(FileError::Io)?;
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(
+        std::io::BufWriter::new(file),
+        quality,
+    );
+    enc.encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
+        .map_err(|e| FileError::Jpg(format!("JPEG 编码失败: {e}")))?;
+    Ok(PngSaved { bbox: (x, y, w, h) })
+}
+
+/// 载入 JPEG（`load_from_pixbuf_file`，`lib/document.py:1736-1743`）。
+///
+/// 返回载入的矩形；调用方把它设为画框（与 PNG 相同）。
+pub fn load_jpg(
+    surface: &mut PigmentSurface,
+    filename: impl AsRef<Path>,
+) -> Result<PngLoaded, FileError> {
+    if !filename.as_ref().is_file() {
+        return Err(FileError::NotFound(filename.as_ref().display().to_string()));
+    }
+    let img = image::open(filename.as_ref())
+        .map_err(|e| FileError::Jpg(format!("JPEG 解码失败: {e}")))?;
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    surface.load_from_rgba8(rgba.as_raw(), 0, 0, w, h);
+    Ok(PngLoaded {
+        bbox: (0, 0, w as i32, h as i32),
+    })
 }
 
 /// ORA 保存的可选项（对应 `save_ora(filename, options=None, **kwargs)` 的 kwargs）。
@@ -1336,20 +1388,14 @@ pub fn format_for_path(path: impl AsRef<Path>) -> Option<Format> {
     }
 }
 
-/// 未实现格式的提示（目前只有 jpg 会走到）。
+/// 未实现格式的提示。
 pub fn unsupported_message(path: impl AsRef<Path>) -> FileError {
     let ext = path
         .as_ref()
         .extension()
         .map(|e| e.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if ext.eq_ignore_ascii_case("jpg") || ext.eq_ignore_ascii_case("jpeg") {
-        FileError::Unsupported(format!(
-            "{ext}（有损格式，MyPaint 走 GdkPixbuf，本实现尚未移植）"
-        ))
-    } else {
-        FileError::Unsupported(ext)
-    }
+    FileError::Unsupported(ext)
 }
 
 /// 便捷：让 `Document` 用的画布底色（测试里也要用）。

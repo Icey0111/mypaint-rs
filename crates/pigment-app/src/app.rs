@@ -1034,6 +1034,9 @@ impl PigmentApp {
                     pigment_engine::LoadOutcome::Png { bbox } => {
                         format!("已打开 {}×{} 的 PNG", bbox.2, bbox.3)
                     }
+                    pigment_engine::LoadOutcome::Jpg { bbox } => {
+                        format!("已打开 {}×{} 的 JPEG", bbox.2, bbox.3)
+                    }
                 };
                 self.set_status(msg, now);
             }

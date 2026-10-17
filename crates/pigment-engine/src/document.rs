@@ -872,6 +872,12 @@ impl Document {
                 let saved = fileio::save_png(self.surface(), path, bbox, alpha.unwrap_or(true))?;
                 SaveOutcome::Png { bbox: saved.bbox }
             }
+            Some(Format::Jpg) => {
+                // `save_jpg` 恒为不透明（JPEG 无 alpha），quality=90
+                let bbox = self.get_user_bbox();
+                let saved = fileio::save_jpg(self.surface(), path, bbox, 90)?;
+                SaveOutcome::Jpg { bbox: saved.bbox }
+            }
             _ => return Err(fileio::unsupported_message(path)),
         };
         self.unsaved_painting_time = 0.0;
@@ -921,6 +927,11 @@ impl Document {
                 // `load_png` 末行 `self.set_frame(bbox, user_initiated=False)`（`:1736`）
                 self.set_frame(loaded.bbox.0, loaded.bbox.1, loaded.bbox.2, loaded.bbox.3);
                 LoadOutcome::Png { bbox: loaded.bbox }
+            }
+            Some(Format::Jpg) => {
+                let loaded = fileio::load_jpg(self.surface_mut(), path)?;
+                self.set_frame(loaded.bbox.0, loaded.bbox.1, loaded.bbox.2, loaded.bbox.3);
+                LoadOutcome::Jpg { bbox: loaded.bbox }
             }
             _ => return Err(fileio::unsupported_message(path)),
         };
@@ -975,6 +986,7 @@ impl Document {
 pub enum SaveOutcome {
     Ora { bbox: (i32, i32, i32, i32) },
     Png { bbox: (i32, i32, i32, i32) },
+    Jpg { bbox: (i32, i32, i32, i32) },
 }
 
 /// [`Document::load`] 的结果。
@@ -988,6 +1000,9 @@ pub enum LoadOutcome {
         compatibility: Option<fileio::Compatibility>,
     },
     Png {
+        bbox: (i32, i32, i32, i32),
+    },
+    Jpg {
         bbox: (i32, i32, i32, i32),
     },
 }
