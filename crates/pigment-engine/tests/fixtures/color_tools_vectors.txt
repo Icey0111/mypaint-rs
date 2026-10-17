@@ -1,0 +1,1814 @@
+# 由 crates/pigment-engine/tests/tools/gen-color-tools-vectors.py 生成，请勿手改。
+# 事实来源：E:\MyPaint\_mypaint_ref（adjbases.py / sliders.py / util.py 的函数体 ast 抽出后 exec）
+# 浮点 = Python repr（最短往返）；Rust 侧应逐位 assert_eq!。
+# 抽出的函数：
+#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:704  ColorAdjusterWidget____motion_notify_cb
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:276  HCYChromaSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:271  HCYChromaSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:263  HCYHueSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:258  HCYHueSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:299  HCYLumaSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:294  HCYLumaSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:223  HSVHueSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:218  HSVHueSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:238  HSVSaturationSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:233  HSVSaturationSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:250  HSVValueSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:245  HSVValueSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:210  RGBBlueSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:205  RGBBlueSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:193  RGBGreenSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:188  RGBGreenSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:176  RGBRedSlider__get_bar_amount_for_color
+#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:171  RGBRedSlider__get_color_for_bar_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:1069  SliderColorAdjuster____scroll_cb
+#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:1055  SliderColorAdjuster__point_to_amount
+#   E:\MyPaint\_mypaint_ref\gui\colors\util.py:18  clamp
+slider_amt	RGBRedSlider	rgb	0.3	0.6	0.7	0.3
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	0.0	rgb	0.0	0.6	0.7
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	0.25	rgb	0.25	0.6	0.7
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	0.5	rgb	0.5	0.6	0.7
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	1.0	rgb	1.0	0.6	0.7
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	1.5	rgb	1.5	0.6	0.7
+slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	-0.25	rgb	-0.25	0.6	0.7
+slider_amt	RGBRedSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	0.0	rgb	0.0	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	0.25	rgb	0.25	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	0.5	rgb	0.5	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	1.0	rgb	1.0	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	1.5	rgb	1.5	0.0	0.0
+slider_set	RGBRedSlider	rgb	0.0	0.0	0.0	-0.25	rgb	-0.25	0.0	0.0
+slider_amt	RGBRedSlider	rgb	1.0	1.0	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	0.0	rgb	0.0	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	0.25	rgb	0.25	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	0.5	rgb	0.5	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	1.0	rgb	1.0	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	1.5	rgb	1.5	1.0	1.0
+slider_set	RGBRedSlider	rgb	1.0	1.0	1.0	-0.25	rgb	-0.25	1.0	1.0
+slider_amt	RGBRedSlider	hsv	0.25	0.6	0.8	0.5599999999999999
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	0.0	rgb	0.0	0.8	0.32000000000000006
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	0.25	rgb	0.25	0.8	0.32000000000000006
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	0.5	rgb	0.5	0.8	0.32000000000000006
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	1.0	rgb	1.0	0.8	0.32000000000000006
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	1.5	rgb	1.5	0.8	0.32000000000000006
+slider_set	RGBRedSlider	hsv	0.25	0.6	0.8	-0.25	rgb	-0.25	0.8	0.32000000000000006
+slider_amt	RGBRedSlider	hcy	0.5	0.8	0.4	0.07999999999999996
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	0.0	rgb	0.0	0.5371428571428573	0.5371428571428573
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	0.25	rgb	0.25	0.5371428571428573	0.5371428571428573
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	0.5	rgb	0.5	0.5371428571428573	0.5371428571428573
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	1.0	rgb	1.0	0.5371428571428573	0.5371428571428573
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	1.5	rgb	1.5	0.5371428571428573	0.5371428571428573
+slider_set	RGBRedSlider	hcy	0.5	0.8	0.4	-0.25	rgb	-0.25	0.5371428571428573	0.5371428571428573
+slider_amt	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.20007850000000002
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	rgb	0.0	0.3998898000000001	0.9003774
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	rgb	0.25	0.3998898000000001	0.9003774
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	rgb	0.5	0.3998898000000001	0.9003774
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	rgb	1.0	0.3998898000000001	0.9003774
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	rgb	1.5	0.3998898000000001	0.9003774
+slider_set	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	rgb	-0.25	0.3998898000000001	0.9003774
+slider_amt	RGBGreenSlider	rgb	0.3	0.6	0.7	0.6
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	0.0	rgb	0.3	0.0	0.7
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	0.25	rgb	0.3	0.25	0.7
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	0.5	rgb	0.3	0.5	0.7
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	1.0	rgb	0.3	1.0	0.7
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	1.5	rgb	0.3	1.5	0.7
+slider_set	RGBGreenSlider	rgb	0.3	0.6	0.7	-0.25	rgb	0.3	-0.25	0.7
+slider_amt	RGBGreenSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	0.0	rgb	0.0	0.0	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	0.25	rgb	0.0	0.25	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	0.5	rgb	0.0	0.5	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	1.0	rgb	0.0	1.0	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	1.5	rgb	0.0	1.5	0.0
+slider_set	RGBGreenSlider	rgb	0.0	0.0	0.0	-0.25	rgb	0.0	-0.25	0.0
+slider_amt	RGBGreenSlider	rgb	1.0	1.0	1.0	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	0.0	rgb	1.0	0.0	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	0.25	rgb	1.0	0.25	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	0.5	rgb	1.0	0.5	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	1.0	rgb	1.0	1.0	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	1.5	rgb	1.0	1.5	1.0
+slider_set	RGBGreenSlider	rgb	1.0	1.0	1.0	-0.25	rgb	1.0	-0.25	1.0
+slider_amt	RGBGreenSlider	hsv	0.25	0.6	0.8	0.8
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	0.0	rgb	0.5599999999999999	0.0	0.32000000000000006
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	0.25	rgb	0.5599999999999999	0.25	0.32000000000000006
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	0.5	rgb	0.5599999999999999	0.5	0.32000000000000006
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	1.0	rgb	0.5599999999999999	1.0	0.32000000000000006
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	1.5	rgb	0.5599999999999999	1.5	0.32000000000000006
+slider_set	RGBGreenSlider	hsv	0.25	0.6	0.8	-0.25	rgb	0.5599999999999999	-0.25	0.32000000000000006
+slider_amt	RGBGreenSlider	hcy	0.5	0.8	0.4	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	0.0	rgb	0.07999999999999996	0.0	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	0.25	rgb	0.07999999999999996	0.25	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	0.5	rgb	0.07999999999999996	0.5	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	1.0	rgb	0.07999999999999996	1.0	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	1.5	rgb	0.07999999999999996	1.5	0.5371428571428573
+slider_set	RGBGreenSlider	hcy	0.5	0.8	0.4	-0.25	rgb	0.07999999999999996	-0.25	0.5371428571428573
+slider_amt	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.3998898000000001
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	rgb	0.20007850000000002	0.0	0.9003774
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	rgb	0.20007850000000002	0.25	0.9003774
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	rgb	0.20007850000000002	0.5	0.9003774
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	rgb	0.20007850000000002	1.0	0.9003774
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	rgb	0.20007850000000002	1.5	0.9003774
+slider_set	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	rgb	0.20007850000000002	-0.25	0.9003774
+slider_amt	RGBBlueSlider	rgb	0.3	0.6	0.7	0.7
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	0.0	rgb	0.3	0.6	0.0
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	0.25	rgb	0.3	0.6	0.25
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	0.5	rgb	0.3	0.6	0.5
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	1.0	rgb	0.3	0.6	1.0
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	1.5	rgb	0.3	0.6	1.5
+slider_set	RGBBlueSlider	rgb	0.3	0.6	0.7	-0.25	rgb	0.3	0.6	-0.25
+slider_amt	RGBBlueSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	0.0	rgb	0.0	0.0	0.0
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	0.25	rgb	0.0	0.0	0.25
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	0.5	rgb	0.0	0.0	0.5
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	1.0	rgb	0.0	0.0	1.0
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	1.5	rgb	0.0	0.0	1.5
+slider_set	RGBBlueSlider	rgb	0.0	0.0	0.0	-0.25	rgb	0.0	0.0	-0.25
+slider_amt	RGBBlueSlider	rgb	1.0	1.0	1.0	1.0
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	0.0	rgb	1.0	1.0	0.0
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	0.25	rgb	1.0	1.0	0.25
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	0.5	rgb	1.0	1.0	0.5
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	1.0	rgb	1.0	1.0	1.0
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	1.5	rgb	1.0	1.0	1.5
+slider_set	RGBBlueSlider	rgb	1.0	1.0	1.0	-0.25	rgb	1.0	1.0	-0.25
+slider_amt	RGBBlueSlider	hsv	0.25	0.6	0.8	0.32000000000000006
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	0.0	rgb	0.5599999999999999	0.8	0.0
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	0.25	rgb	0.5599999999999999	0.8	0.25
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	0.5	rgb	0.5599999999999999	0.8	0.5
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	1.0	rgb	0.5599999999999999	0.8	1.0
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	1.5	rgb	0.5599999999999999	0.8	1.5
+slider_set	RGBBlueSlider	hsv	0.25	0.6	0.8	-0.25	rgb	0.5599999999999999	0.8	-0.25
+slider_amt	RGBBlueSlider	hcy	0.5	0.8	0.4	0.5371428571428573
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	0.0	rgb	0.07999999999999996	0.5371428571428573	0.0
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	0.25	rgb	0.07999999999999996	0.5371428571428573	0.25
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	0.5	rgb	0.07999999999999996	0.5371428571428573	0.5
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	1.0	rgb	0.07999999999999996	0.5371428571428573	1.0
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	1.5	rgb	0.07999999999999996	0.5371428571428573	1.5
+slider_set	RGBBlueSlider	hcy	0.5	0.8	0.4	-0.25	rgb	0.07999999999999996	0.5371428571428573	-0.25
+slider_amt	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.9003774
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	rgb	0.20007850000000002	0.3998898000000001	0.0
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	rgb	0.20007850000000002	0.3998898000000001	0.25
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	rgb	0.20007850000000002	0.3998898000000001	0.5
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	rgb	0.20007850000000002	0.3998898000000001	1.0
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	rgb	0.20007850000000002	0.3998898000000001	1.5
+slider_set	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	rgb	0.20007850000000002	0.3998898000000001	-0.25
+slider_amt	HSVHueSlider	rgb	0.3	0.6	0.7	0.5416666666666666
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	0.0	hsv	0.0	0.5714285714285714	0.7
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	0.25	hsv	0.25	0.5714285714285714	0.7
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	0.5	hsv	0.5	0.5714285714285714	0.7
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	1.0	hsv	1.0	0.5714285714285714	0.7
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	1.5	hsv	1.5	0.5714285714285714	0.7
+slider_set	HSVHueSlider	rgb	0.3	0.6	0.7	-0.25	hsv	-0.25	0.5714285714285714	0.7
+slider_amt	HSVHueSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	0.0	hsv	0.0	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	0.25	hsv	0.25	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	0.5	hsv	0.5	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	1.0	hsv	1.0	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	1.5	hsv	1.5	0.0	0.0
+slider_set	HSVHueSlider	rgb	0.0	0.0	0.0	-0.25	hsv	-0.25	0.0	0.0
+slider_amt	HSVHueSlider	rgb	1.0	1.0	1.0	0.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	0.0	hsv	0.0	0.0	1.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	0.25	hsv	0.25	0.0	1.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	0.5	hsv	0.5	0.0	1.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	1.0	hsv	1.0	0.0	1.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	1.5	hsv	1.5	0.0	1.0
+slider_set	HSVHueSlider	rgb	1.0	1.0	1.0	-0.25	hsv	-0.25	0.0	1.0
+slider_amt	HSVHueSlider	hsv	0.25	0.6	0.8	0.25
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	0.0	hsv	0.0	0.6	0.8
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	0.25	hsv	0.25	0.6	0.8
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	0.5	hsv	0.5	0.6	0.8
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	1.0	hsv	1.0	0.6	0.8
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	1.5	hsv	1.5	0.6	0.8
+slider_set	HSVHueSlider	hsv	0.25	0.6	0.8	-0.25	hsv	-0.25	0.6	0.8
+slider_amt	HSVHueSlider	hcy	0.5	0.8	0.4	0.5
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	0.0	hsv	0.0	0.8510638297872342	0.5371428571428573
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	0.25	hsv	0.25	0.8510638297872342	0.5371428571428573
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	0.5	hsv	0.5	0.8510638297872342	0.5371428571428573
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	1.0	hsv	1.0	0.8510638297872342	0.5371428571428573
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	1.5	hsv	1.5	0.8510638297872342	0.5371428571428573
+slider_set	HSVHueSlider	hcy	0.5	0.8	0.4	-0.25	hsv	-0.25	0.8510638297872342	0.5371428571428573
+slider_amt	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.6191128530974416
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hsv	0.0	0.7777837382413196	0.9003774
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hsv	0.25	0.7777837382413196	0.9003774
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hsv	0.5	0.7777837382413196	0.9003774
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hsv	1.0	0.7777837382413196	0.9003774
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hsv	1.5	0.7777837382413196	0.9003774
+slider_set	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hsv	-0.25	0.7777837382413196	0.9003774
+slider_amt	HSVSaturationSlider	rgb	0.3	0.6	0.7	0.5714285714285714
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	0.0	hsv	0.5416666666666666	0.0	0.7
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	0.25	hsv	0.5416666666666666	0.25	0.7
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	0.5	hsv	0.5416666666666666	0.5	0.7
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	1.0	hsv	0.5416666666666666	1.0	0.7
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	1.5	hsv	0.5416666666666666	1.5	0.7
+slider_set	HSVSaturationSlider	rgb	0.3	0.6	0.7	-0.25	hsv	0.5416666666666666	-0.25	0.7
+slider_amt	HSVSaturationSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	0.0	hsv	0.0	0.0	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	0.25	hsv	0.0	0.25	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	0.5	hsv	0.0	0.5	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	1.0	hsv	0.0	1.0	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	1.5	hsv	0.0	1.5	0.0
+slider_set	HSVSaturationSlider	rgb	0.0	0.0	0.0	-0.25	hsv	0.0	-0.25	0.0
+slider_amt	HSVSaturationSlider	rgb	1.0	1.0	1.0	0.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	0.0	hsv	0.0	0.0	1.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	0.25	hsv	0.0	0.25	1.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	0.5	hsv	0.0	0.5	1.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	1.0	hsv	0.0	1.0	1.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	1.5	hsv	0.0	1.5	1.0
+slider_set	HSVSaturationSlider	rgb	1.0	1.0	1.0	-0.25	hsv	0.0	-0.25	1.0
+slider_amt	HSVSaturationSlider	hsv	0.25	0.6	0.8	0.6
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	0.0	hsv	0.25	0.0	0.8
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	0.25	hsv	0.25	0.25	0.8
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	0.5	hsv	0.25	0.5	0.8
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	1.0	hsv	0.25	1.0	0.8
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	1.5	hsv	0.25	1.5	0.8
+slider_set	HSVSaturationSlider	hsv	0.25	0.6	0.8	-0.25	hsv	0.25	-0.25	0.8
+slider_amt	HSVSaturationSlider	hcy	0.5	0.8	0.4	0.8510638297872342
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	0.0	hsv	0.5	0.0	0.5371428571428573
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	0.25	hsv	0.5	0.25	0.5371428571428573
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	0.5	hsv	0.5	0.5	0.5371428571428573
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	1.0	hsv	0.5	1.0	0.5371428571428573
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	1.5	hsv	0.5	1.5	0.5371428571428573
+slider_set	HSVSaturationSlider	hcy	0.5	0.8	0.4	-0.25	hsv	0.5	-0.25	0.5371428571428573
+slider_amt	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.7777837382413196
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hsv	0.6191128530974416	0.0	0.9003774
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hsv	0.6191128530974416	0.25	0.9003774
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hsv	0.6191128530974416	0.5	0.9003774
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hsv	0.6191128530974416	1.0	0.9003774
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hsv	0.6191128530974416	1.5	0.9003774
+slider_set	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hsv	0.6191128530974416	-0.25	0.9003774
+slider_amt	HSVValueSlider	rgb	0.3	0.6	0.7	0.7
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	0.0	hsv	0.5416666666666666	0.5714285714285714	0.0
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	0.25	hsv	0.5416666666666666	0.5714285714285714	0.25
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	0.5	hsv	0.5416666666666666	0.5714285714285714	0.5
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	1.0	hsv	0.5416666666666666	0.5714285714285714	1.0
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	1.5	hsv	0.5416666666666666	0.5714285714285714	1.5
+slider_set	HSVValueSlider	rgb	0.3	0.6	0.7	-0.25	hsv	0.5416666666666666	0.5714285714285714	-0.25
+slider_amt	HSVValueSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	0.0	hsv	0.0	0.0	0.0
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	0.25	hsv	0.0	0.0	0.25
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	0.5	hsv	0.0	0.0	0.5
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	1.0	hsv	0.0	0.0	1.0
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	1.5	hsv	0.0	0.0	1.5
+slider_set	HSVValueSlider	rgb	0.0	0.0	0.0	-0.25	hsv	0.0	0.0	-0.25
+slider_amt	HSVValueSlider	rgb	1.0	1.0	1.0	1.0
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	0.0	hsv	0.0	0.0	0.0
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	0.25	hsv	0.0	0.0	0.25
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	0.5	hsv	0.0	0.0	0.5
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	1.0	hsv	0.0	0.0	1.0
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	1.5	hsv	0.0	0.0	1.5
+slider_set	HSVValueSlider	rgb	1.0	1.0	1.0	-0.25	hsv	0.0	0.0	-0.25
+slider_amt	HSVValueSlider	hsv	0.25	0.6	0.8	0.8
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	0.0	hsv	0.25	0.6	0.0
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	0.25	hsv	0.25	0.6	0.25
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	0.5	hsv	0.25	0.6	0.5
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	1.0	hsv	0.25	0.6	1.0
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	1.5	hsv	0.25	0.6	1.5
+slider_set	HSVValueSlider	hsv	0.25	0.6	0.8	-0.25	hsv	0.25	0.6	-0.25
+slider_amt	HSVValueSlider	hcy	0.5	0.8	0.4	0.5371428571428573
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	0.0	hsv	0.5	0.8510638297872342	0.0
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	0.25	hsv	0.5	0.8510638297872342	0.25
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	0.5	hsv	0.5	0.8510638297872342	0.5
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	1.0	hsv	0.5	0.8510638297872342	1.0
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	1.5	hsv	0.5	0.8510638297872342	1.5
+slider_set	HSVValueSlider	hcy	0.5	0.8	0.4	-0.25	hsv	0.5	0.8510638297872342	-0.25
+slider_amt	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.9003774
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hsv	0.6191128530974416	0.7777837382413196	0.0
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hsv	0.6191128530974416	0.7777837382413196	0.25
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hsv	0.6191128530974416	0.7777837382413196	0.5
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hsv	0.6191128530974416	0.7777837382413196	1.0
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hsv	0.6191128530974416	0.7777837382413196	1.5
+slider_set	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hsv	0.6191128530974416	0.7777837382413196	-0.25
+slider_amt	HCYHueSlider	rgb	0.3	0.6	0.7	0.5416666666666666
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	0.0	hcy	0.0	0.4241842610364682	0.5209999999999999
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	0.25	hcy	0.25	0.4241842610364682	0.5209999999999999
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	0.5	hcy	0.5	0.4241842610364682	0.5209999999999999
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	1.0	hcy	1.0	0.4241842610364682	0.5209999999999999
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	1.5	hcy	1.5	0.4241842610364682	0.5209999999999999
+slider_set	HCYHueSlider	rgb	0.3	0.6	0.7	-0.25	hcy	-0.25	0.4241842610364682	0.5209999999999999
+slider_amt	HCYHueSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	0.0	hcy	0.0	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	0.25	hcy	0.25	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	0.5	hcy	0.5	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	1.0	hcy	1.0	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	1.5	hcy	1.5	0.0	0.0
+slider_set	HCYHueSlider	rgb	0.0	0.0	0.0	-0.25	hcy	-0.25	0.0	0.0
+slider_amt	HCYHueSlider	rgb	1.0	1.0	1.0	0.0
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	0.0	hcy	0.0	0.0	0.9999999999999999
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	0.25	hcy	0.25	0.0	0.9999999999999999
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	0.5	hcy	0.5	0.0	0.9999999999999999
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	1.0	hcy	1.0	0.0	0.9999999999999999
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	1.5	hcy	1.5	0.0	0.9999999999999999
+slider_set	HCYHueSlider	rgb	1.0	1.0	1.0	-0.25	hcy	-0.25	0.0	0.9999999999999999
+slider_amt	HCYHueSlider	hsv	0.25	0.6	0.8	0.25
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	0.0	hcy	0.0	0.5260663507109004	0.6751999999999999
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	0.25	hcy	0.25	0.5260663507109004	0.6751999999999999
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	0.5	hcy	0.5	0.5260663507109004	0.6751999999999999
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	1.0	hcy	1.0	0.5260663507109004	0.6751999999999999
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	1.5	hcy	1.5	0.5260663507109004	0.6751999999999999
+slider_set	HCYHueSlider	hsv	0.25	0.6	0.8	-0.25	hcy	-0.25	0.5260663507109004	0.6751999999999999
+slider_amt	HCYHueSlider	hcy	0.5	0.8	0.4	0.5
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	0.0	hcy	0.0	0.8	0.4
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	0.25	hcy	0.25	0.8	0.4
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	0.5	hcy	0.5	0.8	0.4
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	1.0	hcy	1.0	0.8	0.4
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	1.5	hcy	1.5	0.8	0.4
+slider_set	HCYHueSlider	hcy	0.5	0.8	0.4	-0.25	hcy	-0.25	0.8	0.4
+slider_amt	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.6191128530974416
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hcy	0.0	0.8353345329345264	0.3950000460000002
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hcy	0.25	0.8353345329345264	0.3950000460000002
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hcy	0.5	0.8353345329345264	0.3950000460000002
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hcy	1.0	0.8353345329345264	0.3950000460000002
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hcy	1.5	0.8353345329345264	0.3950000460000002
+slider_set	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hcy	-0.25	0.8353345329345264	0.3950000460000002
+slider_amt	HCYChromaSlider	rgb	0.3	0.6	0.7	0.4241842610364682
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	0.0	hcy	0.5416666666666666	0.0	0.5209999999999999
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	0.25	hcy	0.5416666666666666	0.25	0.5209999999999999
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	0.5	hcy	0.5416666666666666	0.5	0.5209999999999999
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	1.0	hcy	0.5416666666666666	1.0	0.5209999999999999
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	1.5	hcy	0.5416666666666666	1.5	0.5209999999999999
+slider_set	HCYChromaSlider	rgb	0.3	0.6	0.7	-0.25	hcy	0.5416666666666666	-0.25	0.5209999999999999
+slider_amt	HCYChromaSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	0.0	hcy	0.0	0.0	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	0.25	hcy	0.0	0.25	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	0.5	hcy	0.0	0.5	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	1.0	hcy	0.0	1.0	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	1.5	hcy	0.0	1.5	0.0
+slider_set	HCYChromaSlider	rgb	0.0	0.0	0.0	-0.25	hcy	0.0	-0.25	0.0
+slider_amt	HCYChromaSlider	rgb	1.0	1.0	1.0	0.0
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	0.0	hcy	0.0	0.0	0.9999999999999999
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	0.25	hcy	0.0	0.25	0.9999999999999999
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	0.5	hcy	0.0	0.5	0.9999999999999999
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	1.0	hcy	0.0	1.0	0.9999999999999999
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	1.5	hcy	0.0	1.5	0.9999999999999999
+slider_set	HCYChromaSlider	rgb	1.0	1.0	1.0	-0.25	hcy	0.0	-0.25	0.9999999999999999
+slider_amt	HCYChromaSlider	hsv	0.25	0.6	0.8	0.5260663507109004
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	0.0	hcy	0.25	0.0	0.6751999999999999
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	0.25	hcy	0.25	0.25	0.6751999999999999
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	0.5	hcy	0.25	0.5	0.6751999999999999
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	1.0	hcy	0.25	1.0	0.6751999999999999
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	1.5	hcy	0.25	1.5	0.6751999999999999
+slider_set	HCYChromaSlider	hsv	0.25	0.6	0.8	-0.25	hcy	0.25	-0.25	0.6751999999999999
+slider_amt	HCYChromaSlider	hcy	0.5	0.8	0.4	0.8
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	0.0	hcy	0.5	0.0	0.4
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	0.25	hcy	0.5	0.25	0.4
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	0.5	hcy	0.5	0.5	0.4
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	1.0	hcy	0.5	1.0	0.4
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	1.5	hcy	0.5	1.5	0.4
+slider_set	HCYChromaSlider	hcy	0.5	0.8	0.4	-0.25	hcy	0.5	-0.25	0.4
+slider_amt	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.8353345329345264
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hcy	0.6191128530974416	0.0	0.3950000460000002
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hcy	0.6191128530974416	0.25	0.3950000460000002
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hcy	0.6191128530974416	0.5	0.3950000460000002
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hcy	0.6191128530974416	1.0	0.3950000460000002
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hcy	0.6191128530974416	1.5	0.3950000460000002
+slider_set	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hcy	0.6191128530974416	-0.25	0.3950000460000002
+slider_amt	HCYLumaSlider	rgb	0.3	0.6	0.7	0.5209999999999999
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	0.0	hcy	0.5416666666666666	0.4241842610364682	0.0
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	0.25	hcy	0.5416666666666666	0.4241842610364682	0.25
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	0.5	hcy	0.5416666666666666	0.4241842610364682	0.5
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	1.0	hcy	0.5416666666666666	0.4241842610364682	1.0
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	1.5	hcy	0.5416666666666666	0.4241842610364682	1.5
+slider_set	HCYLumaSlider	rgb	0.3	0.6	0.7	-0.25	hcy	0.5416666666666666	0.4241842610364682	-0.25
+slider_amt	HCYLumaSlider	rgb	0.0	0.0	0.0	0.0
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	0.0	hcy	0.0	0.0	0.0
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	0.25	hcy	0.0	0.0	0.25
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	0.5	hcy	0.0	0.0	0.5
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	1.0	hcy	0.0	0.0	1.0
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	1.5	hcy	0.0	0.0	1.5
+slider_set	HCYLumaSlider	rgb	0.0	0.0	0.0	-0.25	hcy	0.0	0.0	-0.25
+slider_amt	HCYLumaSlider	rgb	1.0	1.0	1.0	0.9999999999999999
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	0.0	hcy	0.0	0.0	0.0
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	0.25	hcy	0.0	0.0	0.25
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	0.5	hcy	0.0	0.0	0.5
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	1.0	hcy	0.0	0.0	1.0
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	1.5	hcy	0.0	0.0	1.5
+slider_set	HCYLumaSlider	rgb	1.0	1.0	1.0	-0.25	hcy	0.0	0.0	-0.25
+slider_amt	HCYLumaSlider	hsv	0.25	0.6	0.8	0.6751999999999999
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	0.0	hcy	0.25	0.5260663507109004	0.0
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	0.25	hcy	0.25	0.5260663507109004	0.25
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	0.5	hcy	0.25	0.5260663507109004	0.5
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	1.0	hcy	0.25	0.5260663507109004	1.0
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	1.5	hcy	0.25	0.5260663507109004	1.5
+slider_set	HCYLumaSlider	hsv	0.25	0.6	0.8	-0.25	hcy	0.25	0.5260663507109004	-0.25
+slider_amt	HCYLumaSlider	hcy	0.5	0.8	0.4	0.4
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	0.0	hcy	0.5	0.8	0.0
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	0.25	hcy	0.5	0.8	0.25
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	0.5	hcy	0.5	0.8	0.5
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	1.0	hcy	0.5	0.8	1.0
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	1.5	hcy	0.5	0.8	1.5
+slider_set	HCYLumaSlider	hcy	0.5	0.8	0.4	-0.25	hcy	0.5	0.8	-0.25
+slider_amt	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.3950000460000002
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.0	hcy	0.6191128530974416	0.8353345329345264	0.0
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.25	hcy	0.6191128530974416	0.8353345329345264	0.25
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0.5	hcy	0.6191128530974416	0.8353345329345264	0.5
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.0	hcy	0.6191128530974416	0.8353345329345264	1.0
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1.5	hcy	0.6191128530974416	0.8353345329345264	1.5
+slider_set	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	-0.25	hcy	0.6191128530974416	0.8353345329345264	-0.25
+slider_point	-10.0	100.0	2.0	0	0.0
+slider_point	0.0	100.0	2.0	0	0.0
+slider_point	1.0	100.0	2.0	0	0.0
+slider_point	2.0	100.0	2.0	0	0.0
+slider_point	2.5	100.0	2.0	0	0.005208333333333333
+slider_point	50.0	100.0	2.0	0	0.5
+slider_point	97.5	100.0	2.0	0	0.9947916666666666
+slider_point	99.0	100.0	2.0	0	1.0
+slider_point	100.0	100.0	2.0	0	1.0
+slider_point	101.0	100.0	2.0	0	1.0
+slider_point	120.0	100.0	2.0	0	1.0
+slider_point	-10.0	100.0	2.0	1	1.0
+slider_point	0.0	100.0	2.0	1	1.0
+slider_point	1.0	100.0	2.0	1	1.0
+slider_point	2.0	100.0	2.0	1	1.0
+slider_point	2.5	100.0	2.0	1	0.9947916666666666
+slider_point	50.0	100.0	2.0	1	0.5
+slider_point	97.5	100.0	2.0	1	0.00520833333333337
+slider_point	99.0	100.0	2.0	1	0.0
+slider_point	100.0	100.0	2.0	1	0.0
+slider_point	101.0	100.0	2.0	1	0.0
+slider_point	120.0	100.0	2.0	1	0.0
+slider_point	-10.0	100.0	0.0	0	0.0
+slider_point	0.0	100.0	0.0	0	0.0
+slider_point	1.0	100.0	0.0	0	0.01
+slider_point	2.0	100.0	0.0	0	0.02
+slider_point	2.5	100.0	0.0	0	0.025
+slider_point	50.0	100.0	0.0	0	0.5
+slider_point	97.5	100.0	0.0	0	0.975
+slider_point	99.0	100.0	0.0	0	0.99
+slider_point	100.0	100.0	0.0	0	1.0
+slider_point	101.0	100.0	0.0	0	1.0
+slider_point	120.0	100.0	0.0	0	1.0
+slider_point	-10.0	100.0	0.0	1	1.0
+slider_point	0.0	100.0	0.0	1	1.0
+slider_point	1.0	100.0	0.0	1	0.99
+slider_point	2.0	100.0	0.0	1	0.98
+slider_point	2.5	100.0	0.0	1	0.975
+slider_point	50.0	100.0	0.0	1	0.5
+slider_point	97.5	100.0	0.0	1	0.025000000000000022
+slider_point	99.0	100.0	0.0	1	0.010000000000000009
+slider_point	100.0	100.0	0.0	1	0.0
+slider_point	101.0	100.0	0.0	1	0.0
+slider_point	120.0	100.0	0.0	1	0.0
+slider_point	-10.0	120.0	2.0	0	0.0
+slider_point	0.0	120.0	2.0	0	0.0
+slider_point	1.0	120.0	2.0	0	0.0
+slider_point	2.0	120.0	2.0	0	0.0
+slider_point	2.5	120.0	2.0	0	0.004310344827586207
+slider_point	50.0	120.0	2.0	0	0.41379310344827586
+slider_point	97.5	120.0	2.0	0	0.8232758620689655
+slider_point	99.0	120.0	2.0	0	0.8362068965517241
+slider_point	100.0	120.0	2.0	0	0.8448275862068966
+slider_point	101.0	120.0	2.0	0	0.853448275862069
+slider_point	120.0	120.0	2.0	0	1.0
+slider_point	-10.0	120.0	2.0	1	1.0
+slider_point	0.0	120.0	2.0	1	1.0
+slider_point	1.0	120.0	2.0	1	1.0
+slider_point	2.0	120.0	2.0	1	1.0
+slider_point	2.5	120.0	2.0	1	0.9956896551724138
+slider_point	50.0	120.0	2.0	1	0.5862068965517242
+slider_point	97.5	120.0	2.0	1	0.17672413793103448
+slider_point	99.0	120.0	2.0	1	0.1637931034482759
+slider_point	100.0	120.0	2.0	1	0.15517241379310343
+slider_point	101.0	120.0	2.0	1	0.14655172413793105
+slider_point	120.0	120.0	2.0	1	0.0
+slider_point	-10.0	120.0	0.0	0	0.0
+slider_point	0.0	120.0	0.0	0	0.0
+slider_point	1.0	120.0	0.0	0	0.008333333333333333
+slider_point	2.0	120.0	0.0	0	0.016666666666666666
+slider_point	2.5	120.0	0.0	0	0.020833333333333332
+slider_point	50.0	120.0	0.0	0	0.4166666666666667
+slider_point	97.5	120.0	0.0	0	0.8125
+slider_point	99.0	120.0	0.0	0	0.825
+slider_point	100.0	120.0	0.0	0	0.8333333333333334
+slider_point	101.0	120.0	0.0	0	0.8416666666666667
+slider_point	120.0	120.0	0.0	0	1.0
+slider_point	-10.0	120.0	0.0	1	1.0
+slider_point	0.0	120.0	0.0	1	1.0
+slider_point	1.0	120.0	0.0	1	0.9916666666666667
+slider_point	2.0	120.0	0.0	1	0.9833333333333333
+slider_point	2.5	120.0	0.0	1	0.9791666666666666
+slider_point	50.0	120.0	0.0	1	0.5833333333333333
+slider_point	97.5	120.0	0.0	1	0.1875
+slider_point	99.0	120.0	0.0	1	0.17500000000000004
+slider_point	100.0	120.0	0.0	1	0.16666666666666663
+slider_point	101.0	120.0	0.0	1	0.15833333333333333
+slider_point	120.0	120.0	0.0	1	0.0
+slider_point	-10.0	20.0	2.0	0	0.0
+slider_point	0.0	20.0	2.0	0	0.0
+slider_point	1.0	20.0	2.0	0	0.0
+slider_point	2.0	20.0	2.0	0	0.0
+slider_point	2.5	20.0	2.0	0	0.03125
+slider_point	50.0	20.0	2.0	0	1.0
+slider_point	97.5	20.0	2.0	0	1.0
+slider_point	99.0	20.0	2.0	0	1.0
+slider_point	100.0	20.0	2.0	0	1.0
+slider_point	101.0	20.0	2.0	0	1.0
+slider_point	120.0	20.0	2.0	0	1.0
+slider_point	-10.0	20.0	2.0	1	1.0
+slider_point	0.0	20.0	2.0	1	1.0
+slider_point	1.0	20.0	2.0	1	1.0
+slider_point	2.0	20.0	2.0	1	1.0
+slider_point	2.5	20.0	2.0	1	0.96875
+slider_point	50.0	20.0	2.0	1	0.0
+slider_point	97.5	20.0	2.0	1	0.0
+slider_point	99.0	20.0	2.0	1	0.0
+slider_point	100.0	20.0	2.0	1	0.0
+slider_point	101.0	20.0	2.0	1	0.0
+slider_point	120.0	20.0	2.0	1	0.0
+slider_point	-10.0	20.0	0.0	0	0.0
+slider_point	0.0	20.0	0.0	0	0.0
+slider_point	1.0	20.0	0.0	0	0.05
+slider_point	2.0	20.0	0.0	0	0.1
+slider_point	2.5	20.0	0.0	0	0.125
+slider_point	50.0	20.0	0.0	0	1.0
+slider_point	97.5	20.0	0.0	0	1.0
+slider_point	99.0	20.0	0.0	0	1.0
+slider_point	100.0	20.0	0.0	0	1.0
+slider_point	101.0	20.0	0.0	0	1.0
+slider_point	120.0	20.0	0.0	0	1.0
+slider_point	-10.0	20.0	0.0	1	1.0
+slider_point	0.0	20.0	0.0	1	1.0
+slider_point	1.0	20.0	0.0	1	0.95
+slider_point	2.0	20.0	0.0	1	0.9
+slider_point	2.5	20.0	0.0	1	0.875
+slider_point	50.0	20.0	0.0	1	0.0
+slider_point	97.5	20.0	0.0	1	0.0
+slider_point	99.0	20.0	0.0	1	0.0
+slider_point	100.0	20.0	0.0	1	0.0
+slider_point	101.0	20.0	0.0	1	0.0
+slider_point	120.0	20.0	0.0	1	0.0
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	0	UP	rgb	0.285	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	0	DOWN	rgb	0.315	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	0	LEFT	rgb	0.315	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	0	RIGHT	rgb	0.285	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	0	SMOOTH	rgb	0.285	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	1	UP	rgb	0.315	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	1	DOWN	rgb	0.285	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	1	LEFT	rgb	0.285	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	1	RIGHT	rgb	0.315	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.3	0.6	0.7	1	SMOOTH	rgb	0.315	0.6	0.7
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	0	UP	rgb	0.0	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	0	DOWN	rgb	0.015	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	0	LEFT	rgb	0.015	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	0	RIGHT	rgb	0.0	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	0	SMOOTH	rgb	0.0	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	1	UP	rgb	0.015	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	1	DOWN	rgb	0.0	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	1	LEFT	rgb	0.0	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	1	RIGHT	rgb	0.015	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	0.0	0.0	0.0	1	SMOOTH	rgb	0.015	0.0	0.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	0	UP	rgb	0.985	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	0	DOWN	rgb	1.0	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	0	LEFT	rgb	1.0	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	0	RIGHT	rgb	0.985	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	0	SMOOTH	rgb	0.985	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	1	UP	rgb	1.0	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	1	DOWN	rgb	0.985	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	1	LEFT	rgb	0.985	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	1	RIGHT	rgb	1.0	1.0	1.0
+slider_scroll	RGBRedSlider	rgb	1.0	1.0	1.0	1	SMOOTH	rgb	1.0	1.0	1.0
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	0	UP	rgb	0.5449999999999999	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	0	DOWN	rgb	0.575	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	0	LEFT	rgb	0.575	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	0	RIGHT	rgb	0.5449999999999999	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	0	SMOOTH	rgb	0.5449999999999999	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	1	UP	rgb	0.575	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	1	DOWN	rgb	0.5449999999999999	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	1	LEFT	rgb	0.5449999999999999	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	1	RIGHT	rgb	0.575	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hsv	0.25	0.6	0.8	1	SMOOTH	rgb	0.575	0.8	0.32000000000000006
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	0	UP	rgb	0.06499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	0	DOWN	rgb	0.09499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	0	LEFT	rgb	0.09499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	0	RIGHT	rgb	0.06499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	0	SMOOTH	rgb	0.06499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	1	UP	rgb	0.09499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	1	DOWN	rgb	0.06499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	1	LEFT	rgb	0.06499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	1	RIGHT	rgb	0.09499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	hcy	0.5	0.8	0.4	1	SMOOTH	rgb	0.09499999999999996	0.5371428571428573	0.5371428571428573
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	rgb	0.18507850000000003	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	rgb	0.2150785	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	rgb	0.2150785	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	rgb	0.18507850000000003	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	rgb	0.18507850000000003	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	rgb	0.2150785	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	rgb	0.18507850000000003	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	rgb	0.18507850000000003	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	rgb	0.2150785	0.3998898000000001	0.9003774
+slider_scroll	RGBRedSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	rgb	0.2150785	0.3998898000000001	0.9003774
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	0	UP	rgb	0.3	0.585	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	0	DOWN	rgb	0.3	0.615	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	0	LEFT	rgb	0.3	0.615	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	0	RIGHT	rgb	0.3	0.585	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	0	SMOOTH	rgb	0.3	0.585	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	1	UP	rgb	0.3	0.615	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	1	DOWN	rgb	0.3	0.585	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	1	LEFT	rgb	0.3	0.585	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	1	RIGHT	rgb	0.3	0.615	0.7
+slider_scroll	RGBGreenSlider	rgb	0.3	0.6	0.7	1	SMOOTH	rgb	0.3	0.615	0.7
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	0	UP	rgb	0.0	0.0	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	0	DOWN	rgb	0.0	0.015	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	0	LEFT	rgb	0.0	0.015	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	0	RIGHT	rgb	0.0	0.0	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	0	SMOOTH	rgb	0.0	0.0	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	1	UP	rgb	0.0	0.015	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	1	DOWN	rgb	0.0	0.0	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	1	LEFT	rgb	0.0	0.0	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	1	RIGHT	rgb	0.0	0.015	0.0
+slider_scroll	RGBGreenSlider	rgb	0.0	0.0	0.0	1	SMOOTH	rgb	0.0	0.015	0.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	0	UP	rgb	1.0	0.985	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	0	DOWN	rgb	1.0	1.0	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	0	LEFT	rgb	1.0	1.0	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	0	RIGHT	rgb	1.0	0.985	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	0	SMOOTH	rgb	1.0	0.985	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	1	UP	rgb	1.0	1.0	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	1	DOWN	rgb	1.0	0.985	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	1	LEFT	rgb	1.0	0.985	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	1	RIGHT	rgb	1.0	1.0	1.0
+slider_scroll	RGBGreenSlider	rgb	1.0	1.0	1.0	1	SMOOTH	rgb	1.0	1.0	1.0
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	0	UP	rgb	0.5599999999999999	0.785	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	0	DOWN	rgb	0.5599999999999999	0.8150000000000001	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	0	LEFT	rgb	0.5599999999999999	0.8150000000000001	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	0	RIGHT	rgb	0.5599999999999999	0.785	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	0	SMOOTH	rgb	0.5599999999999999	0.785	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	1	UP	rgb	0.5599999999999999	0.8150000000000001	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	1	DOWN	rgb	0.5599999999999999	0.785	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	1	LEFT	rgb	0.5599999999999999	0.785	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	1	RIGHT	rgb	0.5599999999999999	0.8150000000000001	0.32000000000000006
+slider_scroll	RGBGreenSlider	hsv	0.25	0.6	0.8	1	SMOOTH	rgb	0.5599999999999999	0.8150000000000001	0.32000000000000006
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	0	UP	rgb	0.07999999999999996	0.5221428571428572	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	0	DOWN	rgb	0.07999999999999996	0.5521428571428573	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	0	LEFT	rgb	0.07999999999999996	0.5521428571428573	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	0	RIGHT	rgb	0.07999999999999996	0.5221428571428572	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	0	SMOOTH	rgb	0.07999999999999996	0.5221428571428572	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	1	UP	rgb	0.07999999999999996	0.5521428571428573	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	1	DOWN	rgb	0.07999999999999996	0.5221428571428572	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	1	LEFT	rgb	0.07999999999999996	0.5221428571428572	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	1	RIGHT	rgb	0.07999999999999996	0.5521428571428573	0.5371428571428573
+slider_scroll	RGBGreenSlider	hcy	0.5	0.8	0.4	1	SMOOTH	rgb	0.07999999999999996	0.5521428571428573	0.5371428571428573
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	rgb	0.20007850000000002	0.38488980000000006	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	rgb	0.20007850000000002	0.4148898000000001	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	rgb	0.20007850000000002	0.4148898000000001	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	rgb	0.20007850000000002	0.38488980000000006	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	rgb	0.20007850000000002	0.38488980000000006	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	rgb	0.20007850000000002	0.4148898000000001	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	rgb	0.20007850000000002	0.38488980000000006	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	rgb	0.20007850000000002	0.38488980000000006	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	rgb	0.20007850000000002	0.4148898000000001	0.9003774
+slider_scroll	RGBGreenSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	rgb	0.20007850000000002	0.4148898000000001	0.9003774
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	0	UP	rgb	0.3	0.6	0.6849999999999999
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	0	DOWN	rgb	0.3	0.6	0.715
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	0	LEFT	rgb	0.3	0.6	0.715
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	0	RIGHT	rgb	0.3	0.6	0.6849999999999999
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	0	SMOOTH	rgb	0.3	0.6	0.6849999999999999
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	1	UP	rgb	0.3	0.6	0.715
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	1	DOWN	rgb	0.3	0.6	0.6849999999999999
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	1	LEFT	rgb	0.3	0.6	0.6849999999999999
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	1	RIGHT	rgb	0.3	0.6	0.715
+slider_scroll	RGBBlueSlider	rgb	0.3	0.6	0.7	1	SMOOTH	rgb	0.3	0.6	0.715
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	0	UP	rgb	0.0	0.0	0.0
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	0	DOWN	rgb	0.0	0.0	0.015
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	0	LEFT	rgb	0.0	0.0	0.015
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	0	RIGHT	rgb	0.0	0.0	0.0
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	0	SMOOTH	rgb	0.0	0.0	0.0
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	1	UP	rgb	0.0	0.0	0.015
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	1	DOWN	rgb	0.0	0.0	0.0
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	1	LEFT	rgb	0.0	0.0	0.0
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	1	RIGHT	rgb	0.0	0.0	0.015
+slider_scroll	RGBBlueSlider	rgb	0.0	0.0	0.0	1	SMOOTH	rgb	0.0	0.0	0.015
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	0	UP	rgb	1.0	1.0	0.985
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	0	DOWN	rgb	1.0	1.0	1.0
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	0	LEFT	rgb	1.0	1.0	1.0
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	0	RIGHT	rgb	1.0	1.0	0.985
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	0	SMOOTH	rgb	1.0	1.0	0.985
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	1	UP	rgb	1.0	1.0	1.0
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	1	DOWN	rgb	1.0	1.0	0.985
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	1	LEFT	rgb	1.0	1.0	0.985
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	1	RIGHT	rgb	1.0	1.0	1.0
+slider_scroll	RGBBlueSlider	rgb	1.0	1.0	1.0	1	SMOOTH	rgb	1.0	1.0	1.0
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	0	UP	rgb	0.5599999999999999	0.8	0.30500000000000005
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	0	DOWN	rgb	0.5599999999999999	0.8	0.3350000000000001
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	0	LEFT	rgb	0.5599999999999999	0.8	0.3350000000000001
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	0	RIGHT	rgb	0.5599999999999999	0.8	0.30500000000000005
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	0	SMOOTH	rgb	0.5599999999999999	0.8	0.30500000000000005
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	1	UP	rgb	0.5599999999999999	0.8	0.3350000000000001
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	1	DOWN	rgb	0.5599999999999999	0.8	0.30500000000000005
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	1	LEFT	rgb	0.5599999999999999	0.8	0.30500000000000005
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	1	RIGHT	rgb	0.5599999999999999	0.8	0.3350000000000001
+slider_scroll	RGBBlueSlider	hsv	0.25	0.6	0.8	1	SMOOTH	rgb	0.5599999999999999	0.8	0.3350000000000001
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	0	UP	rgb	0.07999999999999996	0.5371428571428573	0.5221428571428572
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	0	DOWN	rgb	0.07999999999999996	0.5371428571428573	0.5521428571428573
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	0	LEFT	rgb	0.07999999999999996	0.5371428571428573	0.5521428571428573
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	0	RIGHT	rgb	0.07999999999999996	0.5371428571428573	0.5221428571428572
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	0	SMOOTH	rgb	0.07999999999999996	0.5371428571428573	0.5221428571428572
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	1	UP	rgb	0.07999999999999996	0.5371428571428573	0.5521428571428573
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	1	DOWN	rgb	0.07999999999999996	0.5371428571428573	0.5221428571428572
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	1	LEFT	rgb	0.07999999999999996	0.5371428571428573	0.5221428571428572
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	1	RIGHT	rgb	0.07999999999999996	0.5371428571428573	0.5521428571428573
+slider_scroll	RGBBlueSlider	hcy	0.5	0.8	0.4	1	SMOOTH	rgb	0.07999999999999996	0.5371428571428573	0.5521428571428573
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	rgb	0.20007850000000002	0.3998898000000001	0.8853774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	rgb	0.20007850000000002	0.3998898000000001	0.9153774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	rgb	0.20007850000000002	0.3998898000000001	0.9153774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	rgb	0.20007850000000002	0.3998898000000001	0.8853774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	rgb	0.20007850000000002	0.3998898000000001	0.8853774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	rgb	0.20007850000000002	0.3998898000000001	0.9153774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	rgb	0.20007850000000002	0.3998898000000001	0.8853774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	rgb	0.20007850000000002	0.3998898000000001	0.8853774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	rgb	0.20007850000000002	0.3998898000000001	0.9153774
+slider_scroll	RGBBlueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	rgb	0.20007850000000002	0.3998898000000001	0.9153774
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	0	UP	hsv	0.5266666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	0	DOWN	hsv	0.5566666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	0	LEFT	hsv	0.5566666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	0	RIGHT	hsv	0.5266666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hsv	0.5266666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	1	UP	hsv	0.5566666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	1	DOWN	hsv	0.5266666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	1	LEFT	hsv	0.5266666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	1	RIGHT	hsv	0.5566666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hsv	0.5566666666666666	0.5714285714285714	0.7
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	0	UP	hsv	0.0	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	0	DOWN	hsv	0.015	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	0	LEFT	hsv	0.015	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	0	RIGHT	hsv	0.0	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hsv	0.0	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	1	UP	hsv	0.015	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	1	DOWN	hsv	0.0	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	1	LEFT	hsv	0.0	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	1	RIGHT	hsv	0.015	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hsv	0.015	0.0	0.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	0	UP	hsv	0.0	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	0	DOWN	hsv	0.015	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	0	LEFT	hsv	0.015	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	0	RIGHT	hsv	0.0	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hsv	0.0	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	1	UP	hsv	0.015	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	1	DOWN	hsv	0.0	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	1	LEFT	hsv	0.0	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	1	RIGHT	hsv	0.015	0.0	1.0
+slider_scroll	HSVHueSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hsv	0.015	0.0	1.0
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	0	UP	hsv	0.235	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	0	DOWN	hsv	0.265	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	0	LEFT	hsv	0.265	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	0	RIGHT	hsv	0.235	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hsv	0.235	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	1	UP	hsv	0.265	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	1	DOWN	hsv	0.235	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	1	LEFT	hsv	0.235	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	1	RIGHT	hsv	0.265	0.6	0.8
+slider_scroll	HSVHueSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hsv	0.265	0.6	0.8
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	0	UP	hsv	0.485	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	0	DOWN	hsv	0.515	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	0	LEFT	hsv	0.515	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	0	RIGHT	hsv	0.485	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hsv	0.485	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	1	UP	hsv	0.515	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	1	DOWN	hsv	0.485	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	1	LEFT	hsv	0.485	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	1	RIGHT	hsv	0.515	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hsv	0.515	0.8510638297872342	0.5371428571428573
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hsv	0.6041128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hsv	0.6341128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hsv	0.6341128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hsv	0.6041128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hsv	0.6041128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hsv	0.6341128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hsv	0.6041128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hsv	0.6041128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hsv	0.6341128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hsv	0.6341128530974416	0.7777837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	0	UP	hsv	0.5416666666666666	0.5564285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	0	DOWN	hsv	0.5416666666666666	0.5864285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	0	LEFT	hsv	0.5416666666666666	0.5864285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	0	RIGHT	hsv	0.5416666666666666	0.5564285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hsv	0.5416666666666666	0.5564285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	1	UP	hsv	0.5416666666666666	0.5864285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	1	DOWN	hsv	0.5416666666666666	0.5564285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	1	LEFT	hsv	0.5416666666666666	0.5564285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	1	RIGHT	hsv	0.5416666666666666	0.5864285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hsv	0.5416666666666666	0.5864285714285714	0.7
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	0	UP	hsv	0.0	0.0	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	0	DOWN	hsv	0.0	0.015	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	0	LEFT	hsv	0.0	0.015	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	0	RIGHT	hsv	0.0	0.0	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hsv	0.0	0.0	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	1	UP	hsv	0.0	0.015	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	1	DOWN	hsv	0.0	0.0	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	1	LEFT	hsv	0.0	0.0	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	1	RIGHT	hsv	0.0	0.015	0.0
+slider_scroll	HSVSaturationSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hsv	0.0	0.015	0.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	0	UP	hsv	0.0	0.0	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	0	DOWN	hsv	0.0	0.015	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	0	LEFT	hsv	0.0	0.015	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	0	RIGHT	hsv	0.0	0.0	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hsv	0.0	0.0	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	1	UP	hsv	0.0	0.015	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	1	DOWN	hsv	0.0	0.0	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	1	LEFT	hsv	0.0	0.0	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	1	RIGHT	hsv	0.0	0.015	1.0
+slider_scroll	HSVSaturationSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hsv	0.0	0.015	1.0
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	0	UP	hsv	0.25	0.585	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	0	DOWN	hsv	0.25	0.615	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	0	LEFT	hsv	0.25	0.615	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	0	RIGHT	hsv	0.25	0.585	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hsv	0.25	0.585	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	1	UP	hsv	0.25	0.615	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	1	DOWN	hsv	0.25	0.585	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	1	LEFT	hsv	0.25	0.585	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	1	RIGHT	hsv	0.25	0.615	0.8
+slider_scroll	HSVSaturationSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hsv	0.25	0.615	0.8
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	0	UP	hsv	0.5	0.8360638297872341	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	0	DOWN	hsv	0.5	0.8660638297872342	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	0	LEFT	hsv	0.5	0.8660638297872342	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	0	RIGHT	hsv	0.5	0.8360638297872341	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hsv	0.5	0.8360638297872341	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	1	UP	hsv	0.5	0.8660638297872342	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	1	DOWN	hsv	0.5	0.8360638297872341	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	1	LEFT	hsv	0.5	0.8360638297872341	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	1	RIGHT	hsv	0.5	0.8660638297872342	0.5371428571428573
+slider_scroll	HSVSaturationSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hsv	0.5	0.8660638297872342	0.5371428571428573
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hsv	0.6191128530974416	0.7627837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hsv	0.6191128530974416	0.7927837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hsv	0.6191128530974416	0.7927837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hsv	0.6191128530974416	0.7627837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hsv	0.6191128530974416	0.7627837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hsv	0.6191128530974416	0.7927837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hsv	0.6191128530974416	0.7627837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hsv	0.6191128530974416	0.7627837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hsv	0.6191128530974416	0.7927837382413196	0.9003774
+slider_scroll	HSVSaturationSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hsv	0.6191128530974416	0.7927837382413196	0.9003774
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	0	UP	hsv	0.5416666666666666	0.5714285714285714	0.6849999999999999
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	0	DOWN	hsv	0.5416666666666666	0.5714285714285714	0.715
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	0	LEFT	hsv	0.5416666666666666	0.5714285714285714	0.715
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	0	RIGHT	hsv	0.5416666666666666	0.5714285714285714	0.6849999999999999
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hsv	0.5416666666666666	0.5714285714285714	0.6849999999999999
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	1	UP	hsv	0.5416666666666666	0.5714285714285714	0.715
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	1	DOWN	hsv	0.5416666666666666	0.5714285714285714	0.6849999999999999
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	1	LEFT	hsv	0.5416666666666666	0.5714285714285714	0.6849999999999999
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	1	RIGHT	hsv	0.5416666666666666	0.5714285714285714	0.715
+slider_scroll	HSVValueSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hsv	0.5416666666666666	0.5714285714285714	0.715
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	0	UP	hsv	0.0	0.0	0.0
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	0	DOWN	hsv	0.0	0.0	0.015
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	0	LEFT	hsv	0.0	0.0	0.015
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	0	RIGHT	hsv	0.0	0.0	0.0
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hsv	0.0	0.0	0.0
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	1	UP	hsv	0.0	0.0	0.015
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	1	DOWN	hsv	0.0	0.0	0.0
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	1	LEFT	hsv	0.0	0.0	0.0
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	1	RIGHT	hsv	0.0	0.0	0.015
+slider_scroll	HSVValueSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hsv	0.0	0.0	0.015
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	0	UP	hsv	0.0	0.0	0.985
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	0	DOWN	hsv	0.0	0.0	1.0
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	0	LEFT	hsv	0.0	0.0	1.0
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	0	RIGHT	hsv	0.0	0.0	0.985
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hsv	0.0	0.0	0.985
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	1	UP	hsv	0.0	0.0	1.0
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	1	DOWN	hsv	0.0	0.0	0.985
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	1	LEFT	hsv	0.0	0.0	0.985
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	1	RIGHT	hsv	0.0	0.0	1.0
+slider_scroll	HSVValueSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hsv	0.0	0.0	1.0
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	0	UP	hsv	0.25	0.6	0.785
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	0	DOWN	hsv	0.25	0.6	0.8150000000000001
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	0	LEFT	hsv	0.25	0.6	0.8150000000000001
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	0	RIGHT	hsv	0.25	0.6	0.785
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hsv	0.25	0.6	0.785
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	1	UP	hsv	0.25	0.6	0.8150000000000001
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	1	DOWN	hsv	0.25	0.6	0.785
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	1	LEFT	hsv	0.25	0.6	0.785
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	1	RIGHT	hsv	0.25	0.6	0.8150000000000001
+slider_scroll	HSVValueSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hsv	0.25	0.6	0.8150000000000001
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	0	UP	hsv	0.5	0.8510638297872342	0.5221428571428572
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	0	DOWN	hsv	0.5	0.8510638297872342	0.5521428571428573
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	0	LEFT	hsv	0.5	0.8510638297872342	0.5521428571428573
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	0	RIGHT	hsv	0.5	0.8510638297872342	0.5221428571428572
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hsv	0.5	0.8510638297872342	0.5221428571428572
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	1	UP	hsv	0.5	0.8510638297872342	0.5521428571428573
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	1	DOWN	hsv	0.5	0.8510638297872342	0.5221428571428572
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	1	LEFT	hsv	0.5	0.8510638297872342	0.5221428571428572
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	1	RIGHT	hsv	0.5	0.8510638297872342	0.5521428571428573
+slider_scroll	HSVValueSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hsv	0.5	0.8510638297872342	0.5521428571428573
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hsv	0.6191128530974416	0.7777837382413196	0.8853774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hsv	0.6191128530974416	0.7777837382413196	0.9153774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hsv	0.6191128530974416	0.7777837382413196	0.9153774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hsv	0.6191128530974416	0.7777837382413196	0.8853774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hsv	0.6191128530974416	0.7777837382413196	0.8853774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hsv	0.6191128530974416	0.7777837382413196	0.9153774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hsv	0.6191128530974416	0.7777837382413196	0.8853774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hsv	0.6191128530974416	0.7777837382413196	0.8853774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hsv	0.6191128530974416	0.7777837382413196	0.9153774
+slider_scroll	HSVValueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hsv	0.6191128530974416	0.7777837382413196	0.9153774
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	0	UP	hcy	0.5266666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	0	DOWN	hcy	0.5566666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	0	LEFT	hcy	0.5566666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	0	RIGHT	hcy	0.5266666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hcy	0.5266666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	1	UP	hcy	0.5566666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	1	DOWN	hcy	0.5266666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	1	LEFT	hcy	0.5266666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	1	RIGHT	hcy	0.5566666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hcy	0.5566666666666666	0.4241842610364682	0.5209999999999999
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	0	UP	hcy	0.0	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	0	DOWN	hcy	0.015	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	0	LEFT	hcy	0.015	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	0	RIGHT	hcy	0.0	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hcy	0.0	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	1	UP	hcy	0.015	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	1	DOWN	hcy	0.0	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	1	LEFT	hcy	0.0	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	1	RIGHT	hcy	0.015	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hcy	0.015	0.0	0.0
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	0	UP	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	0	DOWN	hcy	0.015	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	0	LEFT	hcy	0.015	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	0	RIGHT	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	1	UP	hcy	0.015	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	1	DOWN	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	1	LEFT	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	1	RIGHT	hcy	0.015	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hcy	0.015	0.0	0.9999999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	0	UP	hcy	0.235	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	0	DOWN	hcy	0.265	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	0	LEFT	hcy	0.265	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	0	RIGHT	hcy	0.235	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hcy	0.235	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	1	UP	hcy	0.265	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	1	DOWN	hcy	0.235	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	1	LEFT	hcy	0.235	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	1	RIGHT	hcy	0.265	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hcy	0.265	0.5260663507109004	0.6751999999999999
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	0	UP	hcy	0.485	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	0	DOWN	hcy	0.515	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	0	LEFT	hcy	0.515	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	0	RIGHT	hcy	0.485	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hcy	0.485	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	1	UP	hcy	0.515	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	1	DOWN	hcy	0.485	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	1	LEFT	hcy	0.485	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	1	RIGHT	hcy	0.515	0.8	0.4
+slider_scroll	HCYHueSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hcy	0.515	0.8	0.4
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hcy	0.6041128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hcy	0.6341128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hcy	0.6341128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hcy	0.6041128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hcy	0.6041128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hcy	0.6341128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hcy	0.6041128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hcy	0.6041128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hcy	0.6341128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYHueSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hcy	0.6341128530974416	0.8353345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	0	UP	hcy	0.5416666666666666	0.4091842610364682	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	0	DOWN	hcy	0.5416666666666666	0.43918426103646824	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	0	LEFT	hcy	0.5416666666666666	0.43918426103646824	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	0	RIGHT	hcy	0.5416666666666666	0.4091842610364682	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hcy	0.5416666666666666	0.4091842610364682	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	1	UP	hcy	0.5416666666666666	0.43918426103646824	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	1	DOWN	hcy	0.5416666666666666	0.4091842610364682	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	1	LEFT	hcy	0.5416666666666666	0.4091842610364682	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	1	RIGHT	hcy	0.5416666666666666	0.43918426103646824	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hcy	0.5416666666666666	0.43918426103646824	0.5209999999999999
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	0	UP	hcy	0.0	0.0	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	0	DOWN	hcy	0.0	0.015	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	0	LEFT	hcy	0.0	0.015	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	0	RIGHT	hcy	0.0	0.0	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hcy	0.0	0.0	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	1	UP	hcy	0.0	0.015	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	1	DOWN	hcy	0.0	0.0	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	1	LEFT	hcy	0.0	0.0	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	1	RIGHT	hcy	0.0	0.015	0.0
+slider_scroll	HCYChromaSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hcy	0.0	0.015	0.0
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	0	UP	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	0	DOWN	hcy	0.0	0.015	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	0	LEFT	hcy	0.0	0.015	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	0	RIGHT	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	1	UP	hcy	0.0	0.015	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	1	DOWN	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	1	LEFT	hcy	0.0	0.0	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	1	RIGHT	hcy	0.0	0.015	0.9999999999999999
+slider_scroll	HCYChromaSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hcy	0.0	0.015	0.9999999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	0	UP	hcy	0.25	0.5110663507109003	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	0	DOWN	hcy	0.25	0.5410663507109004	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	0	LEFT	hcy	0.25	0.5410663507109004	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	0	RIGHT	hcy	0.25	0.5110663507109003	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hcy	0.25	0.5110663507109003	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	1	UP	hcy	0.25	0.5410663507109004	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	1	DOWN	hcy	0.25	0.5110663507109003	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	1	LEFT	hcy	0.25	0.5110663507109003	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	1	RIGHT	hcy	0.25	0.5410663507109004	0.6751999999999999
+slider_scroll	HCYChromaSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hcy	0.25	0.5410663507109004	0.6751999999999999
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	0	UP	hcy	0.5	0.785	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	0	DOWN	hcy	0.5	0.8150000000000001	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	0	LEFT	hcy	0.5	0.8150000000000001	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	0	RIGHT	hcy	0.5	0.785	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hcy	0.5	0.785	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	1	UP	hcy	0.5	0.8150000000000001	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	1	DOWN	hcy	0.5	0.785	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	1	LEFT	hcy	0.5	0.785	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	1	RIGHT	hcy	0.5	0.8150000000000001	0.4
+slider_scroll	HCYChromaSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hcy	0.5	0.8150000000000001	0.4
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hcy	0.6191128530974416	0.8203345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hcy	0.6191128530974416	0.8503345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hcy	0.6191128530974416	0.8503345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hcy	0.6191128530974416	0.8203345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hcy	0.6191128530974416	0.8203345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hcy	0.6191128530974416	0.8503345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hcy	0.6191128530974416	0.8203345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hcy	0.6191128530974416	0.8203345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hcy	0.6191128530974416	0.8503345329345264	0.3950000460000002
+slider_scroll	HCYChromaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hcy	0.6191128530974416	0.8503345329345264	0.3950000460000002
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	0	UP	hcy	0.5416666666666666	0.4241842610364682	0.5059999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	0	DOWN	hcy	0.5416666666666666	0.4241842610364682	0.5359999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	0	LEFT	hcy	0.5416666666666666	0.4241842610364682	0.5359999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	0	RIGHT	hcy	0.5416666666666666	0.4241842610364682	0.5059999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	0	SMOOTH	hcy	0.5416666666666666	0.4241842610364682	0.5059999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	1	UP	hcy	0.5416666666666666	0.4241842610364682	0.5359999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	1	DOWN	hcy	0.5416666666666666	0.4241842610364682	0.5059999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	1	LEFT	hcy	0.5416666666666666	0.4241842610364682	0.5059999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	1	RIGHT	hcy	0.5416666666666666	0.4241842610364682	0.5359999999999999
+slider_scroll	HCYLumaSlider	rgb	0.3	0.6	0.7	1	SMOOTH	hcy	0.5416666666666666	0.4241842610364682	0.5359999999999999
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	0	UP	hcy	0.0	0.0	0.0
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	0	DOWN	hcy	0.0	0.0	0.015
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	0	LEFT	hcy	0.0	0.0	0.015
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	0	RIGHT	hcy	0.0	0.0	0.0
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	0	SMOOTH	hcy	0.0	0.0	0.0
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	1	UP	hcy	0.0	0.0	0.015
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	1	DOWN	hcy	0.0	0.0	0.0
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	1	LEFT	hcy	0.0	0.0	0.0
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	1	RIGHT	hcy	0.0	0.0	0.015
+slider_scroll	HCYLumaSlider	rgb	0.0	0.0	0.0	1	SMOOTH	hcy	0.0	0.0	0.015
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	0	UP	hcy	0.0	0.0	0.9849999999999999
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	0	DOWN	hcy	0.0	0.0	1.0
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	0	LEFT	hcy	0.0	0.0	1.0
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	0	RIGHT	hcy	0.0	0.0	0.9849999999999999
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	0	SMOOTH	hcy	0.0	0.0	0.9849999999999999
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	1	UP	hcy	0.0	0.0	1.0
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	1	DOWN	hcy	0.0	0.0	0.9849999999999999
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	1	LEFT	hcy	0.0	0.0	0.9849999999999999
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	1	RIGHT	hcy	0.0	0.0	1.0
+slider_scroll	HCYLumaSlider	rgb	1.0	1.0	1.0	1	SMOOTH	hcy	0.0	0.0	1.0
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	0	UP	hcy	0.25	0.5260663507109004	0.6601999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	0	DOWN	hcy	0.25	0.5260663507109004	0.6901999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	0	LEFT	hcy	0.25	0.5260663507109004	0.6901999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	0	RIGHT	hcy	0.25	0.5260663507109004	0.6601999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	0	SMOOTH	hcy	0.25	0.5260663507109004	0.6601999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	1	UP	hcy	0.25	0.5260663507109004	0.6901999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	1	DOWN	hcy	0.25	0.5260663507109004	0.6601999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	1	LEFT	hcy	0.25	0.5260663507109004	0.6601999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	1	RIGHT	hcy	0.25	0.5260663507109004	0.6901999999999999
+slider_scroll	HCYLumaSlider	hsv	0.25	0.6	0.8	1	SMOOTH	hcy	0.25	0.5260663507109004	0.6901999999999999
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	0	UP	hcy	0.5	0.8	0.385
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	0	DOWN	hcy	0.5	0.8	0.41500000000000004
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	0	LEFT	hcy	0.5	0.8	0.41500000000000004
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	0	RIGHT	hcy	0.5	0.8	0.385
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	0	SMOOTH	hcy	0.5	0.8	0.385
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	1	UP	hcy	0.5	0.8	0.41500000000000004
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	1	DOWN	hcy	0.5	0.8	0.385
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	1	LEFT	hcy	0.5	0.8	0.385
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	1	RIGHT	hcy	0.5	0.8	0.41500000000000004
+slider_scroll	HCYLumaSlider	hcy	0.5	0.8	0.4	1	SMOOTH	hcy	0.5	0.8	0.41500000000000004
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	UP	hcy	0.6191128530974416	0.8353345329345264	0.3800000460000002
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	DOWN	hcy	0.6191128530974416	0.8353345329345264	0.41000004600000023
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	LEFT	hcy	0.6191128530974416	0.8353345329345264	0.41000004600000023
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	RIGHT	hcy	0.6191128530974416	0.8353345329345264	0.3800000460000002
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	0	SMOOTH	hcy	0.6191128530974416	0.8353345329345264	0.3800000460000002
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	UP	hcy	0.6191128530974416	0.8353345329345264	0.41000004600000023
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	DOWN	hcy	0.6191128530974416	0.8353345329345264	0.3800000460000002
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	LEFT	hcy	0.6191128530974416	0.8353345329345264	0.3800000460000002
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	RIGHT	hcy	0.6191128530974416	0.8353345329345264	0.41000004600000023
+slider_scroll	HCYLumaSlider	ycbcr	0.39720000000000005	0.2838	-0.1405	1	SMOOTH	hcy	0.6191128530974416	0.8353345329345264	0.41000004600000023
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.5	0.6	0.6
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.5	0.6	0.6
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.5	0.7	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.5	0.7	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.4	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.4	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.5	0.6	0.4
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.5	0.6	0.4
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.5	0.5	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.5	0.5	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.6	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.6	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.5	0.6	0.6
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.5	0.6	0.4
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.5	0.7	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.5	0.5	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.6	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.4	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.5	0.6	0.4
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.5	0.6	0.6
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.5	0.5	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.5	0.7	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.4	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.6	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.5	0.6	0.57
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.5	0.6	0.43
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.5	0.67	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.5	0.53	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.57	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.43	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.5	0.6	0.43
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.5	0.6	0.57
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.5	0.53	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.5	0.67	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.43	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.57	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.5	0.6	0.8
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.5	0.6	0.8
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.5	0.9	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.5	0.9	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.2	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.2	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.5	0.6	0.2
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.5	0.6	0.2
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.5	0.3	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.5	0.3	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.8	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.8	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.5	0.6	0.505
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.5	0.6	0.495
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.5	0.605	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.5	0.595	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.505	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.495	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.5	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.5	0.6	0.5833333333333334
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.5	0.6	0.5833333333333334
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.5	0.6833333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.5	0.6833333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.4166666666666667	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.4166666666666667	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.5	0.6	0.4166666666666667
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.5	0.6	0.4166666666666667
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.5	0.5166666666666667	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.5	0.5166666666666667	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.5833333333333334	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.5833333333333334	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.5	0.6	0.5833333333333334
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.5	0.6	0.4166666666666667
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.5	0.6833333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.5	0.5166666666666667	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.5833333333333334	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.4166666666666667	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.5	0.6	0.4166666666666667
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.5	0.6	0.5833333333333334
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.5	0.5166666666666667	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.5	0.6833333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.4166666666666667	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.5833333333333334	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.5	0.6	0.5583333333333333
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.5	0.6	0.44166666666666665
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.5	0.6583333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.5	0.5416666666666666	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.5583333333333333	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.44166666666666665	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.5	0.6	0.44166666666666665
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.5	0.6	0.5583333333333333
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.5	0.5416666666666666	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.5	0.6583333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.44166666666666665	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.5583333333333333	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.5	0.6	0.75
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.5	0.6	0.75
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.5	0.85	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.5	0.85	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.25	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.25	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.5	0.6	0.25
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.5	0.6	0.25
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.5	0.35	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.5	0.35	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.75	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.75	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.5	0.6	0.5041666666666667
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.5	0.6	0.49583333333333335
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.5	0.6041666666666666	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.5	0.5958333333333333	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.5041666666666667	0.6	0.5
+bend	hcy	0.5	0.6	0.5	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.49583333333333335	0.6	0.5
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.495
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.495
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.6190476190476191	0.9347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.6190476190476191	0.9347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.5190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.5190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.295
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.295
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.6190476190476191	0.7347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.6190476190476191	0.7347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.7190476190476189	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.7190476190476189	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.495
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.295
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.6190476190476191	0.9347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.6190476190476191	0.7347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.7190476190476189	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.5190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.295
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.495
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.6190476190476191	0.7347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.6190476190476191	0.9347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.5190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.7190476190476189	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.465
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.325
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.6190476190476191	0.904710743801653	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.6190476190476191	0.7647107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.689047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.549047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.325
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.465
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.6190476190476191	0.7647107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.6190476190476191	0.904710743801653	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.549047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.689047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.695
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.695
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.6190476190476191	1.0	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.6190476190476191	1.0	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.319047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.319047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.095
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.095
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.6190476190476191	0.534710743801653	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.6190476190476191	0.534710743801653	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.919047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.919047619047619	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.4
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.39
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.6190476190476191	0.8397107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.6190476190476191	0.8297107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.6240476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.6140476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.3950000000000001
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.3950000000000001
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.6190476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.4783333333333334
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.4783333333333334
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.6190476190476191	0.9180440771349863	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.6190476190476191	0.9180440771349863	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.5357142857142858	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.5357142857142858	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.3116666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.3116666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.6190476190476191	0.7513774104683196	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.6190476190476191	0.7513774104683196	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.7023809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.7023809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.4783333333333334
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.3116666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.6190476190476191	0.9180440771349863	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.6190476190476191	0.7513774104683196	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.7023809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.5357142857142858	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.3116666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.4783333333333334
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.6190476190476191	0.7513774104683196	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.6190476190476191	0.9180440771349863	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.5357142857142858	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.7023809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.45333333333333337
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.3366666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.6190476190476191	0.8930440771349862	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.6190476190476191	0.7763774104683195	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.6773809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.5607142857142857	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.3366666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.45333333333333337
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.6190476190476191	0.7763774104683195	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.6190476190476191	0.8930440771349862	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.5607142857142857	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.6773809523809524	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.645
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.645
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.6190476190476191	1.0	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.6190476190476191	1.0	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.3690476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.3690476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.14500000000000005
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.14500000000000005
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.6190476190476191	0.5847107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.6190476190476191	0.5847107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.8690476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.8690476190476191	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.3991666666666667
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.6190476190476191	0.8347107438016529	0.39083333333333337
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.6190476190476191	0.8388774104683195	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.6190476190476191	0.8305440771349862	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.6232142857142857	0.8347107438016529	0.395
+bend	rgb	0.2	0.4	0.9	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.6148809523809524	0.8347107438016529	0.395
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.1	0.6041171813143309	0.70624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.1	0.6041171813143309	0.70624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.1	0.7041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.1	0.7041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.0	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.0	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.1	0.6041171813143309	0.50624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.1	0.6041171813143309	0.50624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.1	0.5041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.1	0.5041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.2	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.2	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.1	0.6041171813143309	0.70624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.1	0.6041171813143309	0.50624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.1	0.7041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.1	0.5041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.2	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.0	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.1	0.6041171813143309	0.50624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.1	0.6041171813143309	0.70624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.1	0.5041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.1	0.7041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.0	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.2	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.1	0.6041171813143309	0.67624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.1	0.6041171813143309	0.53624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.1	0.674117181314331	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.1	0.534117181314331	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.17	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.03	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.1	0.6041171813143309	0.53624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.1	0.6041171813143309	0.67624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.1	0.534117181314331	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.1	0.674117181314331	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.03	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.17	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.1	0.6041171813143309	0.9062399999999999
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.1	0.6041171813143309	0.9062399999999999
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.1	0.9041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.1	0.9041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.8	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.8	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.1	0.6041171813143309	0.30624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.1	0.6041171813143309	0.30624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.1	0.3041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.1	0.3041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.4	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.4	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.1	0.6041171813143309	0.61124
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.1	0.6041171813143309	0.60124
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.1	0.6091171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.1	0.5991171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.105	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.095	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.1	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.1	0.6041171813143309	0.6895733333333334
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.1	0.6041171813143309	0.6895733333333334
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.1	0.6874505146476643	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.1	0.6874505146476643	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.016666666666666666	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.016666666666666666	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.1	0.6041171813143309	0.5229066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.1	0.6041171813143309	0.5229066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.1	0.5207838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.1	0.5207838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.18333333333333332	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.18333333333333332	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.1	0.6041171813143309	0.6895733333333334
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.1	0.6041171813143309	0.5229066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.1	0.6874505146476643	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.1	0.5207838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.18333333333333332	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.016666666666666666	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.1	0.6041171813143309	0.5229066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.1	0.6041171813143309	0.6895733333333334
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.1	0.5207838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.1	0.6874505146476643	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.016666666666666666	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.18333333333333332	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.1	0.6041171813143309	0.6645733333333333
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.1	0.6041171813143309	0.5479066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.1	0.6624505146476642	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.1	0.5457838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.15833333333333333	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.041666666666666664	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.1	0.6041171813143309	0.5479066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.1	0.6041171813143309	0.6645733333333333
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.1	0.5457838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.1	0.6624505146476642	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.041666666666666664	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.15833333333333333	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.1	0.6041171813143309	0.85624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.1	0.6041171813143309	0.85624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.1	0.8541171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.1	0.8541171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.85	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.85	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.1	0.6041171813143309	0.35624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.1	0.6041171813143309	0.35624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.1	0.3541171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.1	0.3541171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.35	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.35	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.1	0.6041171813143309	0.6104066666666667
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.1	0.6041171813143309	0.6020733333333333
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.1	0.6082838479809975	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.1	0.5999505146476642	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.10416666666666667	0.6041171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.09583333333333334	0.6041171813143309	0.60624
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.0	0.0	0.1
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.0	0.0	0.1
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.0	0.1	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.0	0.1	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.9	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.9	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.1	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.1	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.0	0.0	0.1
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.0	0.1	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.1	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.9	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.0	0.0	0.1
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.0	0.1	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.9	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.1	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.0	0.0	0.07
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.0	0.07	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.07	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.9299999999999999	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.0	0.0	0.07
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.0	0.07	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.9299999999999999	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.07	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.0	0.0	0.3
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.0	0.0	0.3
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.0	0.3	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.0	0.3	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.7	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.7	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.3	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.3	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.0	0.0	0.005
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.0	0.005	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.005	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.995	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.0	0.0	0.08333333333333333
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.0	0.0	0.08333333333333333
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.0	0.08333333333333333	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.0	0.08333333333333333	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.9166666666666666	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.9166666666666666	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.08333333333333333	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.08333333333333333	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.0	0.0	0.08333333333333333
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.0	0.08333333333333333	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.08333333333333333	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.9166666666666666	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.0	0.0	0.08333333333333333
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.0	0.08333333333333333	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.9166666666666666	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.08333333333333333	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.0	0.0	0.058333333333333334
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.0	0.058333333333333334	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.058333333333333334	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.9416666666666667	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.0	0.0	0.058333333333333334
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.0	0.058333333333333334	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.9416666666666667	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.058333333333333334	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.0	0.0	0.25
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.0	0.0	0.25
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.0	0.25	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.0	0.25	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.75	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.75	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.25	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.25	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.0	0.0	0.004166666666666667
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.0	0.004166666666666667	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.004166666666666667	0.0	0.0
+bend	hcy	0.0	0.0	0.0	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.9958333333333333	0.0	0.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.999	0.99	0.9990000000000001
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.999	0.99	0.9990000000000001
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.9990000000000001	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.9990000000000001	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.899	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.899	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.999	0.99	0.899
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.999	0.99	0.899
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.999	0.89	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.999	0.89	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.09899999999999998	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.09899999999999998	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.999	0.99	0.899
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.999	0.89	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.09899999999999998	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.899	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.999	0.99	0.899
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.999	0.89	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.899	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.09899999999999998	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.999	0.99	0.929
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.999	0.92	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.06899999999999995	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.929	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.999	0.99	0.929
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.999	0.92	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.929	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.06899999999999995	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.6990000000000001	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.6990000000000001	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.999	0.99	0.6990000000000001
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.999	0.99	0.6990000000000001
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.999	0.69	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.999	0.69	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.29900000000000015	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.29900000000000015	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.999	0.99	0.9940000000000001
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.999	0.995	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.999	0.985	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.0040000000000000036	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.9940000000000001	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.9156666666666666	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.9156666666666666	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.999	0.99	0.9156666666666666
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.999	0.99	0.9156666666666666
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.999	0.9066666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.999	0.9066666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.08233333333333337	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.08233333333333337	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.999	0.99	0.9156666666666666
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.999	0.9066666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.08233333333333337	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.9156666666666666	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.999	0.99	0.9156666666666666
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.999	0.9066666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.9156666666666666	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.08233333333333337	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.999	0.99	0.9406666666666667
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.999	0.9316666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.057333333333333236	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.9406666666666667	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.999	0.99	0.9406666666666667
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.999	0.9316666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.9406666666666667	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.057333333333333236	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.999	1.0	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.749	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.749	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.999	0.99	0.749
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.999	0.99	0.749
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.999	0.74	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.999	0.74	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.2489999999999999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.2489999999999999	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.999	0.99	1.0
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.999	0.99	0.9948333333333333
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.999	0.9941666666666666	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.999	0.9858333333333333	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.00316666666666654	0.99	0.999
+bend	hcy	0.999	0.99	0.999	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.9948333333333333	0.99	0.999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	1	0	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	1	0	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	0	1	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	50.0	0	1	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.510112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.510112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	1	0	0	hcy	0.00012868701619593118	0.9310695926977349	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	1	0	1	hcy	0.00012868701619593118	0.9310695926977349	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	0	1	0	hcy	0.900128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	40.0	0	1	1	hcy	0.900128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.3101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.3101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	1	0	0	hcy	0.00012868701619593118	0.731069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	1	0	1	hcy	0.00012868701619593118	0.731069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	0	1	0	hcy	0.10012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.0	60.0	0	1	1	hcy	0.10012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.510112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.3101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	1	0	0	hcy	0.00012868701619593118	0.9310695926977349	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	1	0	1	hcy	0.00012868701619593118	0.731069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	0	1	0	hcy	0.10012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	60.0	50.0	0	1	1	hcy	0.900128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.3101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.510112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	1	0	0	hcy	0.00012868701619593118	0.731069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	1	0	1	hcy	0.00012868701619593118	0.9310695926977349	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	0	1	0	hcy	0.900128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	40.0	50.0	0	1	1	hcy	0.10012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.48011211899999995
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.34011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	1	0	0	hcy	0.00012868701619593118	0.901069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	1	0	1	hcy	0.00012868701619593118	0.761069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	0	1	0	hcy	0.07012868701619593	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	57.0	47.0	0	1	1	hcy	0.9301286870161959	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.34011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.48011211899999995
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	1	0	0	hcy	0.00012868701619593118	0.761069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	1	0	1	hcy	0.00012868701619593118	0.901069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	0	1	0	hcy	0.9301286870161959	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	43.0	53.0	0	1	1	hcy	0.07012868701619593	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.7101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.7101121189999999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	1	0	0	hcy	0.00012868701619593118	1.0	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	1	0	1	hcy	0.00012868701619593118	1.0	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	0	1	0	hcy	0.7001286870161959	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	80.0	20.0	0	1	1	hcy	0.7001286870161959	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.11011211899999993
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.11011211899999993
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	1	0	0	hcy	0.00012868701619593118	0.531069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	1	0	1	hcy	0.00012868701619593118	0.531069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	0	1	0	hcy	0.30012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	20.0	80.0	0	1	1	hcy	0.30012868701619594	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.41511211899999995
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.40511211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	1	0	0	hcy	0.00012868701619593118	0.836069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	1	0	1	hcy	0.00012868701619593118	0.826069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	0	1	0	hcy	0.005128687016195931	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	100	100	50.0	50.0	50.5	50.4	0	1	1	hcy	0.995128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	1	0	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	1	0	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	0	1	0	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	40.0	0	1	1	hcy	0.00012868701619593118	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.49344545233333326
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.49344545233333326
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	1	0	0	hcy	0.00012868701619593118	0.9144029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	1	0	1	hcy	0.00012868701619593118	0.9144029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	0	1	0	hcy	0.9167953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	30.0	0	1	1	hcy	0.9167953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.3267787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.3267787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	1	0	0	hcy	0.00012868701619593118	0.7477362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	1	0	1	hcy	0.00012868701619593118	0.7477362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	0	1	0	hcy	0.08346202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.0	50.0	0	1	1	hcy	0.08346202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.49344545233333326
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.3267787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	1	0	0	hcy	0.00012868701619593118	0.9144029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	1	0	1	hcy	0.00012868701619593118	0.7477362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	0	1	0	hcy	0.08346202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	70.0	40.0	0	1	1	hcy	0.9167953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.3267787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.49344545233333326
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	1	0	0	hcy	0.00012868701619593118	0.7477362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	1	0	1	hcy	0.00012868701619593118	0.9144029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	0	1	0	hcy	0.9167953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	50.0	40.0	0	1	1	hcy	0.08346202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.4684454523333333
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.3517787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	1	0	0	hcy	0.00012868701619593118	0.8894029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	1	0	1	hcy	0.00012868701619593118	0.7727362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	0	1	0	hcy	0.05846202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	67.0	37.0	0	1	1	hcy	0.9417953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.3517787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.4684454523333333
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	1	0	0	hcy	0.00012868701619593118	0.7727362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	1	0	1	hcy	0.00012868701619593118	0.8894029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	0	1	0	hcy	0.9417953536828626	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	53.0	43.0	0	1	1	hcy	0.05846202034952926	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.660112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.660112119
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	1	0	0	hcy	0.00012868701619593118	1.0	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	1	0	1	hcy	0.00012868701619593118	1.0	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	0	1	0	hcy	0.750128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	90.0	10.0	0	1	1	hcy	0.750128687016196	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.16011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.16011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	1	0	0	hcy	0.00012868701619593118	0.581069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	1	0	1	hcy	0.00012868701619593118	0.581069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	0	1	0	hcy	0.25012868701619595	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	30.0	70.0	0	1	1	hcy	0.25012868701619595	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.4142787856666666
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	0	0	1	hcy	0.00012868701619593118	0.831069592697735	0.4059454523333333
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	1	0	0	hcy	0.00012868701619593118	0.8352362593644016	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	1	0	1	hcy	0.00012868701619593118	0.8269029260310682	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	0	1	0	hcy	0.004295353682862598	0.831069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	2	120	80	60.0	40.0	60.5	40.4	0	1	1	hcy	0.9959620203495293	0.831069592697735	0.41011211899999994
+bend	hcy	0.5	0.6	0.5	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.5	0.6	0.38
+bend	hcy	0.5	0.6	0.5	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.5	0.48	0.5
+bend	hcy	0.5	0.6	0.5	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.38	0.6	0.5
+bend	rgb	0.2	0.4	0.9	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.6190476190476191	0.8347107438016529	0.275
+bend	rgb	0.2	0.4	0.9	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.6190476190476191	0.7147107438016529	0.395
+bend	rgb	0.2	0.4	0.9	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.4990476190476191	0.8347107438016529	0.395
+bend	hsv	0.1	0.7	0.8	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.1	0.6041171813143309	0.48624
+bend	hsv	0.1	0.7	0.8	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.1	0.4841171813143309	0.60624
+bend	hsv	0.1	0.7	0.8	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.98	0.6041171813143309	0.60624
+bend	hcy	0.0	0.0	0.0	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.0	0.0	0.0
+bend	hcy	0.0	0.0	0.0	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.88	0.0	0.0
+bend	hcy	0.999	0.99	0.999	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.999	0.99	0.879
+bend	hcy	0.999	0.99	0.999	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.999	0.87	0.999
+bend	hcy	0.999	0.99	0.999	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.879	0.99	0.999
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	3	100	100	50.0	50.0	38.0	55.0	0	0	0	hcy	0.00012868701619593118	0.831069592697735	0.29011211899999995
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	3	100	100	50.0	50.0	38.0	55.0	1	0	0	hcy	0.00012868701619593118	0.711069592697735	0.41011211899999994
+bend	ycbcr	0.4093	-0.11830000000000002	0.35000000000000003	3	100	100	50.0	50.0	38.0	55.0	0	1	0	hcy	0.880128687016196	0.831069592697735	0.41011211899999994

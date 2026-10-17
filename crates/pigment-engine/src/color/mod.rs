@@ -20,6 +20,17 @@
 //! | `gui/document.py:1571-1644` 十个调整回调 | [`ColorAction`] / [`BrushStep`] |
 //! | `gui/document.py:1714-1724` `ContextRestoreColor` | [`ColorManager::restore_brush_context`] 等 |
 //!
+//! B4-2 追加（`color/tools.rs`，颜色工具的模型层）：
+//!
+//! | 源码 | 这里 |
+//! |---|---|
+//! | `gui/colors/adjbases.py:360-429` `ColorAdjuster` | [`ColorAdjuster`] trait + [`ColorTool`] |
+//! | `gui/colors/adjbases.py:62-359` `ColorManager` 的通知侧 | [`ColorTool::set_color`] / [`ColorTool::push_history`] |
+//! | `gui/colors/adjbases.py:432-830` `ColorAdjusterWidget` 指针状态机 | [`ColorChanger`] / [`bend_hcy`] |
+//! | `gui/colors/adjbases.py:933-1083` `SliderColorAdjuster` | [`point_to_amount`] / [`scroll_delta`] / [`ComponentSlider`] |
+//! | `gui/colors/sliders.py:163-305` 九个分量滑条 | [`SliderKind`] / [`ComponentSlider`] |
+//! | `gui/colors/combined.py:20-66` `CombinedAdjusterPage` | [`ColorTool`] 的 adjuster 注册表 |
+//!
 //! ## 门槛
 //!
 //! `crates/pigment-engine/tests/color_vectors.rs` 拿
@@ -35,11 +46,15 @@
 //! - `lib/color.py:919-930` 的 doctest 运行器：Python 专属。
 //! - `gui/colors/` 的控件（色环/色轮/色立方/滑条/调色板视图）、`palette`、
 //!   `colorpreview`、`accent`/`uimisc`：B4-3 / B4-4 范围。
+//! - 颜色工具的拖动/滑条几何与 GTK 装配（`gui/colors/adjbases.py` 的
+//!   `ColorAdjusterWidget`、`sliders.py` 的 Gtk.Grid 页面、`colortools.py`）：
+//!   模型层已在 [`ColorChanger`] / [`ComponentSlider`] 里，控件层属 B4-3。
 
 mod adjust;
 mod manager;
 mod model;
 mod space;
+mod tools;
 
 pub use adjust::{
     BrushStep, ColorAction, BRUSH_OPAQUE_FACTOR, BRUSH_RADIUS_STEP,
@@ -57,4 +72,9 @@ pub use model::{
 pub use space::{
     hcy_to_rgb, hsv_to_rgb, rgb_to_hcy, rgb_to_hsv, rgb_to_ycbcr_bt601, ycbcr_to_rgb_bt601,
     HCY_BLUE_LUMA, HCY_GREEN_LUMA, HCY_RED_LUMA,
+};
+pub use tools::{
+    bend_axis, bend_hcy, point_to_amount, scroll_delta, BendAxis, ColorAdjuster, ColorChanger,
+    ColorTool, ComponentSlider, DragUpdate, Modifiers, PressOutcome, ScrollDirection, SliderKind,
+    BORDER_WIDTH, DEFAULT_MANAGED_COLOR, DRAG_THRESHOLD_CAP, DRAG_THRESHOLD_FACTOR, SCROLL_DELTA,
 };
