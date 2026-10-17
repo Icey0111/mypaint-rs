@@ -466,6 +466,52 @@ impl PigmentApp {
     /// 数值属于技术栈适配（egui 没有动态 tooltip 的等价物）。
     ///
     /// 未移植：`LineModeOptionsWidget` 的压力-距离曲线、填充/对称的选项页。
+    /// 填充选项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
+    ///
+    /// 已移植项：Tolerance / Opacity / 目标混合模式。其余（offset、feather、
+    /// gap closing、sample merged、limit to view、make new layer）仍记账。
+    fn fill_options_panel(&mut self, ui: &mut egui::Ui) {
+        use pigment_surface::combine::CombineMode;
+        let Some(mut opt) = self.modes.top().fill_options() else {
+            return;
+        };
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Tolerance:");
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.tolerance, 0.0..=1.0).show_value(true))
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Opacity:");
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.opacity, 0.0..=1.0).show_value(true))
+                .changed();
+        });
+        egui::ComboBox::from_label("Blend Mode")
+            .selected_text(opt.comp_mode.label())
+            .show_ui(ui, |ui| {
+                for mode in CombineMode::ALL {
+                    if ui
+                        .selectable_label(opt.comp_mode == mode, mode.label())
+                        .clicked()
+                    {
+                        opt.comp_mode = mode;
+                        changed = true;
+                    }
+                }
+            });
+        ui.label(
+            egui::RichText::new("Offset / Feather / Gap Closing / Sample Merged 未移植")
+                .italics()
+                .weak(),
+        );
+        if changed {
+            self.with_mode(|modes, _ctx| modes.top_mut().set_fill_options(opt));
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// Inking 的 `OptionsUI`（`gui/inktool.py:1259-1380`）：节点压力/时间/倾角
     /// 滑条 + 插点/删点/简化/剔除。源码是 GTK 的 `point_values_grid`，这里用
     /// egui 的同一组控件。
@@ -588,6 +634,10 @@ impl PigmentApp {
         });
         ui.separator();
 
+        if mode_name == "Flood Fill" {
+            self.fill_options_panel(ui);
+            return;
+        }
         if mode_name == "Inking" {
             self.inking_options(ui);
             return;

@@ -420,6 +420,14 @@ pub trait InteractionMode {
         false
     }
 
+    /// 填充模式的可调项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
+    fn fill_options(&self) -> Option<crate::mode::fill::FillOptions> {
+        None
+    }
+
+    /// 更新填充选项。
+    fn set_fill_options(&mut self, _options: crate::mode::fill::FillOptions) {}
+
     /// `SimplifyNodes` 动作（`document.py:2318`）；返回删掉的节点数。
     fn simplify_nodes(&mut self, _ctx: &mut ModeContext<'_>) -> usize {
         0

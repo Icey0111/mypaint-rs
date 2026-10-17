@@ -1351,6 +1351,14 @@ impl InteractionMode for FillMode {
         "Flood Fill"
     }
 
+    fn fill_options(&self) -> Option<FillOptions> {
+        Some(self.options)
+    }
+
+    fn set_fill_options(&mut self, options: FillOptions) {
+        self.options = options;
+    }
+
     /// `get_usage()`（`fill.py:129-130`）。
     fn usage(&self) -> &str {
         "Fill areas with color"
@@ -1456,6 +1464,21 @@ impl InteractionMode for FillMode {
 mod tests {
     use super::*;
     use crate::document::Document;
+
+    #[test]
+    fn options_roundtrip_through_the_mode_trait() {
+        let mut mode = FillMode::new();
+        let mut o = mode.fill_options().expect("填充模式应有选项");
+        assert_eq!(o.tolerance, 0.05);
+        o.tolerance = 0.42;
+        o.opacity = 0.5;
+        o.comp_mode = CombineMode::Multiply;
+        mode.set_fill_options(o);
+        let got = mode.fill_options().unwrap();
+        assert_eq!(got.tolerance, 0.42);
+        assert_eq!(got.opacity, 0.5);
+        assert_eq!(got.comp_mode, CombineMode::Multiply);
+    }
 
     // ---- 测试脚手架：内存里的只读 tile 源 ----
 
