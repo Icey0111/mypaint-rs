@@ -54,7 +54,7 @@ use std::path::Path;
 use hokusai::tile::TILE_SIZE;
 use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::color::{self, CANVAS_BG};
-use pigment_surface::layer::{LayerContent, LayerMode};
+use pigment_surface::layer::{BackgroundImage, LayerContent, LayerMode};
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::zip::{ZipArchive, ZipWriter};
@@ -650,17 +650,31 @@ pub fn save_ora(
     )?;
 
     // 3. 背景层（`tree.py:2513-2526` 总是写；`data.py:1068`）：
-    //    - 整幅铺满画幅的不透明 PNG（背景表面循环平铺 → 纯色即等价）
-    //    - 单块 64×64 tile，挂 `mypaint:background-tile`
+    //    - 整幅铺满画幅的不透明 PNG（背景表面循环平铺；图案档按世界坐标采样）
+    //    - 平铺 tile：纯色档写 64×64；图案档写**原图**（`background-tile`）
     let n = layers.len();
     let bg_full_entry = format!("data/{}", make_refname("background", &[n], ".png"));
     let bg_tile_entry = format!("data/{}", make_refname("background", &[n], "tile.png"));
     let fw = bw.max(1) as usize;
     let fh = bh.max(1) as usize;
+    let bg_image = layers.background_image();
     let mut bg_full = vec![0u8; fw * fh * 4];
-    for px in bg_full.chunks_exact_mut(4) {
-        px[..3].copy_from_slice(&bg_rgb);
-        px[3] = 255;
+    match bg_image {
+        Some(img) => {
+            for y in 0..fh {
+                for x in 0..fw {
+                    let px = img.pixel_rgba8(bx as i64 + x as i64, by as i64 + y as i64);
+                    let o = (y * fw + x) * 4;
+                    bg_full[o..o + 4].copy_from_slice(&px);
+                }
+            }
+        }
+        None => {
+            for px in bg_full.chunks_exact_mut(4) {
+                px[..3].copy_from_slice(&bg_rgb);
+                px[3] = 255;
+            }
+        }
     }
     let tmp_bg = temp_sibling(filename.as_ref(), "background.png");
     pigment_surface::png::write_rgba8_png(&tmp_bg, bg_full, fw as u32, fh as u32)
@@ -669,14 +683,21 @@ pub fn save_ora(
     let _ = std::fs::remove_file(&tmp_bg);
     zip.add_stored(&bg_full_entry, &bytes)?;
 
-    let ts = TILE_SIZE as u32;
-    let mut bg_tile = vec![0u8; (ts * ts * 4) as usize];
-    for px in bg_tile.chunks_exact_mut(4) {
-        px[..3].copy_from_slice(&bg_rgb);
-        px[3] = 255;
-    }
+    let (bg_tile, tile_w, tile_h) = match bg_image {
+        Some(img) => (img.rgba8().to_vec(), img.width(), img.height()),
+        None => {
+            let ts = TILE_SIZE as u32;
+            let mut tile = vec![0u8; (ts * ts * 4) as usize];
+            for px in tile.chunks_exact_mut(4) {
+                px[..3].copy_from_slice(&bg_rgb);
+                px[3] = 255;
+            }
+            (tile, ts, ts)
+        }
+    };
     let tmp_tile = temp_sibling(filename.as_ref(), "background-tile.png");
-    pigment_surface::png::write_rgba8_png(&tmp_tile, bg_tile, ts, ts).map_err(FileError::Png)?;
+    pigment_surface::png::write_rgba8_png(&tmp_tile, bg_tile, tile_w, tile_h)
+        .map_err(FileError::Png)?;
     let bytes = std::fs::read(&tmp_tile)?;
     let _ = std::fs::remove_file(&tmp_tile);
     zip.add_stored(&bg_tile_entry, &bytes)?;
@@ -971,8 +992,10 @@ pub struct OraLoaded {
     /// 根 stack 的子层（自顶向下；index 0 = 最顶层，`group.py:124-131`），
     /// 组以 `OraContent::Group` 递归携带子层。
     pub layers: Vec<OraLayerData>,
-    /// 背景色（文件里没有可用背景 tile 时保持默认白）。
+    /// 背景色（文件里没有可用背景 tile 时保持默认白；有背景图时是均值）。
     pub background_color: [u8; 3],
+    /// 平铺背景图（`mypaint:background-tile` 非纯色时）。
+    pub background_image: Option<BackgroundImage>,
     /// 文件里是否读到了可用的背景 tile（`tree.py:2395-2420`）。
     pub background_found: bool,
     /// 载入后应选中的层（`_set_current_path_after_ora_load`：按 walk 序找
@@ -1021,7 +1044,16 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
     // 子元素按文档序 → index 0 = 最顶层；组递归（`group.py:138-149`）
     let mut background_color = [255u8, 255, 255];
     let mut background_found = false;
-    let mut out_layers = build_ora_layers(&img.layers, &z, true, 0, &mut background_found, &mut background_color)?;
+    let mut background_image: Option<BackgroundImage> = None;
+    let mut out_layers = build_ora_layers(
+        &img.layers,
+        &z,
+        true,
+        0,
+        &mut background_found,
+        &mut background_color,
+        &mut background_image,
+    )?;
     if out_layers.is_empty() {
         // `_set_current_path_after_ora_load` 的 num_loaded==0 分支：
         // 「Adding an empty painting layer」（`CREATE_PAINTING_LAYER_IF_EMPTY`）
@@ -1049,6 +1081,7 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
         compatibility: img.mypaint_version.as_deref().and_then(compatibility),
         layers: out_layers,
         background_color,
+        background_image,
         background_found,
         current_path,
     })
@@ -1065,6 +1098,7 @@ fn build_ora_layers(
     depth: usize,
     background_found: &mut bool,
     background_color: &mut [u8; 3],
+    background_image: &mut Option<BackgroundImage>,
 ) -> Result<Vec<OraLayerData>, FileError> {
     let mut out: Vec<OraLayerData> = Vec::new();
     for l in nodes {
@@ -1072,11 +1106,23 @@ fn build_ora_layers(
         if top_level {
             if let Some(bg_src) = &l.bg_tile {
                 if let Ok(png) = z.read(bg_src) {
-                    if let Some(rgb) = uniform_tile_color(&png) {
+                    if let Ok((px, w, h)) = pigment_surface::png::decode_rgba8_png(&png) {
                         if !*background_found {
-                            *background_color = rgb;
-                            *background_found = true;
-                            continue;
+                            if let Some(rgb) = uniform_rgba_color(&px, w, h) {
+                                *background_color = rgb;
+                                *background_found = true;
+                                continue;
+                            }
+                            // 图案背景：`Background` 要求宽高是 64 的倍数
+                            // （`tiledsurface.py:1178-1203`）；否则按普通层回落。
+                            if w > 0 && h > 0 && w % 64 == 0 && h % 64 == 0 {
+                                if let Ok(img) = BackgroundImage::from_rgba8(w, h, &px) {
+                                    *background_color = img.average_rgb();
+                                    *background_image = Some(img);
+                                    *background_found = true;
+                                    continue;
+                                }
+                            }
                         }
                     }
                     // `BackgroundError` → 警告并按普通图层继续（源码同）
@@ -1091,6 +1137,7 @@ fn build_ora_layers(
                 depth + 1,
                 background_found,
                 background_color,
+                background_image,
             )?;
             let composite = l
                 .composite_op
@@ -1177,9 +1224,8 @@ fn find_selected_path(layers: &[OraLayerData]) -> Option<Vec<usize>> {
 
 /// 判断一块 PNG 是否是**纯色不透明** tile（`tiledsurface.BackgroundError`
 /// 的语义：背景 tile 必须能用单色表示），返回 `(r, g, b)`。
-fn uniform_tile_color(png: &[u8]) -> Option<[u8; 3]> {
-    let (px, w, h) = pigment_surface::png::decode_rgba8_png(png).ok()?;
-    if w == 0 || h == 0 {
+fn uniform_rgba_color(px: &[u8], w: u32, h: u32) -> Option<[u8; 3]> {
+    if w == 0 || h == 0 || px.len() < 4 {
         return None;
     }
     let first = [px[0], px[1], px[2]];

@@ -378,6 +378,77 @@ fn png_export_flattens_all_layers() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// 默认纸纹（`mrmamurk/mamurk_e_1.png`，CC0）必须作为**平铺图**往返
+/// （`document.py:1327-1380` + `tiledsurface.py:1178-1203`）。
+#[test]
+fn default_paper_texture_round_trips_through_ora() {
+    let path = tmp("paper.ora");
+    let mut doc = Document::new();
+    doc.reset_background();
+    let img = doc
+        .layers()
+        .background_image()
+        .expect("默认背景应是纸纹图")
+        .clone();
+    assert_eq!((img.width(), img.height()), (256, 256));
+    let avg = img.average_rgb();
+    assert!(
+        (avg[0] as i32 - 237).abs() <= 3
+            && (avg[1] as i32 - 239).abs() <= 3
+            && (avg[2] as i32 - 227).abs() <= 3,
+        "纸纹均值应接近 #EDEFE3，实得 {avg:?}"
+    );
+    let sample = img.pixel_rgba8(37, 91);
+
+    doc.save(&path, None).unwrap();
+    let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
+    let xml = String::from_utf8(z.read("stack.xml").unwrap()).unwrap();
+    assert!(xml.contains("mypaint:background-tile="), "{xml}");
+    let tile_name = z
+        .names()
+        .iter()
+        .find(|n| n.ends_with("-tile.png"))
+        .expect("应写背景 tile")
+        .to_string();
+    let (px, w, h) = pigment_engine::surface::png::decode_rgba8_png(&z.read(&tile_name).unwrap())
+        .unwrap();
+    assert_eq!((w, h), (256, 256), "背景 tile 应是原图尺寸");
+    let i = (91 * 256 + 37) * 4;
+    assert_eq!(&px[i..i + 4], &sample, "tile 像素应与源图一致");
+
+    let mut d2 = Document::new();
+    d2.load(&path).unwrap();
+    let img2 = d2.layers().background_image().expect("载入后应恢复纸纹").clone();
+    assert_eq!((img2.width(), img2.height()), (256, 256));
+    assert_eq!(img2.average_rgb(), avg);
+    assert_eq!(img2.pixel_rgba8(37, 91), sample, "图案对齐世界原点");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 纸纹必须平铺到**任意世界坐标**，而不只是原点附近；GPU 上每块 tile
+/// 都是独立合成的，所以逐 tile 检查。
+#[test]
+fn paper_texture_is_tiled_across_world_coordinates() {
+    let mut doc = Document::new();
+    doc.reset_background();
+    for (tx, ty) in [(0, 0), (5, 0), (20, 7), (-3, 2)] {
+        let px = doc
+            .layers()
+            .composite_tile_rgba8(tx, ty)
+            .expect("背景可见时每块 tile 都有内容");
+        let mut sum = 0.0f64;
+        let mut sum2 = 0.0f64;
+        for p in px.chunks_exact(4) {
+            let v = (p[0] as f64 + p[1] as f64 + p[2] as f64) / 3.0;
+            sum += v;
+            sum2 += v * v;
+        }
+        let n = (64 * 64) as f64;
+        let sd = (sum2 / n - (sum / n).powi(2)).sqrt();
+        assert!(sd > 0.5, "tile ({tx},{ty}) 应带纸纹，标准差只有 {sd}");
+    }
+}
+
 /// 画框启用时，ORA 画幅与图层坐标都相对**画框**（`document.py:1778` 传
 /// `get_user_bbox()`；`_save_rect_to_ora` 用 `frame_bbox` 求 x/y）。
 #[test]
@@ -779,11 +850,13 @@ fn real_files_load_all_layers() {
         walked.iter().any(|(p, _)| p.len() > 1),
         "至少有一层嵌在组里（fill_outlines 有嵌套 stack）"
     );
-    assert_eq!(
-        doc.layers().background_color(),
-        [255, 255, 255],
-        "背景 tile 是白色"
-    );
+    // fill_outlines.ora 的背景 tile 是 64×64 的图案（白底 + 几块彩色），
+    // 源码会把它当循环平铺图加载（`Background` 接受 64 倍数），不是纯色。
+    let bg = doc
+        .layers()
+        .background_image()
+        .expect("fill_outlines 的背景应是 64×64 图案");
+    assert_eq!((bg.width(), bg.height()), (64, 64));
 }
 
 /// B2-6：`<stack>` 组在载入时**保留结构**（不再是平铺），嵌套层带父组。

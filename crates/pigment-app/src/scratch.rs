@@ -140,8 +140,12 @@ impl Scratchpad {
             eprintln!("暂存区目录建不出来（{}）：{e}", dir.display());
         }
         let path = files::autosave_path(&dir);
+        let mut doc = Document::new();
+        // 源码把主文档的背景层直接给暂存区（`drawwindow.py:655`）；
+        // 这里没有引用主文档，先统一用默认纸纹。
+        doc.reset_background();
         Self {
-            doc: Document::new(),
+            doc,
             modes: ModeStack::new(|| Box::new(pigment_engine::mode::freehand::FreehandMode::new())),
             stroke_state: BrushState::default(),
             view: View::default(),

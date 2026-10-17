@@ -130,7 +130,9 @@ pub(crate) fn prepare_canvas(
             |c| renderer.uploaded_rev(c),
             &visible,
             crate::gpu::MAX_UPLOADS_PER_FRAME,
-            |c| layers.has_paint_at(c.0, c.1),
+            // 纯色背景由面板底色兜底，不必上传；**图案背景**必须上传合成
+            // tile，否则整块画布显示的是平均色而不是纸纹。
+            |c| layers.has_paint_at(c.0, c.1) || layers.background_is_image(),
             composite_rev,
         );
         for coord in plan {
@@ -148,28 +150,25 @@ pub(crate) fn prepare_canvas(
         crate::gpu::plan_evictions(
             |c| renderer.uploaded_rev(c).is_some(),
             &visible,
-            |c| layers.has_paint_at(c.0, c.1),
+            |c| layers.has_paint_at(c.0, c.1) || layers.background_is_image(),
         )
     };
-
-    // ---- 视图矩阵：world px → 全窗口裁剪空间 ----
-    // 用全窗口 `content_rect` 作参考系，所以要把本面板的原点 `rect.min` 加回去；
-    // 画布从"占满窗口"变成"工作区中央"（乃至侧栏里的一块）之后，这一步不能省。
-    let win = ctx.content_rect();
+    // ---- 视图矩阵：world px → **本回调 viewport** 的裁剪空间 ----
+    // egui 的 `PaintCallbackInfo.viewport` 就是回调矩形：NDC 的 [-1,1] 映射到
+    // 这块矩形，而不是整窗。所以矩阵用 `rect` 的尺寸与 canvas-local offset，
+    // **不能**用 `content_rect` + `rect.min`（那会把画面按整窗缩放/平移，
+    // 表现为只有中间一条带子被绘制、笔画长度/位置失真）。
     let view_window = View {
-        zoom: view_phys.zoom,
-        offset: [
-            (view.offset[0] + rect.min.x) * ppp,
-            (view.offset[1] + rect.min.y) * ppp,
-        ],
-        rotation: view_phys.rotation,
-        mirrored: view_phys.mirrored,
+        zoom: view.zoom,
+        offset: view.offset,
+        rotation: view.rotation,
+        mirrored: view.mirrored,
     };
     CanvasTiles {
         uploads,
         evict,
         visible,
-        view_matrix: view_window.clip_matrix(win.width() * ppp, win.height() * ppp),
+        view_matrix: view_window.clip_matrix(rect.width(), rect.height()),
     }
 }
 

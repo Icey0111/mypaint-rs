@@ -694,6 +694,7 @@ impl PigmentApp {
         // 启动时载回上次的暂存页（`application.py:474-486`）：偏好
         // `scratchpad.last_opened_scratchpad` 有就用它，没有就写回 autosave 路径。
         app.scratch.startup_page(&mut app.prefs);
+        app.doc.reset_background();
         app
     }
 
@@ -997,6 +998,9 @@ impl PigmentApp {
         // `Document::clear` 已经把画框/分辨率/文档设置/对称状态一并复位
         // （`lib/document.py:944-961`），这里不再重复设一遍。
         self.doc.clear();
+        // `RootLayerStack.clear()` 回到「默认背景」——应用层默认是纸纹
+        // （`reset_background()`，`document.py:1327-1380`）。
+        self.doc.reset_background();
         self.current_file = None;
         self.force_resync = true; // 表面换了 → 显存全丢重传
         self.view = View::default();

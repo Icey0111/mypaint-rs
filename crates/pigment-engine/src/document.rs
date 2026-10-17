@@ -28,8 +28,9 @@
 //! `.jpg`、`strokemap`。
 
 use std::collections::BTreeMap;
+use std::sync::OnceLock;
 
-use pigment_surface::layer::{LayerContent, LayerMode};
+use pigment_surface::layer::{BackgroundImage, LayerContent, LayerMode};
 use pigment_surface::symmetry::SymmetryType;
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
@@ -603,25 +604,80 @@ impl Document {
         self.frame_enabled = enabled;
     }
 
+    /// 内置默认纸纹（`backgrounds/mrmamurk/mamurk_e_1.png`，CC0）。
+    ///
+    /// 源码 `reset_background()`（`document.py:1327-1380`）先找用户
+    /// `backgrounds/default.png`，找不到再用这个 fallback；这里先只移植
+    /// 内置 fallback（用户背景目录/选择窗口记账）。
+    pub fn default_paper_background() -> Option<BackgroundImage> {
+        static PAPER: OnceLock<Option<BackgroundImage>> = OnceLock::new();
+        PAPER
+            .get_or_init(|| {
+                BackgroundImage::from_png_bytes(include_bytes!(
+                    "../assets/backgrounds/mamurk_e_1.png"
+                ))
+                .ok()
+            })
+            .clone()
+    }
+
+    /// 把背景重置为默认纸纹（`Document.reset_background`）。
+    ///
+    /// 新文档/启动时调用；`load_*` 不走这里（背景来自文件）。
+    pub fn reset_background(&mut self) {
+        if let Some(paper) = Self::default_paper_background() {
+            self.layers.set_background_image(paper);
+        }
+    }
+
     /// 用户视角的导出外接框（`lib/document.py:1229` 的 `get_user_bbox()`）。
     ///
-    /// 源码逻辑：画框启用时用它；否则用内容外接框，并按**背景图尺寸**向上取整
-    /// （「宽度与高度至少是一个背景图大小」）。我们没有背景图，而
-    /// [`Document::data_bbox`] 本身就是 tile 对齐的，取整退化为恒等 ——
-    /// 所以在"无背景层 + 画框关闭"这一档上，两者结果相同。
-    ///
-    /// 内容为空时回退成画框（源码靠背景图保证最小尺寸；我们靠画框）。
+    /// 源码逻辑：画框启用时用它；否则用内容外接框，并按**背景图尺寸**
+    /// 向上取整到整数倍（`document.py:1243-1282`）。默认纸纹是 256×256，
+    /// 所以空文档的导出框是 256×256，与 MyPaint 一致。
     pub fn get_user_bbox(&self) -> (i32, i32, i32, i32) {
         if self.frame_enabled {
             return self.frame;
         }
-        let bbox = self.data_bbox();
-        if bbox.2 == 0 || bbox.3 == 0 {
-            // 空文档：源码断言的 `bg_bbox.w/h > 0` 保证非零；我们退回画框，
-            // 画框也空时交给导出层（`save_as_png` 会退化成 1×1）
-            return self.frame;
+        let (mut x, mut y, mut w, mut h) = self.data_bbox();
+        let bg_w = self
+            .layers
+            .background_image()
+            .map(|i| i.width() as i32)
+            .unwrap_or(64);
+        let bg_h = self
+            .layers
+            .background_image()
+            .map(|i| i.height() as i32)
+            .unwrap_or(64);
+
+        let corr_x = x.rem_euclid(bg_w);
+        if corr_x > 0 {
+            x -= corr_x;
+            w += corr_x;
         }
-        bbox
+        let corr_y = y.rem_euclid(bg_h);
+        if corr_y > 0 {
+            y -= corr_y;
+            h += corr_y;
+        }
+        if w == 0 {
+            w = bg_w;
+        } else {
+            let orphan = w.rem_euclid(bg_w);
+            if orphan > 0 {
+                w += bg_w - orphan;
+            }
+        }
+        if h == 0 {
+            h = bg_h;
+        } else {
+            let orphan = h.rem_euclid(bg_h);
+            if orphan > 0 {
+                h += bg_h - orphan;
+            }
+        }
+        (x, y, w, h)
     }
 
     // ---- 对称（`lib/layer/tree.py:809-950` 的 RootLayerStack 部分）----
@@ -905,6 +961,10 @@ impl Document {
             return Err(FileError::NotFound(path.display().to_string()));
         }
         self.clear();
+        // 源码 `Document.load` 先 `clear()`，而 `RootLayerStack.clear()` 会把
+        // 背景重置为**应用默认背景**（`reset_background` 设的纸纹）。文件里
+        // 没写背景 tile 时保留它；写了就覆盖。
+        self.reset_background();
         let outcome = match fileio::format_for_path(path) {
             Some(Format::Ora) => {
                 let loaded = fileio::load_ora(path)?;
@@ -915,7 +975,14 @@ impl Document {
                     st.set_current_path(p);
                 }
                 if loaded.background_found {
-                    st.set_background_color(loaded.background_color);
+                    if let Some(img) = loaded.background_image {
+                        st.set_background_image(img);
+                    } else {
+                        st.set_background_color(loaded.background_color);
+                    }
+                } else if let Some(paper) = Self::default_paper_background() {
+                    // 文件没带背景 → 应用默认纸纹（源码 clear 的默认背景）
+                    st.set_background_image(paper);
                 }
                 self.layers = st;
                 self.xres = loaded.xres;

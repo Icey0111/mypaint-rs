@@ -32,6 +32,7 @@
 //! 分支未移植（面板只允许拖进组或插到行间）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
 
@@ -42,6 +43,125 @@ use crate::PigmentSurface;
 
 /// 单 tile 的 u16 通道数。
 const TILE_CHANNELS: usize = TILE_SIZE * TILE_SIZE * 4;
+
+/// 平铺背景图 —— `tiledsurface.Background`（`lib/tiledsurface.py:1178-1203`）。
+///
+/// 背景是一张**可重复平铺**的图（宽高建议 64 的倍数），按世界坐标取模采样。
+/// 这里同时保存 8 位 RGBA（写 `.ora` / 导出用）与预乘 fix15（合成用），
+/// 避免每个 tile 重复做 EOTF 转换。
+///
+/// 源码文档要求背景"不应带 alpha"；本实现按不透明处理（alpha 强制 255），
+/// 与 `BackgroundLayer` 的 `CombineNormal` 不透明语义一致。
+#[derive(Clone)]
+pub struct BackgroundImage {
+    width: u32,
+    height: u32,
+    /// 行主序 RGBA8（alpha 恒 255）。
+    rgba8: Arc<Vec<u8>>,
+    /// 行主序预乘 fix15（与 `rgba8_to_fix15(r,g,b,255)` 相同）。
+    fix15: Arc<Vec<[u16; 4]>>,
+    /// 平均色（RGB8），用于面板底色/纯色回退（`#EDEFE3` 就是默认纸纹的均值）。
+    average: [u8; 3],
+}
+
+impl std::fmt::Debug for BackgroundImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackgroundImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("average", &self.average)
+            .finish()
+    }
+}
+
+impl BackgroundImage {
+    /// 从 RGBA8 像素构造。长度必须是 `w*h*4`。
+    pub fn from_rgba8(width: u32, height: u32, rgba: &[u8]) -> Result<Self, String> {
+        let n = (width as usize) * (height as usize);
+        if width == 0 || height == 0 || rgba.len() != n * 4 {
+            return Err(format!(
+                "背景图尺寸不匹配：{width}×{height}，像素 {} 字节",
+                rgba.len()
+            ));
+        }
+        let mut out = Vec::with_capacity(n * 4);
+        let mut fix = Vec::with_capacity(n);
+        let (mut sr, mut sg, mut sb) = (0u64, 0u64, 0u64);
+        for px in rgba.chunks_exact(4) {
+            let (r, g, b) = (px[0], px[1], px[2]);
+            out.extend_from_slice(&[r, g, b, 255]);
+            fix.push(crate::color::rgba8_to_fix15(r, g, b, 255));
+            sr += r as u64;
+            sg += g as u64;
+            sb += b as u64;
+        }
+        let average = [
+            (sr / n as u64) as u8,
+            (sg / n as u64) as u8,
+            (sb / n as u64) as u8,
+        ];
+        Ok(Self {
+            width,
+            height,
+            rgba8: Arc::new(out),
+            fix15: Arc::new(fix),
+            average,
+        })
+    }
+
+    /// 从 PNG 字节构造（`.ora` 背景 tile / 内置纸纹）。
+    pub fn from_png_bytes(bytes: &[u8]) -> Result<Self, String> {
+        let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+            .map_err(|e| format!("背景 PNG 解码失败：{e}"))?;
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        Self::from_rgba8(w, h, rgba.as_raw())
+    }
+
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// 平均色（RGB8）。
+    #[inline]
+    pub fn average_rgb(&self) -> [u8; 3] {
+        self.average
+    }
+
+    /// 平铺采样：世界像素 `(x, y)` → fix15（负坐标按 Python 的 `%` 语义回绕）。
+    #[inline]
+    pub fn pixel_fix15(&self, x: i64, y: i64) -> [u16; 4] {
+        let sx = x.rem_euclid(self.width as i64) as usize;
+        let sy = y.rem_euclid(self.height as i64) as usize;
+        self.fix15[sy * self.width as usize + sx]
+    }
+
+    /// 平铺采样：世界像素 → RGBA8（写 `.ora` 用）。
+    #[inline]
+    pub fn pixel_rgba8(&self, x: i64, y: i64) -> [u8; 4] {
+        let sx = x.rem_euclid(self.width as i64) as usize;
+        let sy = y.rem_euclid(self.height as i64) as usize;
+        let i = (sy * self.width as usize + sx) * 4;
+        [
+            self.rgba8[i],
+            self.rgba8[i + 1],
+            self.rgba8[i + 2],
+            self.rgba8[i + 3],
+        ]
+    }
+
+    /// 原始 RGBA8（写 `background-tile.png` 用）。
+    #[inline]
+    pub fn rgba8(&self) -> &[u8] {
+        &self.rgba8
+    }
+}
 
 /// 图层 id 发生器。MyPaint 的命令持有**图层对象引用**（weakref），与栈序无关；
 /// Rust 不能持引用，用单调 id 等价替代（Clone/快照恢复保留原 id）。
@@ -540,8 +660,10 @@ pub struct LayerStack {
     /// 当前图层**路径**（`tree.py:954` `_current_path`；`(0,)` = 顶层的第一层）。
     /// 空路径 = 没有当前层（空栈）。
     current: Vec<usize>,
-    /// 背景色（`tree.py:55` 默认 (255, 255, 255)）。
+    /// 背景色（`tree.py:55` 默认 (255, 255, 255)）。有背景图时是它的平均值。
     background_color: [u8; 3],
+    /// 平铺背景图（`tiledsurface.Background`；`None` = 纯色档）。
+    background_image: Option<Arc<BackgroundImage>>,
     /// `tree.py:58` `_background_visible`。
     background_visible: bool,
     /// 合成版本号：栈结构/背景/图层属性变化时 +1（tile 内容变化由各层
@@ -562,6 +684,7 @@ impl Clone for LayerStack {
             layers: self.layers.clone(),
             current: self.current.clone(),
             background_color: self.background_color,
+            background_image: self.background_image.clone(),
             background_visible: self.background_visible,
             rev: self.rev,
         }
@@ -580,6 +703,7 @@ impl LayerStack {
             layers: Vec::new(),
             current: Vec::new(),
             background_color: [255, 255, 255],
+            background_image: None,
             background_visible: true,
             rev: 0,
         }
@@ -612,6 +736,7 @@ impl LayerStack {
             layers,
             current,
             background_color: [255, 255, 255],
+            background_image: None,
             background_visible: true,
             rev: 0,
         }
@@ -1166,9 +1291,39 @@ impl LayerStack {
         self.background_color
     }
 
+    /// 当前平铺背景图（纯色档为 `None`）。
+    #[inline]
+    pub fn background_image(&self) -> Option<&Arc<BackgroundImage>> {
+        self.background_image.as_ref()
+    }
+
+    /// 是否使用平铺背景图 —— GPU 上传判据（纯色背景仍由面板底色兜底）。
+    #[inline]
+    pub fn background_is_image(&self) -> bool {
+        self.background_image.is_some()
+    }
+
     pub fn set_background_color(&mut self, rgb: [u8; 3]) {
+        // 对应 `set_background((r,g,b))`：换成纯色后不再平铺旧图。
         self.background_color = rgb;
+        self.background_image = None;
         self.touch();
+    }
+
+    /// 换成平铺背景图（`set_background(pixbuf)`，`tree.py:1025-1038`）。
+    ///
+    /// `background_color` 同步成图的平均色，供面板底色/纯色回退使用。
+    pub fn set_background_image(&mut self, image: BackgroundImage) {
+        self.background_color = image.average_rgb();
+        self.background_image = Some(Arc::new(image));
+        self.touch();
+    }
+
+    /// 清掉平铺图，回到当前平均色（不重置颜色）。
+    pub fn clear_background_image(&mut self) {
+        if self.background_image.take().is_some() {
+            self.touch();
+        }
     }
 
     pub fn background_visible(&self) -> bool {
@@ -1180,9 +1335,22 @@ impl LayerStack {
         self.touch();
     }
 
-    /// 背景的不透明 fix15 tile（`BackgroundLayer`：mode=Normal、opacity=1）。
-    fn background_tile(&self) -> Box<TilePixels> {
+    /// 背景在 `(tx, ty)` 处的 fix15 tile（`BackgroundLayer`：mode=Normal、opacity=1）。
+    ///
+    /// 纯色档填满单色；图案档按世界坐标取模采样（`Background` 的循环平铺，
+    /// `tiledsurface.py:1178-1203`）。
+    fn background_tile_at(&self, tx: i32, ty: i32) -> Box<TilePixels> {
         let mut tile = empty_tile();
+        if let Some(img) = &self.background_image {
+            let ox = tx as i64 * TILE_SIZE as i64;
+            let oy = ty as i64 * TILE_SIZE as i64;
+            for (y, row) in tile.iter_mut().enumerate() {
+                for (x, p) in row.iter_mut().enumerate() {
+                    *p = img.pixel_fix15(ox + x as i64, oy + y as i64);
+                }
+            }
+            return tile;
+        }
         let [r, g, b] = self.background_color;
         // 背景与载入 PNG 同一条转换路径（EOTF 2.2 + 预乘，alpha 满）
         let px = color::rgba8_to_fix15(r, g, b, 255);
@@ -1223,7 +1391,7 @@ impl LayerStack {
         let mut dst_has_alpha = true;
         let mut has_content = false;
         if include_background && self.background_visible {
-            let bg = self.background_tile();
+            let bg = self.background_tile_at(tx, ty);
             dst.copy_from_slice(bg.as_flattened().as_flattened());
             dst_has_alpha = false;
             has_content = true;
@@ -1853,5 +2021,37 @@ mod tests {
         g.set_opacity(0.5);
         let (px2, _, _) = g.render_thumbnail_rgba8((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), 0);
         assert!(px2[3] < 200 && px2[3] > 60, "alpha={}", px2[3]);
+    }
+
+    /// 图案背景按世界坐标平铺（`tiledsurface.Background` 的循环采样）。
+    #[test]
+    fn background_image_tiles_by_world_coordinates() {
+        let mut st = LayerStack::new();
+        // 2×2 四色图：红/绿/蓝/黄
+        let px: Vec<u8> = [
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [255, 255, 0, 255],
+        ]
+        .concat();
+        st.set_background_image(BackgroundImage::from_rgba8(2, 2, &px).unwrap());
+        assert!(st.background_is_image());
+        let img = st.background_image().unwrap().clone();
+
+        let mut dst = vec![0u16; TILE_CHANNELS];
+        st.composite_tile(1, 0, &mut dst); // 世界原点 (64, 0)
+        assert_eq!(&dst[0..4], &img.pixel_fix15(64, 0), "tile 左上是 x=64 的采样");
+        assert_eq!(&dst[4..8], &img.pixel_fix15(65, 0));
+        // (64,0) % 2 = (0,0) → 红；(65,0) → 绿
+        assert_eq!(img.pixel_rgba8(64, 0), [255, 0, 0, 255]);
+        assert_eq!(img.pixel_rgba8(65, 0), [0, 255, 0, 255]);
+        // 256 px 之后回到同一像素（纸纹 256 的整数倍）
+        assert_eq!(img.pixel_fix15(0, 0), img.pixel_fix15(512, 1024));
+
+        // 设回纯色会丢掉图案
+        st.set_background_color([10, 20, 30]);
+        assert!(!st.background_is_image());
+        assert_eq!(st.background_color(), [10, 20, 30]);
     }
 }
