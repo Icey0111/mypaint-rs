@@ -32,7 +32,7 @@ use std::collections::VecDeque;
 /// `app.fakerotation`（`application.py:299-300`）。Rust 侧把这些缓存成配置，
 /// 由应用在启动/偏好变化时用 [`FreehandConfig::from_prefs`] 重推
 /// （[`super::ModeStack::set_freehand_config`]）。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct FreehandConfig {
     /// `app.fakepressure`（`application.py:299`）。
     ///
@@ -49,6 +49,13 @@ pub struct FreehandConfig {
     pub barrel_rotation_subtract_ascension: bool,
     /// `ui.hide_cursor_while_painting`（软键，默认 false）。
     pub hide_cursor_while_painting: bool,
+    /// `input.global_pressure_mapping` 的点列 `(x, y)`。
+    ///
+    /// 源码 `_apply_pressure_mapping_settings`（`application.py:594-610`）
+    /// 在两点 `(0,1),(1,0)` 时视为 1:1 关闭；其余情况用 `y' = 1 - y`
+    /// 喂给 `MappingWrapper`。这里保存原始点列，应用时按同一规则做
+    /// 分段线性映射。
+    pub pressure_mapping: Vec<(f32, f32)>,
 }
 
 impl Default for FreehandConfig {
@@ -60,6 +67,7 @@ impl Default for FreehandConfig {
             use_barrel_rotation: true,
             barrel_rotation_subtract_ascension: true,
             hide_cursor_while_painting: false,
+            pressure_mapping: vec![(0.0, 1.0), (1.0, 0.0)],
         }
     }
 }
@@ -91,7 +99,72 @@ impl FreehandConfig {
             // `freehand.py:280`
             hide_cursor_while_painting: prefs
                 .bool_or(KEY_HIDE_CURSOR_WHILE_PAINTING, false),
+            pressure_mapping: read_pressure_mapping(prefs),
         }
+    }
+
+    /// 应用全局压力曲线（`application.py:594-610`）。
+    ///
+    /// 两点 `(0,1),(1,0)` = 1:1 关闭；其余点按 x 升序分段线性，
+    /// y 先按源码的 `1.0 - y` 翻转再插值。
+    pub fn map_pressure(&self, pressure: f32) -> f32 {
+        if self.pressure_mapping.len() < 2 {
+            return pressure;
+        }
+        // 1:1（关闭）——源码的容差 1e-4
+        if self.pressure_mapping.len() == 2
+            && (self.pressure_mapping[0].1 - 1.0).abs()
+                + (self.pressure_mapping[1].1 - 0.0).abs()
+                < 0.0001
+        {
+            return pressure;
+        }
+        let p = pressure.clamp(0.0, 1.0);
+        let mut pts: Vec<(f32, f32)> = self
+            .pressure_mapping
+            .iter()
+            .map(|(x, y)| (x.clamp(0.0, 1.0), (1.0 - y).clamp(0.0, 1.0)))
+            .collect();
+        pts.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        if p <= pts[0].0 {
+            return pts[0].1;
+        }
+        for w in pts.windows(2) {
+            let (x0, y0) = w[0];
+            let (x1, y1) = w[1];
+            if p <= x1 {
+                let t = if (x1 - x0).abs() < f32::EPSILON {
+                    0.0
+                } else {
+                    (p - x0) / (x1 - x0)
+                };
+                return (y0 + (y1 - y0) * t).clamp(0.0, 1.0);
+            }
+        }
+        pts.last().map(|p| p.1).unwrap_or(pressure)
+    }
+}
+
+/// 读 `input.global_pressure_mapping`（`[[x,y], ...]`）。
+fn read_pressure_mapping(prefs: &crate::prefs::Prefs) -> Vec<(f32, f32)> {
+    let default = vec![(0.0, 1.0), (1.0, 0.0)];
+    let Some(arr) = prefs.get_array("input.global_pressure_mapping") else {
+        return default;
+    };
+    let mut out = Vec::new();
+    for pair in arr {
+        if let Some(pair) = pair.as_array() {
+            if pair.len() >= 2 {
+                if let (Some(x), Some(y)) = (pair[0].as_f64(), pair[1].as_f64()) {
+                    out.push((x as f32, y as f32));
+                }
+            }
+        }
+    }
+    if out.len() < 2 {
+        default
+    } else {
+        out
     }
 }
 
@@ -392,7 +465,7 @@ impl FreehandMode {
     /// 本移植把配置缓存在模式里，由
     /// [`super::ModeStack::set_freehand_config`] 在偏好变化时重推。
     pub fn set_freehand_config(&mut self, config: FreehandConfig) {
-        self.config = config;
+        self.config = config.clone();
         // 光标标志也要按新配置重算（源码 `:280` 是每次 motion 现算的）。
         if !config.hide_cursor_while_painting {
             self.hiding_cursor = false;
@@ -506,11 +579,19 @@ impl FreehandMode {
             _ => (self.config.fakerotation + b_offset).rem_euclid(1.0),
         };
 
+        // 镜像视图：x 倾角与桶旋转取反（`freehand.py:492-494`）。
+        // 注意源码是在算出 tilt_ascension / barrel 之后再翻转这两个**输出**值。
+        let (xtilt, barrel_rotation) = if ev.viewmirrored {
+            (-xtilt, -barrel_rotation)
+        } else {
+            (xtilt, barrel_rotation)
+        };
+
         // 画的时候隐藏光标
         self.hiding_cursor = self.config.hide_cursor_while_painting && pressure > 0.0;
 
-        // 入队
-        let pressure = pressure.max(0.0);
+        // 入队（先过全局压力曲线，`freehand.py:496-499`）
+        let pressure = self.config.map_pressure(pressure.max(0.0));
         self.draw.queue_motion(RawEvent {
             time: ev.time_ms,
             x: ev.x,
@@ -699,6 +780,27 @@ mod consts_shim {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pressure_mapping_is_piecewise_linear_with_inverted_y() {
+        // 默认两点 (0,1),(1,0) = 1:1 关闭
+        let cfg = FreehandConfig::default();
+        assert!((cfg.map_pressure(0.37) - 0.37).abs() < 1e-6);
+        // 自定义：x=0→y=0, x=1→y=0 在源码里表示 y'=1 常压
+        let mut cfg = FreehandConfig::default();
+        cfg.pressure_mapping = vec![(0.0, 0.0), (1.0, 0.0)];
+        assert!((cfg.map_pressure(0.0) - 1.0).abs() < 1e-6);
+        assert!((cfg.map_pressure(0.5) - 1.0).abs() < 1e-6);
+        // 折线：(0,1) -> y'=0，(0.5,0.5) -> y'=0.5，(1,0) -> y'=1
+        let mut cfg = FreehandConfig::default();
+        cfg.pressure_mapping = vec![(0.0, 1.0), (0.5, 0.5), (1.0, 0.0)];
+        assert!((cfg.map_pressure(0.25) - 0.25).abs() < 1e-6);
+        assert!((cfg.map_pressure(0.5) - 0.5).abs() < 1e-6);
+        assert!((cfg.map_pressure(0.75) - 0.75).abs() < 1e-6);
+        // 端点夹取
+        assert_eq!(cfg.map_pressure(-1.0), 0.0);
+        assert_eq!(cfg.map_pressure(2.0), 1.0);
+    }
 
     /// 源码 doctest 的硬门禁（`freehand.py:730-750`）。
     ///

@@ -884,7 +884,7 @@ impl PigmentApp {
     pub(crate) fn apply_settings(&mut self) {
         self.mode_prefs = ModePrefs::from_prefs(&self.prefs);
         let cfg = FreehandConfig::from_prefs(&self.prefs);
-        self.modes.set_freehand_config(cfg);
+        self.modes.set_freehand_config(cfg.clone());
         self.scratch.modes.set_freehand_config(cfg);
     }
 
@@ -1569,6 +1569,7 @@ impl PigmentApp {
             // 源码 `freehand.py:403-404`：`viewzoom = tdw.scale`、
             // `viewrotation = tdw.rotation`（弧度，cairo 的 `Matrix.rotate`）。
             viewrotation: self.view.rotation,
+            viewmirrored: self.view.mirrored,
             barrel_rotation: None,
             button,
             modifiers,

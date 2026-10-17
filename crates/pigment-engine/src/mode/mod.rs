@@ -167,6 +167,8 @@ pub struct PointerEvent {
     pub ytilt: Option<f32>,
     pub viewzoom: f32,
     pub viewrotation: f32,
+    /// 视图是否左右镜像（`tdw.mirrored`）：自由手绘要据此翻转 x 倾角与桶旋转。
+    pub viewmirrored: bool,
     pub barrel_rotation: Option<f32>,
     /// 鼠标按键号（1 = 左键；0 = 纯移动事件）。
     pub button: u32,
@@ -191,6 +193,7 @@ impl PointerEvent {
             ytilt: None,
             viewzoom: 1.0,
             viewrotation: 0.0,
+            viewmirrored: false,
             barrel_rotation: None,
             button: 0,
             modifiers: Modifiers::NONE,
@@ -860,7 +863,7 @@ impl ModeStack {
     /// 重推一次。默认模式与"被压上来又弹回去"的模式都在栈里，一次遍历覆盖。
     pub fn set_freehand_config(&mut self, config: freehand::FreehandConfig) {
         for mode in &mut self.stack {
-            mode.set_freehand_config(config);
+            mode.set_freehand_config(config.clone());
         }
     }
 

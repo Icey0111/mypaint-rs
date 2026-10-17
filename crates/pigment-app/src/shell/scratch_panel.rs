@@ -363,6 +363,7 @@ fn scratch_pointer_event(
         ytilt: None,
         viewzoom: view.zoom,
         viewrotation: 0.0,
+        viewmirrored: view.mirrored,
         barrel_rotation: None,
         button,
         modifiers,
