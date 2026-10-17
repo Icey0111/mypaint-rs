@@ -1215,7 +1215,11 @@ mod tests {
             .filter(|p| p.ported)
             .map(|p| p.title)
             .collect();
-        assert_eq!(ported, ["Palette", "Component Sliders"]);
+        // B4-4b 起 HSV 三页也接上了，只剩 HCY Wheel 一页禁用（B4-4c）
+        assert_eq!(
+            ported,
+            ["HSV Wheel", "Palette", "HSV Square", "HSV Cube", "Component Sliders"]
+        );
 
         // 三个调色板动作都在动作表里
         for id in ["PaletteNext", "PalettePrev", "PaletteAddCurrentColor", "PaletteTool"] {

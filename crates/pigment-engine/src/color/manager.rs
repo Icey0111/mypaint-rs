@@ -30,13 +30,18 @@
 //! - **adjuster 通知**：`color_updated` / `color_history_updated`
 //!   （`lib/observable.py` 的 `@event`）是给 GUI 控件用的；egui 是立即模式，
 //!   控件每帧读管理器即可（`pigment-app` 的 `shell/` 就是这么做的）。
-//! - **拾色器光标** `_picker_cursor`（`adjbases.py:114-116`）、**色轮色相
-//!   畸变表** `_hue_distorts` / `distort_hue()`（`:80-95`、`:289-345`）：
-//!   前者是 Gdk 对象，后者服务色轮控件 —— 都属 B4-3（`gui/colors/` 控件）。
+//! - **拾色器光标** `_picker_cursor`（`adjbases.py:114-116`）：Gdk 对象，
+//!   归 GUI 层。
+//! - **色轮色相畸变表** `_hue_distorts` / `distort_hue()`（`:80-95`、`:289-345`）：
+//!   B4-4b 已接上（[`ColorManager::wheel_type`] / [`ColorManager::distort_hue`]），
+//!   表的数值与插值在 `color::wheels` 里逐行对照并有真源码向量门禁。
+//!   `set_wheel_type()` 里"重画所有色轮背景"那一步（`:308-310` 的
+//!   `adj.clear_background()`）是控件缓存，egui 每帧重画，不需要。
 
 use super::adjust::{ColorAction, CONTEXT_RESTORES_COLOR_DEFAULT};
 use super::model::{colors_match, Color, HsvColor, RgbColor, UIColor};
 use super::palette::Palette;
+use super::wheels::{distort_hue, undistort_hue, HueRange, WheelType};
 
 /// 颜色历史长度 —— `adjbases.py:79` 的 `_HIST_LEN = 5`。
 pub const HIST_LEN: usize = 5;
@@ -52,6 +57,10 @@ pub const DEFAULT_HIST_HEX: [&str; HIST_LEN] =
 pub const PREFS_KEY_CURRENT_COLOR: &str = "colors.current";
 /// 偏好键：颜色历史（`adjbases.py:46` `PREFS_KEY_COLOR_HISTORY`）。
 pub const PREFS_KEY_COLOR_HISTORY: &str = "colors.history";
+/// 偏好键：色轮类型（`adjbases.py:47` `PREFS_KEY_WHEEL_TYPE`）。
+///
+/// 值见 [`WheelType`]（`"rgb"` / `"ryb"` / `"rygb"`，`adjbases.py:80-95`）。
+pub const PREFS_KEY_WHEEL_TYPE: &str = super::wheels::PREFS_KEY_WHEEL_TYPE;
 /// 偏好键：恢复笔刷槽位时是否连颜色一起还原
 /// （`gui/userconfig.py:93` `misc.context_restores_color`）。
 pub const PREFS_KEY_CONTEXT_RESTORES_COLOR: &str = "misc.context_restores_color";
@@ -77,6 +86,12 @@ pub struct ColorManager {
     /// 恢复笔刷槽位时是否连颜色一起还原（源码偏好
     /// `misc.context_restores_color`，`gui/userconfig.py:93` 默认 True）。
     context_restores_color: bool,
+    /// 色轮类型（源码 `_hue_distorts` 的表索引 + `prefs[PREFS_KEY_WHEEL_TYPE]`，
+    /// `adjbases.py:118` / `:133-136` / `:291-315`）。
+    ///
+    /// 源码把 `_hue_distorts` 存成表本身（`None` 或区间序列）；这里存类型标签，
+    /// 表由 `WheelType::ranges()` 给出 —— 两者等价，但类型标签还能写回偏好。
+    wheel_type: WheelType,
     /// 当前工作调色板（源码 `_palette`，`adjbases.py:111`）。
     ///
     /// 源码在 `__init__` 里从偏好读、读不到就载入
@@ -105,6 +120,10 @@ impl ColorManager {
             color,
             hist,
             context_restores_color: CONTEXT_RESTORES_COLOR_DEFAULT,
+            // `adjbases.py:134-136`：`prefs.get(PREFS_KEY_WHEEL_TYPE, "rgb")`
+            // 以及 `_HUE_DISTORTION_TABLES[wheel_type]`。没有偏好系统（B6），
+            // 走默认那一支。
+            wheel_type: WheelType::DEFAULT,
             // `adjbases.py:139-147`：没有偏好就加载默认调色板文件
             palette: Palette::mypaint_default(),
         }
@@ -158,6 +177,63 @@ impl ColorManager {
     /// 可变引用（调色板页的编辑操作要用）。
     pub fn palette_mut(&mut self) -> &mut Palette {
         &mut self.palette
+    }
+
+    // ---- 色轮类型与色相畸变（`adjbases.py:289-345`）----
+
+    /// 当前色轮类型 —— 源码 `_hue_distorts` 指向的那张表 + 偏好
+    /// `colors.wheels.type`（`adjbases.py:133-136` / `:312-315`）。
+    pub fn wheel_type(&self) -> WheelType {
+        self.wheel_type
+    }
+
+    /// 当前色轮类型的名字 —— `get_wheel_type()`（`adjbases.py:312-315`）
+    /// 返回的就是这个串（`"rgb"` / `"ryb"` / `"rygb"`）。
+    pub fn wheel_type_name(&self) -> &'static str {
+        self.wheel_type.name()
+    }
+
+    /// 切换色轮类型 —— `set_wheel_type()`（`adjbases.py:291-310`）。
+    ///
+    /// 源码流程：老类型 == 新类型就直接返回（`:304-305`）；否则换表
+    /// （`:306`）、写偏好（`:307`）、让所有色轮清缓存（`:308-310`）。
+    /// 最后一步是控件缓存，egui 每帧重画，不需要。
+    ///
+    /// 返回是否真的变了（应用层据此决定要不要重绘/记偏好）。
+    pub fn set_wheel_type(&mut self, wheel_type: WheelType) -> bool {
+        if wheel_type == self.wheel_type {
+            return false;
+        }
+        self.wheel_type = wheel_type;
+        true
+    }
+
+    /// 按名字切换 —— `set_wheel_type(typename)` 的完整语义
+    /// （`adjbases.py:291-310`）：**未知名字退回默认值**（`:302-303`）。
+    pub fn set_wheel_type_by_name(&mut self, name: &str) -> bool {
+        let wheel_type = WheelType::from_name(name).unwrap_or(WheelType::DEFAULT);
+        self.set_wheel_type(wheel_type)
+    }
+
+    /// 当前色轮类型的重映射表 —— `self._hue_distorts`（`adjbases.py:118`）。
+    ///
+    /// `None` = `"rgb"` 轮，`distort_hue()`/`undistort_hue()` 都恒等。
+    pub fn hue_ranges(&self) -> Option<&'static [HueRange]> {
+        self.wheel_type.ranges()
+    }
+
+    /// 色相畸变 —— `ColorManager.distort_hue()`（`adjbases.py:317-330`）。
+    ///
+    /// 色轮画标记 / 画扇区时用：颜色里的 RGB 轮角度 → 当前轮类型角度。
+    pub fn distort_hue(&self, h: f64) -> f64 {
+        distort_hue(h, self.hue_ranges())
+    }
+
+    /// 色相逆畸变 —— `ColorManager.undistort_hue()`（`adjbases.py:332-345`）。
+    ///
+    /// 色轮取色时用：点到（当前轮类型的）角度 → 存进颜色的 RGB 轮角度。
+    pub fn undistort_hue(&self, h: f64) -> f64 {
+        undistort_hue(h, self.hue_ranges())
     }
 
     // ---- 颜色历史（`adjbases.py:235-281`）----

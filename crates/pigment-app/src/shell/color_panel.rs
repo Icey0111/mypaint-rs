@@ -1,4 +1,4 @@
-//! 颜色面板 —— `Component Sliders` 页（B4-3）。
+//! 颜色面板 —— 六个颜色器页的**容器**（B4-3 / B4-4a / B4-4b）。
 //!
 //! 源码里没有"颜色面板"这一个整体，而是**一页一个可停靠工具**
 //! （`gui/colortools.py:31-101` 的 `_PageToolAdapter` 子类）：
@@ -28,6 +28,8 @@
 //!   `gui/colorpreview.py:18` 的 `BrushColorIndicator` 是它的子类，只改了
 //!   `HAS_DETAILS_DIALOG` 与点击行为）。面板里这一份是本项目的摆放（源码的
 //!   颜色器页面**没有**这个控件），记账见交付说明。
+//! - **HSV 三页**（B4-4b）：页面体（绘制 + 交互 + 布局）在
+//!   [`super::wheel_pages`]，本文件只做页签与分派。
 //!
 //! ## 页面切换
 //!
@@ -37,18 +39,23 @@
 //!
 //! B4-3 只移植了 Component Sliders 一个工具，面板里用一条**页签条**
 //! （[`COLOR_PAGES`]）把其余五页列出来并**禁用**；B4-4a 把 Palette 页
-//! （`gui/colors/paletteview.py`，见 [`super::palette_panel`]）接上，于是六个
-//! 页签里有两个可用、可切换（状态在 [`PigmentApp::color_page`]）。这仍然
-//! 替代"注册六个独立面板"，记账见交付说明。
+//! （`gui/colors/paletteview.py`，见 [`super::palette_panel`]）接上，B4-4b 又把
+//! HSV Wheel / HSV Square / HSV Cube 三页接上（`gui/colors/hsvwheel.py` /
+//! `hsvsquare.py` / `hsvcube.py`，见 [`super::wheel_pages`]）。现在六个页签里
+//! 五个可用、可切换（状态在 [`PigmentApp::color_page`]），只剩 HCY Wheel 一页
+//! 禁用（B4-4c）。这仍然替代"注册六个独立面板"，记账见交付说明。
 //!
 //! ## 没接的（逐条记账，见交付说明）
 //!
 //! - `adjbases.py:536-601` 的 GTK DnD（颜色拖出/拖入）：需要 GTK 的
 //!   `drag_begin_with_coordinates()` 与 `application/x-color` 选区。
-//! - `adjbases.py:679-695` 的双击详情对话框（`gui/dialogs.py:ask_for_color`）。
-//! - `adjbases.py:739-788` 按钮 2/3 的 HCY 弯曲：模型层已由 B4-2 的
-//!   [`pigment_engine::color::bend_hcy`] 门禁，控件层的按下快照与指针仲裁
-//!   本块没接。
+//! - `adjbases.py:679-695` 的双击详情对话框（`gui/dialogs.py:ask_for_color`）：
+//!   三个 HSV 页面的控件都没开 `HAS_DETAILS_DIALOG`（默认 False，
+//!   `adjbases.py:454`），所以源码里也不会弹。
+//! - `adjbases.py:739-788` 按钮 2/3 的 HCY 弯曲：**HSV 三页已接**
+//!   （`shell/wheel_pages.rs` 的 [`super::wheel_pages::drive_changer`]，走 B4-2 的
+//!   [`pigment_engine::color::ColorChanger`] / `bend_hcy`）；分量滑条页仍未接
+//!   （滑条自身的按下/拖动/滚轮已接，弯曲记账）。
 //! - `adjbases.py:640-656` / `sliders.py:166-305` 的 `get_background_validity()`：
 //!   缓存重绘令牌；egui 每帧重画，没有这份缓存。
 //! - `adjbases.py:414-419` 的 `get_prefs()`：偏好系统属 B6。
@@ -113,16 +120,23 @@ pub(crate) const PREVIOUS_CURRENT_WIDTH: f32 = 96.0;
 pub(crate) struct ColorPageDef {
     /// 页面对应的动作名（`resources.xml` 的 `GtkToggleAction` id）。
     ///
-    /// 运行时渲染只用 [`Self::title`] / [`Self::description`]；这一列留给
-    /// 后续把其余五页补成面板时接线用，测试与文档也引用它
-    /// （与 `shell/mod.rs` 的 `FOOTER_WIDGETS` 同样处置）。
+    /// 运行时渲染只用 [`Self::title`] / [`Self::description`]；这一列给动作
+    /// 分派与测试用（`app.rs` 的 `HSVWheelTool` 等分支），与
+    /// `shell/mod.rs` 的 `FOOTER_WIDGETS` 同样处置。
     #[allow(dead_code)]
     pub action: &'static str,
+    /// 页面图标名 —— 页面类的 `get_page_icon_name()`。
+    ///
+    /// 页签条目前只画文字（egui 的 `Button` 不吃图标），这一列是**元数据**：
+    /// 测试拿它核对 `resources.xml` 的动作表与 `assets/icons/` 里的图标，
+    /// 后续页签要画图标时直接取用。运行时还没读，故标 `dead_code`。
+    #[allow(dead_code)]
+    pub icon_name: &'static str,
     /// 页面标题 —— 页面类的 `get_page_title()`（也是页签文字）。
     pub title: &'static str,
     /// 页面描述 —— 页面类的 `get_page_description()`（页签 tooltip 第二行）。
     pub description: &'static str,
-    /// 本块是否移植了这一页。
+    /// 本移植是否接上了这一页。
     pub ported: bool,
 }
 
@@ -134,45 +148,51 @@ pub(crate) struct ColorPageDef {
 /// 里页签顺序取决于用户添加的顺序（`Workspace.add_tool_widget`）。这里借用
 /// 菜单顺序，并在交付说明里记账。
 pub(crate) static COLOR_PAGES: [ColorPageDef; 6] = [
-    // gui/colors/hcywheel.py:1311-1322
+    // gui/colors/hcywheel.py:1307-1322
     ColorPageDef {
         action: "HCYWheelTool",
+        icon_name: "mypaint-tool-hcywheel",
         title: "HCY Wheel",
         description: "Set the color using cylindrical hue/chroma/luma space. \
                       The circular slices are equiluminant.",
         ported: false,
     },
-    // gui/colors/hsvwheel.py:86-91
+    // gui/colors/hsvwheel.py:82-91
     ColorPageDef {
         action: "HSVWheelTool",
+        icon_name: "mypaint-tool-hsvwheel",
         title: "HSV Wheel",
         description: "Saturation and Value color changer.",
-        ported: false,
+        ported: true,
     },
     // gui/colors/paletteview.py:74-83
     ColorPageDef {
         action: "PaletteTool",
+        icon_name: "mypaint-tool-color-palette",
         title: "Palette",
         description: "Set the color from a loadable, editable palette.",
         ported: true,
     },
-    // gui/colors/hsvsquare.py:54-59
+    // gui/colors/hsvsquare.py:50-59
     ColorPageDef {
         action: "HSVSquareTool",
+        icon_name: "mypaint-tool-hsvsquare",
         title: "HSV Square",
         description: "An HSV Square which can be rotated to show different hues.",
-        ported: false,
+        ported: true,
     },
-    // gui/colors/hsvcube.py:90-96
+    // gui/colors/hsvcube.py:86-95
     ColorPageDef {
         action: "HSVCubeTool",
+        icon_name: "mypaint-tool-hsvcube",
         title: "HSV Cube",
         description: "An HSV cube which can be rotated to show different planar slices.",
-        ported: false,
+        ported: true,
     },
-    // gui/colors/sliders.py:111-120
+    // gui/colors/sliders.py:108-120
     ColorPageDef {
         action: "ComponentSlidersTool",
+        icon_name: "mypaint-tool-component-sliders",
         title: "Component Sliders",
         description: "Adjust individual components of the color.",
         ported: true,
@@ -717,11 +737,20 @@ pub(crate) fn paint_slider(
 // 页面索引（[`COLOR_PAGES`] 的下标）
 // ---------------------------------------------------------------------------
 
-/// 分量滑条页在 [`COLOR_PAGES`] 里的下标（`sliders.py:111-120`）。
+/// 分量滑条页在 [`COLOR_PAGES`] 里的下标（`sliders.py:108-120`）。
 pub(crate) const PAGE_COMPONENT_SLIDERS: usize = 5;
 
 /// 调色板页在 [`COLOR_PAGES`] 里的下标（`paletteview.py:74-83`）。
 pub(crate) const PAGE_PALETTE: usize = 2;
+
+/// HSV 轮页在 [`COLOR_PAGES`] 里的下标（`hsvwheel.py:82-91`）。
+pub(crate) const PAGE_HSV_WHEEL: usize = 1;
+
+/// HSV 方块页在 [`COLOR_PAGES`] 里的下标（`hsvsquare.py:50-59`）。
+pub(crate) const PAGE_HSV_SQUARE: usize = 3;
+
+/// HSV 立方页在 [`COLOR_PAGES`] 里的下标（`hsvcube.py:86-95`）。
+pub(crate) const PAGE_HSV_CUBE: usize = 4;
 
 // ---------------------------------------------------------------------------
 // 面板
@@ -739,6 +768,11 @@ impl PigmentApp {
             // 调色板页（B4-4a）：`get_page_widget()` 返回的就是 PaletteView 自己，
             // 页面没有额外留白（`paletteview.py:84-88`）
             PAGE_PALETTE => self.color_palette_page(ui),
+            // HSV 三页（B4-4b）：布局与留白由各自页面自己的 `Gtk.Table`
+            // attach padding 决定（`hsvwheel.py:76-77`、`hsvcube.py:69-81`）
+            PAGE_HSV_WHEEL => self.color_hsv_wheel_page(ui),
+            PAGE_HSV_SQUARE => self.color_hsv_square_page(ui),
+            PAGE_HSV_CUBE => self.color_hsv_cube_page(ui),
             // 其余（当前只有分量滑条）都按 `grid.set_border_width(6)` 留白
             _ => self.color_sliders_page(ui),
         }
@@ -1031,8 +1065,8 @@ mod tests {
             .collect();
         assert_eq!(
             ported,
-            ["Palette", "Component Sliders"],
-            "B4-4a 起 Palette 页也可用"
+            ["HSV Wheel", "Palette", "HSV Square", "HSV Cube", "Component Sliders"],
+            "B4-4b 起只剩 HCY Wheel 一页禁用（B4-4c）"
         );
         // 每个页面都有描述（页签 tooltip 的第二行）
         assert!(COLOR_PAGES.iter().all(|p| !p.description.is_empty()));
@@ -1044,6 +1078,64 @@ mod tests {
                 p.action
             );
         }
+    }
+
+    /// 五个已移植页面的图标名 = 源码的 `get_page_icon_name()`，且与动作表一致。
+    ///
+    /// 图标文件：`mypaint-tool-hsvwheel` / `mypaint-tool-hsvcube` /
+    /// `mypaint-tool-component-sliders` / `mypaint-tool-color-palette` 都在
+    /// `assets/icons/`（`build.rs` 栅格化）；`mypaint-tool-hsvsquare` 在源码里
+    /// **只有 PNG**（`desktop/icons/hicolor/*/actions/`，没有 scalable SVG），
+    /// 本项目没搬那个二进制，所以只断言名字 —— 记账见交付说明。
+    #[test]
+    fn page_icons_match_source_page_classes() {
+        let icons: Vec<&str> = COLOR_PAGES.iter().map(|p| p.icon_name).collect();
+        assert_eq!(
+            icons,
+            [
+                "mypaint-tool-hcywheel",
+                "mypaint-tool-hsvwheel",
+                "mypaint-tool-color-palette",
+                "mypaint-tool-hsvsquare",
+                "mypaint-tool-hsvcube",
+                "mypaint-tool-component-sliders",
+            ],
+            "顺序同 COLOR_PAGES（get_page_icon_name 的返回值）"
+        );
+        // 动作表的 icon-name 与页面元数据必须一致（resources.xml 是同一份数据）
+        for p in COLOR_PAGES.iter() {
+            let action = crate::shell::actions::by_id(p.action).expect("动作应在表里");
+            assert_eq!(action.icon_name, Some(p.icon_name), "{}", p.action);
+        }
+        for icon in [
+            "mypaint-tool-hsvwheel",
+            "mypaint-tool-hsvcube",
+            "mypaint-tool-color-palette",
+            "mypaint-tool-component-sliders",
+        ] {
+            assert!(
+                crate::shell::toolbars::icon_png_exists(icon),
+                "缺图标文件 {icon}"
+            );
+        }
+        // hsvsquare 的图标资源在源码里只有 PNG，本项目未搬（记账）
+        assert!(!crate::shell::toolbars::icon_png_exists("mypaint-tool-hsvsquare"));
+    }
+
+    /// 页签下标常量与 `COLOR_PAGES` 一一对应（B4-4b 接三页时最易错的地方）。
+    #[test]
+    fn page_indices_match_color_pages() {
+        for (index, expect) in [
+            (PAGE_HSV_WHEEL, "HSV Wheel"),
+            (PAGE_PALETTE, "Palette"),
+            (PAGE_HSV_SQUARE, "HSV Square"),
+            (PAGE_HSV_CUBE, "HSV Cube"),
+            (PAGE_COMPONENT_SLIDERS, "Component Sliders"),
+        ] {
+            assert_eq!(COLOR_PAGES[index].title, expect);
+            assert!(COLOR_PAGES[index].ported, "{expect} 应可用");
+        }
+        assert!(!COLOR_PAGES[0].ported, "HCY Wheel 留给 B4-4c");
     }
 
     /// 面板 id 的注册与元数据 —— `sliders.py:107-120` + `resources.xml:1433-1438`。

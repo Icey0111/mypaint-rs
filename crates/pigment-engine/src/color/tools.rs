@@ -108,7 +108,9 @@ pub const DRAG_THRESHOLD_FACTOR: i32 = 2;
 ///         return bottom
 ///     return v
 /// ```
-fn clamp(v: f64, bottom: f64, top: f64) -> f64 {
+///
+/// 色轮/色方块（`color::wheels`，B4-4b）也用它，所以是 crate 可见。
+pub(crate) fn clamp(v: f64, bottom: f64, top: f64) -> f64 {
     if v > top {
         return top;
     }
@@ -255,6 +257,48 @@ impl ColorTool {
     /// （`adjbases.py:387-393`），供 GUI 直接读历史/当前色。
     pub fn get_color_manager(&self) -> &ColorManager {
         &self.manager
+    }
+}
+
+/// 指针状态机的"落色目标" —— [`ColorChanger`] 只需要两件事：
+/// 读当前色、写新色（`ColorAdjuster` 的 `get/set_managed_color()`，
+/// `adjbases.py:397-410`）。
+///
+/// 源码里这两个方法是 `ColorAdjuster` 基类的，`ColorTool` 与控件都继承它；
+/// Rust 侧控件层（B4-4b 的色轮页）直接用 `ColorManager` 落色，所以把这两个
+/// 方法抽成 trait：
+///
+/// - [`ColorTool`]（B4-2 的用法，带 adjuster 通知）；
+/// - [`ColorManager`]（B4-4b 的控件层直接写管理器，由应用层随后 `derive_active`
+///   把颜色推给笔刷）。
+///
+/// 方法名带 `sink_` 前缀，避免与两个类型各自的固有 `get_color`/`set_color`
+/// 混淆（`ColorTool::set_color` 还负责通知 adjuster，语义更重）。
+pub trait ColorSink {
+    /// `get_managed_color()`（`adjbases.py:399-403`）—— 取一份拷贝。
+    fn sink_color(&self) -> Color;
+
+    /// `set_managed_color(color)`（`adjbases.py:405-410`）—— 返回是否真的变了。
+    fn sink_set_color(&mut self, color: Color) -> bool;
+}
+
+impl ColorSink for ColorTool {
+    fn sink_color(&self) -> Color {
+        self.get_color()
+    }
+
+    fn sink_set_color(&mut self, color: Color) -> bool {
+        self.set_color(color)
+    }
+}
+
+impl ColorSink for ColorManager {
+    fn sink_color(&self) -> Color {
+        self.get_color()
+    }
+
+    fn sink_set_color(&mut self, color: Color) -> bool {
+        self.set_color(color)
     }
 }
 
@@ -880,7 +924,7 @@ impl ColorChanger {
     /// 模型语义，省掉。
     pub fn start_drag(
         &mut self,
-        tool: &mut ColorTool,
+        sink: &mut impl ColorSink,
         button: u8,
         double_click: bool,
         pos: (f64, f64),
@@ -893,7 +937,7 @@ impl ColorChanger {
         if button == 1 && !double_click {
             let set = match color_at_pos {
                 Some(color) => {
-                    tool.set_color(color);
+                    sink.sink_set_color(color);
                     true
                 }
                 None => false,
@@ -940,7 +984,7 @@ impl ColorChanger {
     /// `area` 是控件的 `(width, height)`（弯曲要用 `max(w, h)`）。
     pub fn update(
         &mut self,
-        tool: &mut ColorTool,
+        sink: &mut impl ColorSink,
         pos: (f64, f64),
         area: (f64, f64),
         modifiers: Modifiers,
@@ -979,7 +1023,7 @@ impl ColorChanger {
             };
             let col = bend_hcy(start_color, start_pos, pos, area, modifiers, rtl);
             let color = Color::Hcy(col);
-            tool.set_color(color);
+            sink.sink_set_color(color);
             return DragUpdate::Bended(color);
         }
 

@@ -33,6 +33,7 @@ pub(crate) mod overlays;
 pub(crate) mod palette_panel;
 pub(crate) mod toolbars;
 pub(crate) mod topbar;
+pub(crate) mod wheel_pages;
 pub(crate) mod workspace;
 
 // ---- 顶栏 ----
@@ -107,19 +108,33 @@ pub(crate) const TIP_COLOR_INDICATOR: &str =
 
 // ---- 颜色调整器控件的绘制常量（`gui/colors/adjbases.py` 的 `ColorAdjusterWidget`）----
 //
-// 这些是**类常量**（`adjbases.py:449-461`），底栏的当前/上一色指示器与
-// 颜色面板的分量滑条共用同一套描边/高光参数（B4-3 起两处共用）。
+// 这些是**类常量**（`adjbases.py:449-461`），底栏的当前/上一色指示器、颜色面板的
+// 分量滑条与色轮/色方块/色立方（B4-4b）共用同一套描边/高光参数。数值的
+// 事实来源在引擎的 `color::wheels`（同一组常量，由
+// `tests/fixtures/wheel_vectors.txt` 的 `wh_rgba` 逐位门禁），这里只做 f64→f32
+// 的投影 —— 别再抄一遍字面量。
 
 /// `adjbases.py:455` `BORDER_WIDTH = 2`。
-pub(crate) const ADJUSTER_BORDER_WIDTH: f32 = 2.0;
+pub(crate) const ADJUSTER_BORDER_WIDTH: f32 = pigment_engine::color::BORDER_WIDTH as f32;
 /// `adjbases.py:457` `OUTLINE_WIDTH = 3`。
-pub(crate) const ADJUSTER_OUTLINE_WIDTH: f32 = 3.0;
+pub(crate) const ADJUSTER_OUTLINE_WIDTH: f32 = pigment_engine::color::OUTLINE_WIDTH as f32;
 /// `adjbases.py:458` `OUTLINE_RGBA = (0, 0, 0, 0.4)`。
-pub(crate) const ADJUSTER_OUTLINE_RGBA: [f32; 4] = [0.0, 0.0, 0.0, 0.4];
+pub(crate) const ADJUSTER_OUTLINE_RGBA: [f32; 4] = [
+    pigment_engine::color::OUTLINE_RGBA[0] as f32,
+    pigment_engine::color::OUTLINE_RGBA[1] as f32,
+    pigment_engine::color::OUTLINE_RGBA[2] as f32,
+    pigment_engine::color::OUTLINE_RGBA[3] as f32,
+];
 /// `adjbases.py:459` `EDGE_HIGHLIGHT_WIDTH = 1.0`。
-pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_WIDTH: f32 = 1.0;
+pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_WIDTH: f32 =
+    pigment_engine::color::EDGE_HIGHLIGHT_WIDTH as f32;
 /// `adjbases.py:460` `EDGE_HIGHLIGHT_RGBA = (1, 1, 1, 0.25)`。
-pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_RGBA: [f32; 4] = [1.0, 1.0, 1.0, 0.25];
+pub(crate) const ADJUSTER_EDGE_HIGHLIGHT_RGBA: [f32; 4] = [
+    pigment_engine::color::EDGE_HIGHLIGHT_RGBA[0] as f32,
+    pigment_engine::color::EDGE_HIGHLIGHT_RGBA[1] as f32,
+    pigment_engine::color::EDGE_HIGHLIGHT_RGBA[2] as f32,
+    pigment_engine::color::EDGE_HIGHLIGHT_RGBA[3] as f32,
+];
 
 // ---- 笔刷指示器的绘制常量（`gui/footer.py`）----
 

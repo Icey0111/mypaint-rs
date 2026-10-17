@@ -61,16 +61,35 @@
 //! `lib/color.py`** 生成（浮点用 `repr()`，Rust 侧 `assert_eq!` 逐位）。
 //! 测试数：23795 条向量。
 //!
-//! ## 没移植的（记账，见交付说明）
+//! B4-4b 追加（`color/wheels.rs`，色轮 / 色方块 / 色立方的模型层）：
 //!
-//! - `lib/color.py:222-262` `new_from_pixbuf_average()`：吃 `GdkPixbuf`，
-//!   Rust 侧没有对应物（背景色的平均色需要时由调用方自己算）。
-//! - `lib/color.py:919-930` 的 doctest 运行器：Python 专属。
-//! - `gui/colors/` 的色环/色轮/色立方（`hcywheel`/`hsvwheel`/`hsvsquare`/
-//!   `hsvcube`）、`colorpreview`、`accent`/`uimisc`：B4-3 / B4-4b 范围。
-//! - 颜色工具的拖动/滑条几何与 GTK 装配（`gui/colors/adjbases.py` 的
-//!   `ColorAdjusterWidget`、`sliders.py` 的 Gtk.Grid 页面、`colortools.py`）：
-//!   模型层已在 [`ColorChanger`] / [`ComponentSlider`] 里，控件层属 B4-3。
+//! | 源码 | 这里 |
+//! |---|---|
+//! | `gui/colors/adjbases.py:1086-1338` `HueSaturationWheelMixin` | [`WheelGeometry`] / [`wheel_radius`] / [`wheel_center`] / [`hue_from_angle`] / [`saturation_from_radius`] |
+//! | `gui/colors/adjbases.py:80-95` + `:289-345` 色相畸变表 | [`WheelType`] / [`distort_hue`] / [`undistort_hue`] + [`ColorManager`] 的同名方法 |
+//! | `gui/colors/adjbases.py:1233-1240` + `util.py:27-40` 径向去饱和 | [`distance_fade_stops`] |
+//! | `gui/colors/hsvwheel.py:35-57` HSV 轮 | [`hsv_wheel_polar_for_color`] / [`hsv_wheel_color_at_polar`] / [`hsv_wheel_scroll`] |
+//! | `gui/colors/hsvsquare.py:138-412` HSV 方块（环 + 内方块） | [`hsv_ring_color_at_polar`] / [`slice_color_at_position`] / [`slice_position_for_color`] |
+//! | `gui/colors/hsvcube.py:100-247` HSV 立方（切片 + 深度滑条） | [`tumble_faces`] / [`depth_slider_color`] / [`depth_slider_amount`] |
+//! | `gui/colors/uimisc.py:21-26` 最小尺寸 | [`PRIMARY_ADJUSTERS_MIN_WIDTH`] 等 |
+//!
+//! 控件层（三页的绘制与指针事件）在
+//! `crates/pigment-app/src/shell/wheel_pages.rs`。
+//!
+//! ## 门槛（B4-4b）
+//!
+//! `crates/pigment-engine/tests/wheel_vectors.rs` 拿
+//! `tests/fixtures/wheel_vectors.txt` 逐位比对；fixture 由
+//! `crates/pigment-engine/tests/tools/gen-wheel-vectors.py` 用 `ast` 从真源码
+//! 抽出函数体后 `exec` 生成（几何、畸变表、两种色轮的钩子、方块/立方的
+//! 坐标换算、深度滑条、滚轮、径向渐变色标）。
+//!
+//! ## 没移植的（B4-4b 记账）
+//!
+//! - **HCY 色轮**（`gui/colors/hcywheel.py`，含 mood/accent 三角）→ B4-4c；
+//!   本模块的几何层已经可复用（颜色层只要再补两个钩子）。
+//! - `adjbases.py:1169-1285` 的 Cairo 绘制、`:536-601` 的 DnD、
+//!   `:679-695` 的双击详情对话框：控件层，见 `shell/wheel_pages.rs` 的记账。
 
 mod adjust;
 mod manager;
@@ -78,6 +97,7 @@ mod model;
 mod palette;
 mod space;
 mod tools;
+mod wheels;
 
 pub use adjust::{
     BrushStep, ColorAction, BRUSH_OPAQUE_FACTOR, BRUSH_RADIUS_STEP,
@@ -86,7 +106,7 @@ pub use adjust::{
 };
 pub use manager::{
     ColorManager, DEFAULT_HIST_HEX, HIST_LEN, PREFS_KEY_COLOR_HISTORY, PREFS_KEY_CONTEXT_RESTORES_COLOR,
-    PREFS_KEY_CURRENT_COLOR,
+    PREFS_KEY_CURRENT_COLOR, PREFS_KEY_WHEEL_TYPE,
 };
 pub use model::{
     colors_match, Color, HcyColor, HsvColor, RgbColor, UIColor, YcbcrColor, CONTRASTING_K,
@@ -103,6 +123,20 @@ pub use space::{
 };
 pub use tools::{
     bend_axis, bend_hcy, point_to_amount, scroll_delta, BendAxis, ColorAdjuster, ColorChanger,
-    ColorTool, ComponentSlider, DragUpdate, Modifiers, PressOutcome, ScrollDirection, SliderKind,
-    BORDER_WIDTH, DEFAULT_MANAGED_COLOR, DRAG_THRESHOLD_CAP, DRAG_THRESHOLD_FACTOR, SCROLL_DELTA,
+    ColorSink, ColorTool, ComponentSlider, DragUpdate, Modifiers, PressOutcome, ScrollDirection,
+    SliderKind, BORDER_WIDTH, DEFAULT_MANAGED_COLOR, DRAG_THRESHOLD_CAP, DRAG_THRESHOLD_FACTOR,
+    SCROLL_DELTA,
+};
+pub use wheels::{
+    depth_slider_amount, depth_slider_color, depth_slider_scroll, distance_fade_stops, distort_hue,
+    hsv_ring_color_at_polar, hsv_ring_color_at_position, hsv_ring_polar_for_color,
+    hsv_ring_position_for_color, hsv_ring_slice_rgb, hsv_wheel_center_rgb, hsv_wheel_color_at_polar,
+    hsv_wheel_color_at_position, hsv_wheel_polar_for_color, hsv_wheel_position_for_color,
+    hsv_wheel_scroll, hsv_wheel_slice_rgb, hue_from_angle, hue_slice_hues, saturation_from_radius,
+    slice_color_at_position, slice_faces, slice_position_for_color, tumble_faces, undistort_hue,
+    wheel_center, wheel_radius, HueRange, HsvFace, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES,
+    DEFAULT_WHEEL_TYPE, EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, OUTLINE_RGBA,
+    OUTLINE_WIDTH, PRIMARY_ADJUSTERS_MIN_HEIGHT, PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES,
+    RYB_HUE_RANGES, RYGB_HUE_RANGES, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH, SLIDER_MIN_WIDTH,
+    TABLE_PADDING,
 };
