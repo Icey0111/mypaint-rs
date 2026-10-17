@@ -87,14 +87,19 @@ impl PigmentApp {
                             .id_salt("color")
                             .default_open(true)
                             .show(ui, |ui| {
-                                let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
+                                let history: Vec<[f32; 3]> = self
+                                    .color_manager
+                                    .get_history()
+                                    .iter()
+                                    .map(crate::color::hsv_of)
+                                    .collect();
                                 let n = history.len();
                                 ui.horizontal_wrapped(|ui| {
                                     for (i, hsv) in history.into_iter().enumerate() {
                                         let tip = format!("颜色历史 {}/{}", i + 1, n);
                                         if crate::app::color_swatch(ui, hsv, false, &tip).clicked()
                                         {
-                                            self.set_color(hsv);
+                                            self.set_color_hsv(hsv);
                                         }
                                     }
                                     ui.label(
@@ -103,7 +108,7 @@ impl PigmentApp {
                                             .small(),
                                     );
                                 });
-                                let mut color = self.color;
+                                let mut color = self.color_hsv();
                                 let mut changed = false;
                                 ui.horizontal(|ui| {
                                     ui.label("色相");
@@ -124,7 +129,7 @@ impl PigmentApp {
                                         .changed();
                                 });
                                 if changed {
-                                    self.set_color(color);
+                                    self.set_color_hsv(color);
                                 }
                             });
 
@@ -166,14 +171,19 @@ impl PigmentApp {
                                         }
                                     }
                                 });
-                                ui.checkbox(
-                                    &mut self.context_restores_color,
-                                    "恢复槽位时连颜色一起还原",
-                                )
-                                .on_hover_text(
-                                    "MyPaint 偏好 misc.context_restores_color（默认开）\n\
-                                     userconfig.py:93",
-                                );
+                                // 开关由颜色管理器持有（偏好 `misc.context_restores_color`，
+                                // `userconfig.py:93` 默认 True）。
+                                let mut restores = self.color_manager.context_restores_color();
+                                if ui
+                                    .checkbox(&mut restores, "恢复槽位时连颜色一起还原")
+                                    .on_hover_text(
+                                        "MyPaint 偏好 misc.context_restores_color（默认开）\n\
+                                         userconfig.py:93",
+                                    )
+                                    .changed()
+                                {
+                                    self.color_manager.set_context_restores_color(restores);
+                                }
                             });
 
                         // ---- 笔刷编辑器 ----
@@ -224,13 +234,18 @@ impl PigmentApp {
         ui.heading("Recent Brushes & Colors");
         ui.separator();
         ui.label("Colors");
-        let history: Vec<[f32; 3]> = self.color_history.colors().to_vec();
+        let history: Vec<[f32; 3]> = self
+            .color_manager
+            .get_history()
+            .iter()
+            .map(crate::color::hsv_of)
+            .collect();
         let n = history.len();
         ui.horizontal_wrapped(|ui| {
             for (i, hsv) in history.into_iter().enumerate() {
                 let tip = format!("颜色历史 {}/{}", i + 1, n);
                 if crate::app::color_swatch(ui, hsv, false, &tip).clicked() {
-                    self.set_color(hsv);
+                    self.set_color_hsv(hsv);
                 }
             }
             if n == 0 {
@@ -328,7 +343,7 @@ impl PigmentApp {
                 // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
                 // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
                 if !self.eraser {
-                    self.color_history.push(self.color);
+                    self.color_manager.push_current_history();
                 }
             }
             // 单击（按下即松开、指针几乎没动）：
@@ -354,7 +369,7 @@ impl PigmentApp {
                     self.mode_button_release(release);
                     self.stroke_dirty = true;
                     if !self.eraser {
-                        self.color_history.push(self.color);
+                        self.color_manager.push_current_history();
                     }
                 }
             }

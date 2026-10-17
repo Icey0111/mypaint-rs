@@ -14,9 +14,9 @@
 //! | `:253` | `ColorPickPreviewOverlay` | 未移植（记账） |
 //! | `tileddrawwidget.py:977` | `tdw.pick_color`（取样合并 + 3×3 平均） | [`crate::Document::pick_color`] |
 //! | `lib/color.py:223` | `new_from_pixbuf_average` | 同上（8bpc sRGB 直接平均） |
-//! | `lib/color.py:345` | `RGBColor.__eq__` 的比较规则 | [`rgb_eq`] |
-//! | `lib/color.py:804`/`:844` | `RGB_to_HCY` / `HCY_to_RGB` | 同名函数 |
-//! | `lib/color.py:521`/`:541` | `HCYColor(color=…)` / `get_hsv()` | [`hcy_from_hsv`] / [`hsv_from_hcy`] |
+//! | `lib/color.py:345` | `RGBColor.__eq__` 的比较规则 | [`rgb_eq`]（转调 [`crate::color`]） |
+//! | `lib/color.py:804`/`:844` | `RGB_to_HCY` / `HCY_to_RGB` | [`crate::color::rgb_to_hcy`] / [`crate::color::hcy_to_rgb`] |
+//! | `lib/color.py:521`/`:541` | `HCYColor(color=…)` / `get_hsv()` | [`crate::color::HcyColor::from_color`] / [`crate::color::UIColor::get_hsv`] |
 //!
 //! # 交互（照源码）
 //!
@@ -52,8 +52,6 @@
 //!   设备表/按键切换那一套（`gui/devices.py`），本移植没有对应物；
 //! - **`get_options_widget()` 返回 None**（`:132-133`）：本来就没有选项面板。
 
-use hokusai::color::Hsv;
-
 use super::{Behavior, InteractionMode, Key, ModeContext, OneshotDragMode, PointerEvent};
 
 /// HCY 色度下限（`colorpicker.py:172` 的 `_C_MIN`）：避免除零/无色相。
@@ -63,166 +61,77 @@ pub const Y_MIN: f32 = 0.0001;
 /// HCY 亮度上限（`colorpicker.py:174` 的 `_Y_MAX`）。
 pub const Y_MAX: f32 = 0.9999;
 
-/// HCY 的 luma 权重（`lib/color.py:799-801`）。
-///
-/// 源码注释说这三者刻意与"颜色/明度"图层混合模式、brushlib 的 Colorize
-/// 笔刷混合一致（遵循 <http://www.w3.org/TR/compositing/>）。
-pub const HCY_RED_LUMA: f32 = 0.3;
-pub const HCY_GREEN_LUMA: f32 = 0.59;
-pub const HCY_BLUE_LUMA: f32 = 0.11;
+// HCY 的 luma 权重只有一份：`lib/color.py:799-801` 的 `_HCY_*_LUMA`，
+// B4-1 起住在 [`crate::color`]（f64）。这里只转出去给本模块用。
+pub use crate::color::{HCY_BLUE_LUMA, HCY_GREEN_LUMA, HCY_RED_LUMA};
 
-// ---- 色彩空间换算（`lib/color.py` 与 `colorsys` 的逐行移植）----
+// ---- 色彩空间换算：**唯一实现在 [`crate::color`]** --------------------------
+//
+// B3-4 时这七个函数在本文件里各有一份 f32 实现；B4-1 把 `lib/color.py`
+// 完整移植到 `crate::color`（f64，逐位对照源码，由
+// `tests/color_vectors.rs` 的 2.3 万条向量门禁），于是这里改成薄包装：
+//
+// - 上面各函数的 doc 注释（源行号、源码行为说明）已随之移到 `crate::color`；
+// - 本层保留 f32 签名，是因为 [`PickColor`] / [`ModeContext::color`] 这条
+//   通道是模式层的 `[f32; 3]`；换算本身在 f64 里做，避免二次误差累积。
 
-/// `colorsys.rgb_to_hsv`（`UIColor.get_hsv` 在 `lib/color.py:74` 直接用它）。
-///
-/// 实现直接借 `hokusai::color::rgb_to_hsv`：逐分支与 `colorsys` 等价
-/// （无彩色时 `h = 0`；`max == r` 且 `g < b` 时色相绕回）。转成数组接口只是
-/// 为了与 [`crate::Document::pick_color`] 的 `[f32; 3]` 对齐。
+/// `[f32; 3]` → `[f64; 3]`。
+fn f64v(v: [f32; 3]) -> [f64; 3] {
+    [v[0] as f64, v[1] as f64, v[2] as f64]
+}
+
+/// `[f64; 3]` → `[f32; 3]`。
+fn f32v(v: [f64; 3]) -> [f32; 3] {
+    [v[0] as f32, v[1] as f32, v[2] as f32]
+}
+
+/// `colorsys.rgb_to_hsv`（`UIColor.get_hsv`，`lib/color.py:65-74`）。
 fn rgb_to_hsv(rgb: [f32; 3]) -> [f32; 3] {
-    let hsv = hokusai::color::rgb_to_hsv(rgb[0], rgb[1], rgb[2]);
-    [hsv.h, hsv.s, hsv.v]
+    f32v(crate::color::rgb_to_hsv(f64v(rgb)))
 }
 
-/// `colorsys.hsv_to_rgb`（同上，借 hokusai 的等价实现）。
+/// `colorsys.hsv_to_rgb`（`HSVColor.get_rgb`，`lib/color.py:398-399`）。
 fn hsv_to_rgb(hsv: [f32; 3]) -> [f32; 3] {
-    let rgb = hokusai::color::hsv_to_rgb(Hsv {
-        h: hsv[0],
-        s: hsv[1],
-        v: hsv[2],
-    });
-    [rgb.r, rgb.g, rgb.b]
+    f32v(crate::color::hsv_to_rgb(f64v(hsv)))
 }
 
-/// `RGB_to_HCY`（`lib/color.py:804-841`）：逐行照搬。
-///
-/// 返回 `[h, c, y]`，其中 `c` 是"该 h/y 下允许的最大彩度的比例"，
-/// 所以取值范围是 `0..=2`（源码 docstring 明说）。
-fn rgb_to_hcy(rgb: [f32; 3]) -> [f32; 3] {
-    let [r, g, b] = rgb;
-    // luma 就是三通道的加权和
-    let y = HCY_RED_LUMA * r + HCY_GREEN_LUMA * g + HCY_BLUE_LUMA * b;
-    // 色相：先按最大通道分扇区，再加上另两个通道的差
-    let p = r.max(g).max(b);
-    let n = r.min(g).min(b);
-    let d = p - n; // 绝对彩度，只用来做归一化
-    let mut h = if n == p {
-        0.0
-    } else if p == r {
-        let h = (g - b) / d;
-        if h < 0.0 {
-            h + 6.0
-        } else {
-            h
-        }
-    } else if p == g {
-        ((b - r) / d) + 2.0
-    } else {
-        // p == b
-        ((r - g) / d) + 4.0
-    };
-    h /= 6.0;
-    // 彩度：相对 RGB 色域包络的比例（推导见 GLHS 论文）
-    let c = if r == g && g == b {
-        // 无彩色：避免除零
-        0.0
-    } else {
-        ((y - n) / y).max((p - y) / (1.0 - y))
-    };
-    [h, c, y]
-}
-
-/// `HCY_to_RGB`（`lib/color.py:844-916`）：逐行照搬（含六个扇区的排序技巧）。
+/// `HCY_to_RGB`（`lib/color.py:844-916`）。
 fn hcy_to_rgb(hcy: [f32; 3]) -> [f32; 3] {
-    let [h0, c, y] = hcy;
-    if c == 0.0 {
-        return [y, y, y];
-    }
-    // 源码 `h %= 1.0; h *= 6.0`（Python 的 `%` 是向下取整语义）
-    let h = h0.rem_euclid(1.0) * 6.0;
-    // 每个扇区给出 `th`（第三个分量的比例）与 `tm`（中间分量的比例）
-    let (sector, th, tm) = if h < 1.0 {
-        (0, h, HCY_RED_LUMA + HCY_GREEN_LUMA * h)
-    } else if h < 2.0 {
-        let th = 2.0 - h;
-        (1, th, HCY_GREEN_LUMA + HCY_RED_LUMA * th)
-    } else if h < 3.0 {
-        let th = h - 2.0;
-        (2, th, HCY_GREEN_LUMA + HCY_BLUE_LUMA * th)
-    } else if h < 4.0 {
-        let th = 4.0 - h;
-        (3, th, HCY_BLUE_LUMA + HCY_GREEN_LUMA * th)
-    } else if h < 5.0 {
-        let th = h - 4.0;
-        (4, th, HCY_BLUE_LUMA + HCY_RED_LUMA * th)
-    } else {
-        let th = 6.0 - h;
-        (5, th, HCY_RED_LUMA + HCY_BLUE_LUMA * th)
-    };
-    // 先算出排序后的 (p, o, n)
-    let (p, o, n) = if tm >= y {
-        (
-            y + y * c * (1.0 - tm) / tm,
-            y + y * c * (th - tm) / tm,
-            y - (y * c),
-        )
-    } else {
-        (
-            y + (1.0 - y) * c,
-            y + (1.0 - y) * c * (th - tm) / (1.0 - tm),
-            y - (1.0 - y) * c * tm / (1.0 - tm),
-        )
-    };
-    // 再按扇区还原成 RGB 顺序
-    match sector {
-        0 => [p, o, n],
-        1 => [o, p, n],
-        2 => [n, p, o],
-        3 => [n, o, p],
-        4 => [o, n, p],
-        _ => [p, n, o],
-    }
+    f32v(crate::color::hcy_to_rgb(f64v(hcy)))
 }
 
-/// `HCYColor(color=…)` 在来源**不是** `HCYColor` 时的转换
-/// （`lib/color.py:521-531`）：先取 HSV，再 `hsv_to_rgb` 后转 HCY。
-///
-/// 特例（`:529-531`）：取样色是纯黑但饱和不为 0 时，用 `v = 0.01` 重算一次
-/// 彩度，让"走向黑"不丢彩度。
+/// `RGB_to_HCY`（`lib/color.py:804-841`）—— 只有测试用到：
+/// 取色模式自己不直接转 HCY（它经 `crate::color::HcyColor::from_color` 走
+/// 源码那条"先取 HSV 再转"的构造路径），所以这里标了 `#[cfg(test)]`。
+#[cfg(test)]
+fn rgb_to_hcy(rgb: [f32; 3]) -> [f32; 3] {
+    f32v(crate::color::rgb_to_hcy(f64v(rgb)))
+}
+
+/// `HCYColor(color=…)` 在来源不是 `HCYColor` 时的那条分支
+/// （`lib/color.py:521-531`，含"纯黑但饱和度不为 0"的特例）。
 fn hcy_from_hsv(hsv: [f32; 3]) -> [f32; 3] {
-    let [h, s, v] = hsv;
-    let hcy = rgb_to_hcy(hsv_to_rgb([h, s, v]));
-    let mut c = hcy[1];
-    if v == 0.0 && c == 0.0 && s != 0.0 {
-        c = rgb_to_hcy(hsv_to_rgb([h, s, 0.01]))[1];
-    }
-    [h, c, hcy[2]]
+    use crate::color::{Color, HcyColor, HsvColor};
+    let c = HcyColor::from_color(&Color::Hsv(HsvColor::from_hsv(f64v(hsv))));
+    [c.h as f32, c.c as f32, c.y as f32]
 }
 
-/// `HCYColor.get_hsv()`（`lib/color.py:541-547`）。
-///
-/// 色相直接用存的 `h`（不经 RGB 往返）；纯黑但彩度不为 0 时同样用
-/// `y = 0.01` 补出饱和度（`:544-546`）。
+/// `HCYColor.get_hsv()`（`lib/color.py:541-547`，色相直接用存下的 `h`）。
 fn hsv_from_hcy(hcy: [f32; 3]) -> [f32; 3] {
-    let [h, c, _y] = hcy;
-    let mut hsv = rgb_to_hsv(hcy_to_rgb(hcy));
-    if hsv[1] == 0.0 && hsv[2] == 0.0 && c != 0.0 {
-        hsv[1] = rgb_to_hsv(hcy_to_rgb([h, c, 0.01]))[1];
-    }
-    // 源码 `return self.h, s, v`
-    hsv[0] = h;
-    hsv
+    use crate::color::{HcyColor, UIColor};
+    f32v(HcyColor::from_hcy(f64v(hcy)).get_hsv())
 }
 
-/// 两个颜色是否"相等"——照 `RGBColor.__eq__`（`lib/color.py:345-353`）：
-/// 两边都折成 RGB，各分量 round 到 3 位小数再逐位比。
+/// 两个颜色是否"相等" —— 照 `RGBColor.__eq__`（`lib/color.py:345-353`）：
+/// 两边都折成 RGB，各分量 `round(3)` 后逐通道比。
 ///
 /// 源码里 `pick_color` 永远是一个 `RGBColor`（`tdw.pick_color` 的返回值），
-/// 所以 `pick_color != self._color` 走的正是这一支（跨色彩空间比较）。
+/// 所以 `pick_color != self._color` 走的正是这一支。
 fn rgb_eq(a: [f32; 3], b: [f32; 3]) -> bool {
-    // Python 的 `round()` 是银行家舍入，这里用四舍五入；只在恰好落在
-    // 1e-3 边界的值上可能有差别，对"颜色变了没有"的判断无影响。
-    let q = |c: f32| (c * 1000.0).round() / 1000.0;
-    a.iter().zip(b.iter()).all(|(x, y)| q(*x) == q(*y))
+    use crate::color::{Color, RgbColor, UIColor};
+    let ca = Color::Rgb(RgbColor::from_rgb(f64v(a)));
+    let cb = Color::Rgb(RgbColor::from_rgb(f64v(b)));
+    ca.eq_src(&cb)
 }
 
 /// 上一次算出来的颜色（源码 `self._color`）。
@@ -1036,7 +945,7 @@ mod tests {
         let red = rgb_to_hcy([1.0, 0.0, 0.0]);
         assert!(red[0].abs() < 1e-6, "纯红色相 0，实得 {}", red[0]);
         assert!(
-            (red[2] - HCY_RED_LUMA).abs() < 1e-6,
+            (red[2] - HCY_RED_LUMA as f32).abs() < 1e-6,
             "纯红 luma = 0.3，实得 {}",
             red[2]
         );

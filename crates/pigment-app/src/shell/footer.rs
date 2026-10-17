@@ -217,11 +217,11 @@ impl PigmentApp {
 
         // 左半 = 当前色，右半 = 上一色
         let half = (eff_w / 2.0).floor();
-        let prev = self.color_history.current();
+        let prev = crate::color::hsv_of(&self.color_manager.get_previous_color());
         painter.rect_filled(
             egui::Rect::from_min_size(body.min, egui::vec2(half, eff_h)),
             0.0,
-            rgb32(self.color),
+            rgb32(self.color_hsv()),
         );
         painter.rect_filled(
             egui::Rect::from_min_size(
@@ -255,7 +255,7 @@ impl PigmentApp {
 
         let tip = format!(
             "{TIP_COLOR_INDICATOR}\n左半 = 当前色 {}（点击应弹颜色选择器，属 B4）\n右半 = 上一色 {}",
-            color::hex_from_hsv(self.color),
+            color::hex_from_hsv(self.color_hsv()),
             color::hex_from_hsv(prev),
         );
         let resp = resp.on_hover_text(tip);

@@ -13,6 +13,10 @@
 //!
 //! - 画布：左键拖拽绘制；中/右键或 Space+左键平移；滚轮以光标为中心缩放
 //! - 笔刷尺寸 `f` / `d`（`Bigger`/`Smaller`，`resources.xml:275,283`）
+//! - 笔刷不透明度 `s` / `a`（`MoreOpaque`/`LessOpaque`，`resources.xml:292,300`）
+//! - 颜色调整 `Shift+F`/`Shift+D`（明度）、`Shift+W`/`Shift+Q`（色相）、
+//!   `Shift+S`/`Shift+A`（饱和度）—— `resources.xml:309-354` 的六个
+//!   Menu→Color→Adjust Color 动作，B4-1 接到引擎的颜色管理器上
 //! - 橡皮 `e`、普通模式 `n`（`BlendModeEraser`/`BlendModeNormal`）
 //! - 取色 `r`；`Ctrl+r` / `Shift+r` / `Alt+r` 分别只取色相 / 彩度 / 亮度
 //!   （`FlipColorPickMode*`，`resources.xml:1896-1930`）
@@ -48,11 +52,12 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use pigment_engine::brushlib::NUM_BRUSHKEYS;
+use pigment_engine::color::{BrushStep, Color, ColorAction, ColorManager};
 use pigment_engine::hokusai::{Brush, BrushSetting, BrushState};
 use pigment_engine::{CommandUpdate, Document};
 
 use crate::brushes::BrushPanel;
-use crate::color::{self, ColorHistory};
+use crate::color;
 use crate::editor::BrushEditor;
 use crate::gpu::TileRenderer;
 use crate::shell::actions;
@@ -143,15 +148,17 @@ pub struct PigmentApp {
     pub(crate) eraser: bool,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
-    /// 当前颜色 `[h, s, v]`。
-    pub(crate) color: [f32; 3],
-    /// 颜色历史（`gui/colors/adjbases.py:ColorManager._hist`）。
-    pub(crate) color_history: ColorHistory,
+    /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
+    ///
+    /// 对应 `gui/brushcolor.py` 的 `BrushColorManager`：颜色由应用持有，笔刷的
+    /// `color_h/s/v` 只是它的投影（[`PigmentApp::derive_active`] 负责投影）。
+    /// 类型、比较、历史去重、调整动作的语义都在引擎
+    /// （`pigment_engine::color`，逐行对照 `lib/color.py` /
+    /// `gui/colors/adjbases.py` / `gui/brushcolor.py`）。
+    pub(crate) color_manager: ColorManager,
     // ---- 笔刷快捷键 ----
     /// 10 个槽位（`BrushManager.contexts`）。
     pub(crate) brushkeys: [Option<BrushKeySlot>; NUM_BRUSHKEYS],
-    /// 恢复槽位时是否连颜色一起还原（MyPaint 偏好 `misc.context_restores_color`，默认开）。
-    pub(crate) context_restores_color: bool,
     /// 笔刷编辑器「实时更新最近一笔」（`gui/brusheditor.py` 的 live update）：
     /// 开着时改笔刷设置就用新笔重绘上一笔
     /// （`CommandStack::update_last_command`）。
@@ -362,7 +369,7 @@ impl PigmentApp {
             pigment_engine::brushlib::default_brush()
         });
 
-        let color_history = ColorHistory::new();
+        let color_manager = ColorManager::new();
         let brushkeys = seed_brushkeys(&brushes);
         let brush_name = brushes
             .selected_entry()
@@ -378,10 +385,8 @@ impl PigmentApp {
             radius_override: None,
             eraser: false,
             paint_override: None,
-            color: color_history.current(),
-            color_history,
+            color_manager,
             brushkeys,
-            context_restores_color: true,
             live_update: false,
             status: None,
             current_file: None,
@@ -431,7 +436,7 @@ impl PigmentApp {
     /// 与 libmypaint 的 `mypaint_brush_set_base_value(COLOR_*)` 语义一致。
     pub(crate) fn derive_active(&mut self) {
         let mut b = self.base_brush.clone();
-        let [h, s, v] = self.color;
+        let [h, s, v] = self.color_hsv();
         b.get_mut(BrushSetting::ColorH).base_value = h;
         b.get_mut(BrushSetting::ColorS).base_value = s;
         b.get_mut(BrushSetting::ColorV).base_value = v;
@@ -470,11 +475,30 @@ impl PigmentApp {
             .unwrap_or_else(|| self.base_brush.get(BrushSetting::Paint).base_value >= 0.5)
     }
 
+    /// 当前色的 HSV —— 笔刷通道与 egui 控件都吃 `[f32; 3]`。
+    ///
+    /// 等价于源码的 `app.brush.get_color_hsv()`：真正的颜色存在
+    /// [`PigmentApp::color_manager`] 里（f64），这里只是投影到 f32 通道
+    /// （libmypaint 的 brush setting 本身就是 C `float`）。
+    pub(crate) fn color_hsv(&self) -> [f32; 3] {
+        color::hsv_of(&self.color_manager.get_color())
+    }
+
     /// 设置当前颜色并推给笔刷 —— 对齐 `BrushColorManager.set_color()`
-    /// （`gui/brushcolor.py:44`：颜色由应用持有，再写给笔刷的 `color_h/s/v`）。
-    pub(crate) fn set_color(&mut self, color: [f32; 3]) {
-        self.color = color;
+    /// （`gui/brushcolor.py:33-37`：颜色由应用持有，再写给笔刷的
+    /// `color_h/s/v`）。
+    pub(crate) fn set_color(&mut self, color: Color) {
+        self.color_manager.set_color(color);
         self.derive_active();
+    }
+
+    /// 用 HSV 三元组设置当前色 —— 笔刷通道、取色器、滑块都从这条进来。
+    ///
+    /// 落成 `HSVColor` 与源码一致：`BrushColorManager.__settings_changed_cb`
+    /// 读到 `color_h/s/v` 变化后就是 `HSVColor(*brush.get_color_hsv())`
+    /// （`gui/brushcolor.py:43`）。
+    pub(crate) fn set_color_hsv(&mut self, hsv: [f32; 3]) {
+        self.set_color(color::hsv_color(hsv));
     }
 
     pub(crate) fn set_status(&mut self, msg: String, now: f64) {
@@ -876,6 +900,8 @@ impl PigmentApp {
             &mut pigment_engine::mode::ModeContext<'_>,
         ) -> R,
     ) -> R {
+        // 取色模式要读"当前画笔颜色"（`colorpicker.py:83`）—— 在借用拆开之前取好
+        let brush_color = self.color_hsv();
         let PigmentApp {
             modes,
             doc,
@@ -883,11 +909,10 @@ impl PigmentApp {
             brush_name,
             stroke_state,
             mode_prefs,
-            color,
             ..
         } = self;
         // 取色出口（B3-4）：取色模式把新颜色（HSV）写进这个槽，本函数返回前
-        // 落到 `app.color` —— 等价于 `BrushColorManager.set_color()`
+        // 落到管理器 —— 等价于 `BrushColorManager.set_color()`
         // （`gui/brushcolor.py:33-37`）。其它模式不碰它。
         let mut picked: Option<[f32; 3]> = None;
         let r = {
@@ -900,16 +925,15 @@ impl PigmentApp {
                 fakerotation: mode_prefs.fakerotation,
                 hide_cursor_while_painting: mode_prefs.hide_cursor_while_painting,
                 status: None,
-                // 取色模式要读"当前画笔颜色"（`colorpicker.py:83`）
-                color: *color,
+                color: brush_color,
                 picked_color: Some(&mut picked),
             };
             f(modes, &mut ctx)
         };
         if let Some(hsv) = picked {
-            // `color` 是 HSV（`app.color` 与笔刷的 color_h/s/v 同一通道），
-            // `set_color` 会顺手 `derive_active()` 推给笔刷
-            self.set_color(hsv);
+            // `picked_color` 是 HSV（笔刷 `color_h/s/v` 同一通道），
+            // `set_color_hsv` 会顺手 `derive_active()` 推给笔刷
+            self.set_color_hsv(hsv);
         }
         r
     }
@@ -969,9 +993,11 @@ impl PigmentApp {
         self.radius_override = None;
         self.eraser = false;
         self.paint_override = None;
-        if self.context_restores_color {
-            self.color = slot.color;
-        }
+        // `document.py:1717-1719`：`misc.context_restores_color` 开着时调
+        // `restore_context_of_selected_brush()`，即从槽位快照把颜色取回来。
+        // 开关的判断在管理器里（它也是偏好的持有者）。
+        self.color_manager
+            .restore_brush_context(color::to_f64_3(slot.color));
         self.derive_active();
         self.set_status(format!("笔刷 {i} ← {}", slot.name), now);
     }
@@ -986,7 +1012,7 @@ impl PigmentApp {
             .unwrap_or_else(|| "当前笔刷".to_string());
         self.brushkeys[i] = Some(BrushKeySlot {
             brush: self.base_brush.clone(),
-            color: self.color,
+            color: color::to_f32_3(self.color_manager.brush_slot_color()),
             name,
         });
         self.set_status(format!("笔刷 {i} ← 已存入当前设置"), now);
@@ -1084,7 +1110,11 @@ impl PigmentApp {
             "Undo" => self.doc.command_stack.undo_len() > 0,
             "Redo" => self.doc.command_stack.redo_len() > 0,
             // ---- 笔刷 ----
-            "Bigger" | "Smaller" | "BlendModeNormal" | "BlendModeEraser" => true,
+            // 尺寸/不透明度四个动作改的是**笔刷设置**（`document.py:1571-1590`），
+            // 颜色六个动作改的是**绘画颜色**（`document.py:1592-1644`）。
+            "Bigger" | "Smaller" | "MoreOpaque" | "LessOpaque" => true,
+            "Brighter" | "Darker" | "IncreaseHue" | "DecreaseHue" | "Purer" | "Grayer" => true,
+            "BlendModeNormal" | "BlendModeEraser" => true,
             // ---- 视图 ----
             "ZoomIn" | "ZoomOut" | "ZoomInCentered" | "ZoomOutCentered" => true,
             "PanLeft" | "PanRight" | "PanUp" | "PanDown" => true,
@@ -1174,6 +1204,10 @@ impl PigmentApp {
             // `:1907-1916`）；egui 是立即模式，读模型即可。
             "SymmetryActive" => Some(self.doc.symmetry_active()),
             "FrameToggle" => Some(self.doc.get_frame_enabled()),
+            // `ContextRestoreColor` 是 GtkToggleAction（`resources.xml:381`），
+            // active 状态 = 偏好 `misc.context_restores_color`（`document.py:367-370`
+            // 启动时用偏好初始化它，`:1721-1724` 反向写回）。
+            "ContextRestoreColor" => Some(self.color_manager.context_restores_color()),
             _ => None,
         }
     }
@@ -1217,12 +1251,50 @@ impl PigmentApp {
                 self.redo(now);
                 ctx.request_repaint();
             }
-            // ---- 笔刷尺寸（`brush_bigger_cb` / `brush_smaller_cb`）----
-            "Bigger" | "Smaller" => {
-                let step = if id == "Bigger" { 0.15 } else { -0.15 };
-                let cur = self.brush.get(BrushSetting::Radius).base_value;
-                self.radius_override = Some((cur + step).clamp(-1.0, 6.0));
+            // ---- 笔刷尺寸 / 不透明度（`brush_bigger_cb` / `brush_smaller_cb` /
+            //      `more_opaque_cb` / `less_opaque_cb`，`gui/document.py:1571-1590`）----
+            //
+            // 源码：`adj = app.brush_adjustment[cname]; adj.set_value(adj.get_value() OP x)`
+            // —— `GtkAdjustment` 用设置元数据的 `[lower, upper]` 夹取
+            // （`gui/application.py:563-570`），所以半径夹在 [-2, 6]、不透明度夹在
+            // [0, 2]。步长/系数与夹取规则都在引擎里（`ColorManager` 的同族
+            // `BrushStep`），这里只负责把结果写回笔刷的两个落点。
+            "Bigger" | "Smaller" | "MoreOpaque" | "LessOpaque" => {
+                let step = BrushStep::from_action_name(id)
+                    .expect("这四个动作都在 BrushStep 里");
+                // 读的是**当前生效**的基值（含已有的覆盖），照 `adj.get_value()`
+                let cur = self.brush.get(
+                    BrushSetting::from_cname(step.cname())
+                        .expect("BrushStep 的 cname 都是笔刷设置"),
+                ).base_value as f64;
+                let next = step.apply(cur) as f32;
+                match step {
+                    // 半径走 `radius_override`：本应用用它表示"当前这支笔被改过尺寸"
+                    // （换笔刷时清空），与源码改 app.brush 的基值、再在换笔刷时被覆盖
+                    // 是同一效果。
+                    BrushStep::Bigger | BrushStep::Smaller => self.radius_override = Some(next),
+                    // 不透明度没有覆盖机制，直接落到 base_brush 的基值上
+                    // （等同 `app.brush.set_base_value("opaque", v)`）。
+                    BrushStep::MoreOpaque | BrushStep::LessOpaque => {
+                        self.base_brush.get_mut(BrushSetting::Opaque).base_value = next;
+                    }
+                }
                 self.derive_active();
+                ctx.request_repaint();
+            }
+            // ---- 颜色调整（六个 GtkAction，`gui/document.py:1592-1644`）----
+            //
+            // 回调读 `app.brush.get_color_hsv()`、改一个分量、写回 `set_color_hsv()`，
+            // 随后 `BrushColorManager.__settings_changed_cb` 把 `HSVColor` 回填管理器
+            // （`gui/brushcolor.py:39-48`）—— 这三步在 `ColorManager::adjust` 里。
+            "Brighter" | "Darker" | "IncreaseHue" | "DecreaseHue" | "Purer" | "Grayer" => {
+                let act = ColorAction::from_action_name(id)
+                    .expect("这六个动作都在 ColorAction 里");
+                if self.color_manager.adjust(act) {
+                    // 颜色变了才重推笔刷（源码的 `if brush_color == self.get_color(): return`）
+                    self.derive_active();
+                }
+                ctx.request_repaint();
             }
             // ---- 笔刷混色模式（`gui/brushmodifier.py`）----
             // 源码里 Normal/Eraser/LockAlpha/Colorize 是一组互斥的 GtkToggleAction，
@@ -1407,9 +1479,12 @@ impl PigmentApp {
             }
             "Quit" => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             // ---- 笔刷快捷键是否连颜色一起还原（`ContextRestoreColor`，按键 `）----
+            // 源码 `context_toggle_color_cb`（`document.py:1721-1724`）只是写偏好
+            // `misc.context_restores_color`；开关由管理器持有（默认 True，
+            // `userconfig.py:93`）。
             "ContextRestoreColor" => {
-                self.context_restores_color = !self.context_restores_color;
-                let state = if self.context_restores_color { "开" } else { "关" };
+                let value = self.color_manager.toggle_context_restores_color();
+                let state = if value { "开" } else { "关" };
                 self.set_status(format!("恢复笔刷槽位时连颜色一起还原：{state}"), now);
             }
             // ---- 笔刷槽位（`gui/document.py:467-492` 动态注册的 Context0N/Context0Ns）----
