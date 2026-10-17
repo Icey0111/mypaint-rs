@@ -182,7 +182,10 @@ impl PigmentApp {
                 }
             }
 
-            let width = (ui.available_width() - 3.0 * 26.0).max(80.0);
+            // 宽度照 glade 的 `width_request=150`：**不要**用
+            // `ui.available_width()` —— 在水平行里它会随面板宽度变化，
+            // 反过来把面板撑宽，形成布局振荡（画布会盖住侧栏左缘）。
+            let width = 150.0;
             egui::ComboBox::from_id_salt("layer_view_combo")
                 .selected_text(
                     current
@@ -393,6 +396,7 @@ impl PigmentApp {
         // 剩余空间更大，min 保证列表可滚。min = 源码
         // `RootStackTreeView.set_size_request(150, 200)` 的高。
         egui::ScrollArea::vertical()
+            .id_salt("layers_tree_scroll")
             .min_scrolled_height(200.0)
             .max_height(260.0)
             .auto_shrink([false, true])

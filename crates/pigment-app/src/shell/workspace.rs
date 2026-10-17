@@ -196,6 +196,7 @@ impl PigmentApp {
     /// 笔刷编辑器是独立窗口 `gui/brusheditor.py`），此处先按侧栏堆叠。
     pub(crate) fn brush_editor_content(&mut self, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical()
+            .id_salt("brush_editor_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                         // ---- 笔刷信息 ----

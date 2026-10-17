@@ -742,6 +742,7 @@ impl PigmentApp {
         let mut reset_one: Option<String> = None;
         let action_w = (ui.available_width() * 0.62).clamp(260.0, 560.0);
         egui::ScrollArea::vertical()
+            .id_salt("accelmap_key_list")
             .auto_shrink([false, false])
             .max_height((ui.available_height() - 40.0).max(80.0))
             .show(ui, |ui| {

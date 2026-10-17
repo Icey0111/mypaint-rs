@@ -1456,6 +1456,7 @@ impl PigmentApp {
             );
         } else {
             egui::ScrollArea::vertical()
+                .id_salt(("prefs_page_scroll", tab))
                 .max_height(height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| self.prefs_page_rows(ui, tab));

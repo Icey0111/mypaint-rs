@@ -663,6 +663,7 @@ impl PigmentApp {
         let mut pressed_index: Option<Option<usize>> = None;
 
         egui::ScrollArea::vertical()
+            .id_salt("palette_grid_scroll")
             // 源码的 ScrolledWindow 只滚不拖（`paletteview.py:451` 的策略是
             // NEVER/AUTOMATIC，Gtk.ScrolledWindow 本身也没有"按住内容拖动"）；
             // egui 的默认在触屏上会拖内容滚动，这里显式关掉。

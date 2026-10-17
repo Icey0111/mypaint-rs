@@ -412,9 +412,10 @@ impl PigmentApp {
                         Some((base + resp.drag_delta().y).max(60.0));
                 }
             }
+            let avail = ui.available_rect_before_wrap();
             let rect = egui::Rect::from_min_size(
-                ui.available_rect_before_wrap().min,
-                egui::vec2(ui.available_width(), h.min(ui.available_height())),
+                avail.min,
+                egui::vec2(avail.width(), h.min(avail.height())),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
                 pick = self.dock_group(ui, group, side, Some((side, gi))) || pick;
@@ -492,6 +493,7 @@ impl PigmentApp {
                 self.preview_panel_content(ui);
             } else {
                 egui::ScrollArea::vertical()
+                    .id_salt(("dock_scroll", panel.title()))
                     .auto_shrink([false, false])
                     .show(ui, |ui| match panel {
                         PanelId::BrushGroups => {
