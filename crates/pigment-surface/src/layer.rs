@@ -1,21 +1,35 @@
 //! 图层与图层栈 —— 移植 `_mypaint_ref/lib/layer/`（core/data/group/tree）中
-//! 与「平面图层栈 + 显示合成」有关的部分。
+//! 与「可嵌套图层树 + 显示合成」有关的部分。
 //!
 //! | 参考源 | 本文件 |
 //! |---|---|
 //! | `core.py:84-92` `LayerBase` 默认值 | [`Layer::new`] |
 //! | `group.py:42-59` `LayerStack`（**index 0 = 最顶层**） | [`LayerStack`] |
-//! | `group.py:370-376` `effective_opacity`（不可见=0） | [`Layer::effective_opacity`] |
+//! | `modes.py:16` `PASS_THROUGH_MODE = -1` + `:24` `STACK_MODES` | [`LayerMode::PassThrough`] |
+//! | `core.py:473-494` `mode` 设置器（直通强制 opacity=1、非法回落默认） | [`Layer::set_mode`] |
+//! | `core.py:281-303` `opacity` 设置器（直通组不改） | [`Layer::set_opacity`] |
+//! | `group.py:380-434` `get_render_ops`（PUSH/POP、直通不隔离） | `composite_layer` |
+//! | `tree.py:722-738` `_validate_layer_bbox_arg` | [`Layer::data_bbox`] |
 //! | `tree.py:796-811` `RootLayerStack.get_render_ops`（背景 BLIT 最先，子层自底向上） | [`LayerStack::composite_tile`] |
 //! | `tree.py:55-58` 背景默认 (255,255,255) + `_background_visible` | [`LayerStack::background_*`] |
-//! | `tiledsurface.py:440-457` `blit_tile_into`（透明源的跳过/清除规则） | [`LayerStack::composite_tile`] |
+//! | `tree.py:1514-1580` `walk()`（组在前、子层在后、根不出现） | [`LayerStack::walk`] |
+//! | `tree.py:1600-1719` `deepget/deepinsert/deeppop` | [`LayerStack::layer_at`] 等 |
+//! | `tree.py:1754-1769` `deepindex`（按对象找路径） | [`LayerStack::path_of_id`] |
+//! | `core.py:359-391` `branch_visible` / `:412` `branch_locked` | [`LayerStack::branch_visible`] |
+//! | `data.py:1364-1371` `get_paintable` | [`LayerStack::paintable_surface_mut`] |
+//! | `tiledsurface.py:440-457` `blit_tile_into`（透明源的跳过/清除规则） | `composite_layer` |
 //!
-//! 范围说明（B2）：
-//! - 先做**平面栈**；嵌套组（LayerStack 递归 + PUSH/POP 隔离缓冲 +
-//!   PASS_THROUGH）记账为后续小项，届时只改本文件的合成循环。
-//! - 背景层先支持**纯色**（`BackgroundLayer` 的最常用档）；背景图案档
-//!   （repeating tile PNG）记账。
-//! - `VectorLayer`/`FallbackBitmapLayer` 不移植（MyPaint 2.0 已弃用建立）。
+//! 组语义（照 `group.py`）：
+//! - 组是**层**（`LayerStack` 是 `LayerBase` 子类）：有自己的 mode/opacity/visible/name；
+//! - 渲染时**隔离组** PUSH 一块全透明缓冲给子层、再 POP 用组自己的 mode/opacity 合到
+//!   父背板；**直通组**（`PASS_THROUGH_MODE`）不隔离，子层直接作用于父背板，
+//!   组自身的 mode/opacity 不参与；
+//! - 直通组的 opacity 恒 1.0（设置模式时强制，之后不可改）；
+//! - 组不能画（`get_paintable` = False），笔刷跳过非可画层。
+//!
+//! 记账：`VectorLayer`/`FallbackBitmapLayer` 不移植（MyPaint 2.0 已弃用建立）；
+//! 背景层支持纯色档（图案档记账）；`RestackLayer` 的「拖进数据层 → 新建父组」
+//! 分支未移植（面板只允许拖进组或插到行间）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -42,12 +56,88 @@ pub fn allocate_layer_id() -> u64 {
     next_layer_id()
 }
 
-/// 单个图层（`core.py` `LayerBase` 默认值 + `data.PaintingLayer` 的表面）。
+// ---- 合成模式（`lib/modes.py`）----
+
+/// 图层的合成模式取值。
+///
+/// `modes.py:16` 用哨兵整数 `PASS_THROUGH_MODE = -1` 表示组的「直通」。这里用
+/// 枚举表达同一件事：塞进 [`CombineMode`] 会污染那份逐位移植的 22 值枚举
+/// （`from_index(u8)`、`ora_name`、`tile_combine` 都只认 0..21）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum LayerMode {
+    /// 22 种标准合成/混合模式（`modes.py:20` `STANDARD_MODES`）。
+    Standard(CombineMode),
+    /// 组专用：子层直接作用于组的背板（`modes.py:44`）。
+    PassThrough,
+}
+
+impl LayerMode {
+    /// `core.py:89` 默认模式 = `lib.modes.default_mode()`。
+    pub const DEFAULT: LayerMode = LayerMode::Standard(DEFAULT_MODE);
+
+    /// 是否是组的直通模式。
+    #[inline]
+    pub fn is_pass_through(self) -> bool {
+        matches!(self, LayerMode::PassThrough)
+    }
+
+    /// 标准模式部分；直通模式返回 `None`。
+    #[inline]
+    pub fn combine(self) -> Option<CombineMode> {
+        match self {
+            LayerMode::Standard(m) => Some(m),
+            LayerMode::PassThrough => None,
+        }
+    }
+
+    /// UI 文案（`modes.py:MODE_STRINGS` 的 label 列）。
+    pub fn label(self) -> &'static str {
+        match self {
+            LayerMode::Standard(m) => m.label(),
+            LayerMode::PassThrough => "Pass-through",
+        }
+    }
+
+    /// `.ora` 的 `composite-op` 名。直通模式在 OpenRaster 里没有对应条目
+    /// （保存端改写成 `isolation="auto"` 并丢掉 opacity/composite-op，
+    /// 见 `group.py:519-524`）。
+    pub fn ora_name(self) -> Option<&'static str> {
+        self.combine().map(|m| m.ora_name())
+    }
+
+    /// 该模式对本类图层是否合法（`core.py:70` / `group.py:74` 的
+    /// `PERMITTED_MODES`）。
+    #[inline]
+    pub fn permitted(self, is_group: bool) -> bool {
+        match self {
+            LayerMode::Standard(_) => true,
+            LayerMode::PassThrough => is_group,
+        }
+    }
+}
+
+// ---- 图层内容 ----
+
+/// 图层内容：绘画层有自己的表面，组有自己的子栈。
+///
+/// 对应源码的两条类链：`data.SurfaceBackedLayer`（`data.py:60`）与
+/// `group.LayerStack`（`group.py:42`）——后者是 `LayerBase` 的子类，即
+/// **组也是层**，所以这里用「层 + 内容枚举」表达，而不是另立一种节点。
+#[derive(Clone)]
+pub enum LayerContent {
+    /// 绘画层（`data.PaintingLayer`）。
+    Painting(PigmentSurface),
+    /// 组（`group.LayerStack`）：子栈的 `layers[0]` 同样是最顶层。
+    Group(LayerStack),
+}
+
+/// 单个图层（`core.py` `LayerBase` 默认值 + 内容）。
 #[derive(Clone)]
 pub struct Layer {
     /// 稳定 id：命令按它寻址（等价 MyPaint 的 layer 对象引用）。
     pub id: u64,
-    pub surface: PigmentSurface,
+    /// 内容：绘画层的表面，或组的子栈。
+    pub content: LayerContent,
     /// `core.py:85` `self._name`（默认 `None` → 显示时用 UI 兜底名）。
     pub name: Option<String>,
     /// `core.py:85` 默认 1.0。
@@ -56,8 +146,9 @@ pub struct Layer {
     pub visible: bool,
     /// `core.py:87` 默认 false。
     pub locked: bool,
-    /// `core.py:88` 默认 `lib.modes.default_mode()` = SpectralWGM。
-    pub mode: CombineMode,
+    /// `core.py:88` 默认 `lib.modes.default_mode()` = SpectralWGM；
+    /// 组还可以是 [`LayerMode::PassThrough`]。
+    pub mode: LayerMode,
 }
 
 impl Default for Layer {
@@ -67,15 +158,85 @@ impl Default for Layer {
 }
 
 impl Layer {
+    /// 新绘画层（`data.PaintingLayer` 默认值）。
     pub fn new() -> Self {
         Self {
             id: next_layer_id(),
-            surface: PigmentSurface::new(),
+            content: LayerContent::Painting(PigmentSurface::new()),
             name: None,
             opacity: 1.0,
             visible: true,
             locked: false,
-            mode: DEFAULT_MODE,
+            mode: LayerMode::DEFAULT,
+        }
+    }
+
+    /// 新组（`group.LayerStack` 默认值：空子层、默认模式 = 隔离的 SpectralWGM）。
+    pub fn new_group() -> Self {
+        Self {
+            id: next_layer_id(),
+            content: LayerContent::Group(LayerStack::empty()),
+            name: None,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
+            mode: LayerMode::DEFAULT,
+        }
+    }
+
+    /// 用现成表面造一个绘画层（测试/载入路径用）。
+    pub fn with_surface(surface: PigmentSurface) -> Self {
+        Self {
+            content: LayerContent::Painting(surface),
+            ..Self::new()
+        }
+    }
+
+    /// 是否是组（`group.LayerStack` 的实例判定）。
+    #[inline]
+    pub fn is_group(&self) -> bool {
+        matches!(self.content, LayerContent::Group(_))
+    }
+
+    /// 组的直接子层数（绘画层恒 0）。
+    #[inline]
+    pub fn child_count(&self) -> usize {
+        self.stack().map(|s| s.len()).unwrap_or(0)
+    }
+
+    /// 绘画层的表面；组返回 `None`。
+    #[inline]
+    pub fn surface(&self) -> Option<&PigmentSurface> {
+        match &self.content {
+            LayerContent::Painting(s) => Some(s),
+            LayerContent::Group(_) => None,
+        }
+    }
+
+    /// 绘画层的可变表面；组返回 `None`。
+    #[inline]
+    pub fn surface_mut(&mut self) -> Option<&mut PigmentSurface> {
+        match &mut self.content {
+            LayerContent::Painting(s) => Some(s),
+            LayerContent::Group(_) => None,
+        }
+    }
+
+    /// 组的子栈；绘画层返回 `None`。
+    #[inline]
+    pub fn stack(&self) -> Option<&LayerStack> {
+        match &self.content {
+            LayerContent::Group(st) => Some(st),
+            LayerContent::Painting(_) => None,
+        }
+    }
+
+    /// 组的可变子栈；绘画层返回 `None`。
+    #[inline]
+    pub fn stack_mut(&mut self) -> Option<&mut LayerStack> {
+        match &mut self.content {
+            LayerContent::Group(st) => Some(st),
+            LayerContent::Painting(_) => None,
         }
     }
 
@@ -95,31 +256,97 @@ impl Layer {
             .unwrap_or_else(|| format!("Layer {}", index + 1))
     }
 
-    /// 图层数据外接框（`lib/layer/data.py:314 get_bbox`）：
-    /// 已分配 tile 的最小外接矩形，**tile 对齐**；空层返回全 0。
-    pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
-        let mut coords = self.surface.tiles().map(|(c, _)| c);
-        let Some(first) = coords.next() else {
-            return (0, 0, 0, 0);
+    /// 本层自身是否可被笔刷绘制（`data.py:1364 get_paintable` 中与祖先无关的
+    /// 那半；`branch_visible`/`branch_locked` 由 [`LayerStack::paintable_surface_mut`]
+    /// 补齐）。
+    pub fn paintable_self(&self) -> bool {
+        !self.is_group() && self.visible && !self.locked
+    }
+
+    /// `core.py:473-494` 的 `mode` 设置器语义：
+    /// - 对普通层非法的（直通）→ 回落默认模式；
+    /// - 设成直通 → **opacity 强制 1.0**。
+    ///
+    /// 返回 `(mode_changed, opacity_changed)`；调用方据此决定要不要重算/记撤销。
+    pub fn set_mode(&mut self, mode: LayerMode) -> (bool, bool) {
+        let mode = if mode.permitted(self.is_group()) {
+            mode
+        } else {
+            LayerMode::DEFAULT
         };
-        let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
-        for (tx, ty) in coords {
-            x0 = x0.min(tx);
-            y0 = y0.min(ty);
-            x1 = x1.max(tx);
-            y1 = y1.max(ty);
+        if mode == self.mode {
+            return (false, false);
         }
-        let ts = TILE_SIZE as i32;
-        (x0 * ts, y0 * ts, (x1 - x0 + 1) * ts, (y1 - y0 + 1) * ts)
+        let mut opacity_changed = false;
+        if mode.is_pass_through() && self.opacity != 1.0 {
+            self.opacity = 1.0;
+            opacity_changed = true;
+        }
+        self.mode = mode;
+        (true, opacity_changed)
+    }
+
+    /// `core.py:281-303` 的 `opacity` 设置器语义：直通组的 opacity 不可改。
+    ///
+    /// 返回是否真的改了（值不变也算没改）。
+    pub fn set_opacity(&mut self, opacity: f32) -> bool {
+        let opacity = opacity.clamp(0.0, 1.0);
+        if opacity == self.opacity || self.mode.is_pass_through() {
+            return false;
+        }
+        self.opacity = opacity;
+        true
+    }
+
+    /// 图层数据外接框（`lib/layer/data.py:314 get_bbox`）：
+    /// 已分配 tile 的最小外接矩形，**tile 对齐**；空层/空组返回全 0。
+    pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
+        match &self.content {
+            LayerContent::Painting(surface) => surface_bbox(surface),
+            LayerContent::Group(stack) => stack.data_bbox(),
+        }
+    }
+
+    /// 本层（含子层）占用的 tile 坐标（`get_tile_coords`；合并/归一化用）。
+    pub fn tile_coords(&self) -> Vec<(i32, i32)> {
+        match &self.content {
+            LayerContent::Painting(surface) => surface.tiles().map(|(c, _)| c).collect(),
+            LayerContent::Group(stack) => {
+                let mut out: Vec<(i32, i32)> = Vec::new();
+                for (_, layer) in stack.walk() {
+                    for c in layer.tile_coords() {
+                        if !out.contains(&c) {
+                            out.push(c);
+                        }
+                    }
+                }
+                out
+            }
+        }
+    }
+
+    /// 把本层**自己的 op**（含组的隔离/直通与子层）合成进 `dst` 的 `(tx, ty)`
+    /// tile（先清零）。返回是否有内容。
+    ///
+    /// 等价 `render_layer_preview` 的逐 tile 版：`COMPOSITE(surface, mode,
+    /// opacity)` 落透明底；组走 PUSH/POP（`group.py:424-432`）。合并下行
+    /// （`tree.py:1920 layer_new_normalized`）与缩略图共用它。
+    pub fn compose_tile_into(&self, tx: i32, ty: i32, dst: &mut [u16]) -> bool {
+        debug_assert_eq!(dst.len(), TILE_CHANNELS);
+        dst.fill(0);
+        let mut pool: Vec<Vec<u16>> = Vec::new();
+        let mut has_alpha = true;
+        composite_layer(self, tx, ty, dst, &mut has_alpha, false, 0, &mut pool)
     }
 
     /// **图层**缩略图（`lib/layer/core.py:922 render_thumbnail` →
     /// `tree.py:564 render_layer_preview(layer, bbox, alpha=True)`）。
     ///
-    /// 渲染的是本层**自己的 op**（`data.py:376-383`：
-    /// `COMPOSITE(surface, mode, opacity)` 落在全透明底上）——所以混合模式与
-    /// 不透明度都会体现在缩略图里；solo 只把「不可见」强制成可见
-    /// （`data.py:353-358`），**不**重置 mode/opacity。
+    /// 渲染的是本层**自己的 op**：绘画层是 `COMPOSITE(surface, mode, opacity)`
+    /// 落在全透明底上（`data.py:376-383`），组是「子层 PUSH/POP 后再用组自己的
+    /// mode/opacity」（`group.py:424-432`）——所以模式与不透明度都会体现在缩略图里。
+    /// solo 只把「不可见」强制成可见（`data.py:353-358` / `group.py:412-419`），
+    /// **不**重置 mode/opacity。
     ///
     /// `rect` 传 level 0 的模型坐标；减半规则见 [`crate::thumb::render_halved`]。
     pub fn render_thumbnail_rgba8(
@@ -127,27 +354,148 @@ impl Layer {
         rect: (i32, i32, i32, i32),
         level: u32,
     ) -> (Vec<u8>, u32, u32) {
-        let mode = self.mode;
-        let opacity = self.opacity;
-        let surface = &self.surface;
+        let mut pool: Vec<Vec<u16>> = Vec::new();
         let mut scratch = vec![0u16; TILE_CHANNELS];
-        let src = tile_source(move |(tx, ty), buf| {
-            let Some(tile) = surface.tile(tx, ty) else {
-                return false;
-            };
+        let src = tile_source(|(tx, ty), buf| {
+            // 本层自身的 visible 按 solo 规则忽略（`data.py:353-358`）
             scratch.fill(0);
-            tile_combine(
-                mode,
-                tile.as_flattened().as_flattened(),
-                &mut scratch,
-                true,
-                opacity,
-            );
+            let has_alpha = true;
+            let has_alpha = &mut { has_alpha };
+            let content =
+                composite_layer(self, tx, ty, &mut scratch, has_alpha, false, 0, &mut pool);
             buf.copy_from_slice(&scratch);
-            true
+            content
         });
         crate::thumb::render_halved(rect, level, crate::thumb::encode_alpha, src)
     }
+}
+
+/// 表面数据的 tile 对齐外接框（`data.py:314 get_bbox` 的图层面）。
+fn surface_bbox(surface: &PigmentSurface) -> (i32, i32, i32, i32) {
+    let mut coords = surface.tiles().map(|(c, _)| c);
+    let Some(first) = coords.next() else {
+        return (0, 0, 0, 0);
+    };
+    let (mut x0, mut y0, mut x1, mut y1) = (first.0, first.1, first.0, first.1);
+    for (tx, ty) in coords {
+        x0 = x0.min(tx);
+        y0 = y0.min(ty);
+        x1 = x1.max(tx);
+        y1 = y1.max(ty);
+    }
+    let ts = TILE_SIZE as i32;
+    (x0 * ts, y0 * ts, (x1 - x0 + 1) * ts, (y1 - y0 + 1) * ts)
+}
+
+/// 把**一个**图层合进 `dst`（`_process_ops_list` 的 COMPOSITE/PUSH/POP 语义）。
+///
+/// - `respect_visible = false` 时忽略本层自己的 `visible`（solo 预览用，
+///   `data.py:353-358`）；子层始终按自身可见性；
+/// - 绘画层：`tile_combine(mode, tile, dst, has_alpha, opacity)`，源 tile 缺席时
+///   仍按**透明源**跑一次（DestIn/DestAtop 零 alpha 也生效，`tiledsurface.py:440`）；
+/// - 隔离组：PUSH 全透明缓冲 → 子层 → POP（组自己的 mode/opacity）；
+/// - 直通组：子层直接写 `dst`（组自身的 mode/opacity 不参与，`group.py:424`）。
+///
+/// 返回「本层在该 tile 是否可能有可见内容」（GPU 上传/剔除判据用）。
+fn composite_layer(
+    layer: &Layer,
+    tx: i32,
+    ty: i32,
+    dst: &mut [u16],
+    has_alpha: &mut bool,
+    respect_visible: bool,
+    depth: usize,
+    pool: &mut Vec<Vec<u16>>,
+) -> bool {
+    if respect_visible && !layer.visible {
+        return false;
+    }
+    match &layer.content {
+        LayerContent::Painting(surface) => {
+            let Some(mode) = layer.mode.combine() else {
+                return false; // 直通只对组合法；普通层不会走到这里
+            };
+            match surface.tile(tx, ty) {
+                Some(tile) => {
+                    tile_combine(
+                        mode,
+                        tile.as_flattened().as_flattened(),
+                        dst,
+                        *has_alpha,
+                        layer.opacity,
+                    );
+                    *has_alpha = true;
+                    true
+                }
+                None => {
+                    // 透明源规则（`tiledsurface.py:443-452`）：先跳过零处理，
+                    // 其余（DestIn/DestAtop）用全零源照常合成。
+                    if !mode.zero_alpha_has_effect() {
+                        if *has_alpha && mode.zero_alpha_clears_backdrop() {
+                            dst.fill(0);
+                        }
+                        return false;
+                    }
+                    let zero = empty_tile();
+                    tile_combine(
+                        mode,
+                        zero.as_flattened().as_flattened(),
+                        dst,
+                        *has_alpha,
+                        layer.opacity,
+                    );
+                    *has_alpha = true;
+                    false
+                }
+            }
+        }
+        LayerContent::Group(stack) => {
+            if layer.mode.is_pass_through() {
+                // 不隔离：子层直接作用于 dst
+                return composite_layers(&stack.layers, tx, ty, dst, has_alpha, depth, pool);
+            }
+            let mode = layer.mode.combine().expect("隔离组必有标准模式");
+            // PUSH：子层画到全透明缓冲（dst_has_alpha = true）
+            while pool.len() <= depth {
+                pool.push(vec![0u16; TILE_CHANNELS]);
+            }
+            // 借出本深度的缓冲（递归期间该槽位留空，更深的组用自己的槽）
+            let mut sub = std::mem::take(&mut pool[depth]);
+            sub.fill(0);
+            let mut sub_has_alpha = true;
+            let sub_content = composite_layers(
+                &stack.layers,
+                tx,
+                ty,
+                &mut sub,
+                &mut sub_has_alpha,
+                depth + 1,
+                pool,
+            );
+            // POP：用组自己的 mode/opacity 合到父背板
+            tile_combine(mode, &sub, dst, *has_alpha, layer.opacity);
+            *has_alpha = true;
+            pool[depth] = sub;
+            sub_content
+        }
+    }
+}
+
+/// 把一组**同层**图层自底向上合进 `dst`（`get_render_ops` 的自底向上次序）。
+fn composite_layers(
+    layers: &[Layer],
+    tx: i32,
+    ty: i32,
+    dst: &mut [u16],
+    has_alpha: &mut bool,
+    depth: usize,
+    pool: &mut Vec<Vec<u16>>,
+) -> bool {
+    let mut content = false;
+    for layer in layers.iter().rev() {
+        content |= composite_layer(layer, tx, ty, dst, has_alpha, true, depth, pool);
+    }
+    content
 }
 
 /// 惰性「逐 tile 取源像素」访问器：按需调 `compose` 生成整块 tile 并缓存 4 槽
@@ -183,13 +531,15 @@ where
     }
 }
 
-/// 根图层栈（平面版）：`layers[0]` 是**最顶层**（`group.py:44-48`）。
+/// 图层树的一层：`layers[0]` 是**最顶层**（`group.py:44-48`）。
 ///
-/// 背景层按 `tree.py:54-58` 独立保管（不进栈、不受图层操作影响）。
+/// 根栈（`RootLayerStack`）的背景按 `tree.py:54-58` 独立保管（不进树、不受
+/// 图层操作影响）；组自己的子栈没有背景（`tree.py` 里只有根有背景层）。
 pub struct LayerStack {
     layers: Vec<Layer>,
-    /// 当前图层索引（与 `_layers` 同向：0 = 最顶层）。
-    current: usize,
+    /// 当前图层**路径**（`tree.py:954` `_current_path`；`(0,)` = 顶层的第一层）。
+    /// 空路径 = 没有当前层（空栈）。
+    current: Vec<usize>,
     /// 背景色（`tree.py:55` 默认 (255, 255, 255)）。
     background_color: [u8; 3],
     /// `tree.py:58` `_background_visible`。
@@ -210,7 +560,7 @@ impl Clone for LayerStack {
     fn clone(&self) -> Self {
         Self {
             layers: self.layers.clone(),
-            current: self.current,
+            current: self.current.clone(),
             background_color: self.background_color,
             background_visible: self.background_visible,
             rev: self.rev,
@@ -219,10 +569,16 @@ impl Clone for LayerStack {
 }
 
 impl LayerStack {
+    /// 根栈：默认带一层空绘画层（`tree.py:230-237` 的 `ensure_initial_layer`）。
     pub fn new() -> Self {
+        Self::from_children(vec![Layer::new()])
+    }
+
+    /// **组**的空栈（`group.py:78`：初始无子层；组可以为空）。
+    pub fn empty() -> Self {
         Self {
-            layers: vec![Layer::new()],
-            current: 0,
+            layers: Vec::new(),
+            current: Vec::new(),
             background_color: [255, 255, 255],
             background_visible: true,
             rev: 0,
@@ -242,16 +598,26 @@ impl LayerStack {
         if layers.is_empty() {
             layers.push(Layer::new());
         }
+        Self::from_children(layers)
+    }
+
+    /// 直接接管一组子层（不补层；载入组/根栈共用）。
+    pub fn from_children(layers: Vec<Layer>) -> Self {
+        let current = if layers.is_empty() {
+            Vec::new()
+        } else {
+            vec![0]
+        };
         Self {
             layers,
-            current: 0,
+            current,
             background_color: [255, 255, 255],
             background_visible: true,
             rev: 0,
         }
     }
 
-    // ---- 列表访问（`group.py` 的 list 语义）----
+    // ---- 列表访问（`group.py` 的 list 语义；均为**本层**子层）----
 
     /// 子层数。
     pub fn len(&self) -> usize {
@@ -289,74 +655,265 @@ impl LayerStack {
         self.layers.iter().enumerate()
     }
 
-    // ---- 当前层 ----
+    // ---- 树 / 路径寻址（`tree.py` 的 walk/deepget/deepindex/deepinsert/deeppop）----
 
-    pub fn current_index(&self) -> usize {
-        self.current
+    /// 遍历整棵树，产出 `(path, layer)`（`tree.py:1514 walk`）：
+    /// **组在子层之前**、子层紧跟自己的组、根不出现。
+    ///
+    /// 源码是 `queue[:0] = children`（**插到队首**），所以次序不是纯 BFS，而是
+    /// 「组的子层立刻排在组后面、其余兄弟依次」——`tree.py` 的 doctest 给出
+    /// `[(0,), (1,), (1,0), (1,1), (2,)]`。UI 列表与 `.ora` 保存都按这个序。
+    pub fn walk(&self) -> Vec<(Vec<usize>, &Layer)> {
+        let mut out: Vec<(Vec<usize>, &Layer)> = Vec::new();
+        let mut queue: Vec<(Vec<usize>, &Layer)> = self
+            .layers
+            .iter()
+            .enumerate()
+            .map(|(i, l)| (vec![i], l))
+            .collect();
+        while !queue.is_empty() {
+            let (path, layer) = queue.remove(0);
+            out.push((path.clone(), layer));
+            if let Some(sub) = layer.stack() {
+                let children: Vec<(Vec<usize>, &Layer)> = sub
+                    .layers
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| {
+                        let mut p = path.clone();
+                        p.push(i);
+                        (p, l)
+                    })
+                    .collect();
+                queue.splice(0..0, children);
+            }
+        }
+        out
     }
 
+    /// 按路径取层（`tree.py:1600 deepget`；空路径 = 栈自己，这里返回 `None`）。
+    pub fn layer_at(&self, path: &[usize]) -> Option<&Layer> {
+        let (last, rest) = path.split_last()?;
+        let mut stack = self;
+        for i in rest {
+            stack = stack.layers.get(*i)?.stack()?;
+        }
+        stack.layers.get(*last)
+    }
+
+    /// 按路径取可变层。
+    pub fn layer_at_mut(&mut self, path: &[usize]) -> Option<&mut Layer> {
+        let (last, rest) = path.split_last()?;
+        let mut stack = self;
+        for i in rest {
+            let layer = stack.layers.get_mut(*i)?;
+            stack = match &mut layer.content {
+                LayerContent::Group(s) => s,
+                LayerContent::Painting(_) => return None,
+            };
+        }
+        stack.layers.get_mut(*last)
+    }
+
+    /// 按 id 求路径（`tree.py:1754 deepindex`）。
+    pub fn path_of_id(&self, id: u64) -> Option<Vec<usize>> {
+        if self.current.len() > 0 {
+            if let Some(l) = self.layer_at(&self.current) {
+                if l.id == id {
+                    return Some(self.current.clone());
+                }
+            }
+        }
+        self.walk()
+            .into_iter()
+            .find(|(_, l)| l.id == id)
+            .map(|(p, _)| p)
+    }
+
+    /// 路径上的所有祖先层的可见性都成立（`core.py:359 branch_visible`）。
+    pub fn branch_visible(&self, path: &[usize]) -> bool {
+        let mut stack = self;
+        for i in path {
+            let Some(layer) = stack.layers.get(*i) else {
+                return true;
+            };
+            if !layer.visible {
+                return false;
+            }
+            stack = match layer.stack() {
+                Some(s) => s,
+                None => return true,
+            };
+        }
+        true
+    }
+
+    /// 路径上有任一祖先被锁（`core.py:412 branch_locked`）。
+    pub fn branch_locked(&self, path: &[usize]) -> bool {
+        let mut stack = self;
+        for i in path {
+            let Some(layer) = stack.layers.get(*i) else {
+                return false;
+            };
+            if layer.locked {
+                return true;
+            }
+            stack = match layer.stack() {
+                Some(s) => s,
+                None => return false,
+            };
+        }
+        false
+    }
+
+    /// 「此刻能不能往这层上画」：自身可画 + 分支可见 + 分支未锁
+    /// （`data.py:1364 get_paintable` + `tree.py` 的当前层语义）。
+    pub fn paintable_at(&self, path: &[usize]) -> Option<&Layer> {
+        let layer = self.layer_at(path)?;
+        // 祖先（不含自身）的 visible/locked
+        let (_, parent_path) = path.split_last()?;
+        if !layer.paintable_self() {
+            return None;
+        }
+        if !self.branch_visible(parent_path) || self.branch_locked(parent_path) {
+            return None;
+        }
+        Some(layer)
+    }
+
+    /// 当前层上可画的表面（笔刷热路径；组/锁/隐藏分支返回 `None`）。
+    pub fn paintable_surface_mut(&mut self) -> Option<&mut PigmentSurface> {
+        let path = self.current.clone();
+        {
+            let parent_len = path.len().saturating_sub(1);
+            let layer = self.layer_at(&path)?;
+            if !layer.paintable_self() || layer.mode.combine().is_none() {
+                return None;
+            }
+            if !self.branch_visible(&path[..parent_len]) || self.branch_locked(&path[..parent_len])
+            {
+                return None;
+            }
+        }
+        self.layer_at_mut(&path)?.surface_mut()
+    }
+
+    // ---- 当前层 ----
+
+    /// 当前层路径（`tree.py:954 get_current_path`；空 = 没有当前层）。
+    pub fn current_path(&self) -> &[usize] {
+        &self.current
+    }
+
+    /// 当前层的**顶层**索引（平栈时就是索引；嵌套时是其祖先链首元素）。
+    pub fn current_index(&self) -> usize {
+        *self.current.first().unwrap_or(&0)
+    }
+
+    /// 顶层索引的便捷入口（平栈语义）。
     pub fn set_current_index(&mut self, index: usize) {
-        self.current = index.min(self.layers.len().saturating_sub(1));
+        let index = index.min(self.layers.len().saturating_sub(1));
+        self.current = if self.layers.is_empty() {
+            Vec::new()
+        } else {
+            vec![index]
+        };
+        self.touch();
+    }
+
+    /// 切到指定路径；路径不存在时逐级回退（`tree.py:968 set_current_path` 的
+    /// "will be trimmed until it fits"）。
+    pub fn set_current_path(&mut self, path: &[usize]) {
+        let mut p = path.to_vec();
+        while !p.is_empty() && self.layer_at(&p).is_none() {
+            p.pop();
+        }
+        if p.is_empty() && !self.layers.is_empty() {
+            p = vec![0];
+        }
+        if p != self.current {
+            self.current = p;
+            self.touch();
+        }
     }
 
     /// 把当前层切到 id 对应的那层；返回是否找到（找不到不动）。
     pub fn set_current_by_id(&mut self, id: u64) -> bool {
-        match self.index_of_id(id) {
-            Some(i) => {
-                self.current = i;
+        match self.path_of_id(id) {
+            Some(p) => {
+                self.current = p;
+                self.touch();
                 true
             }
             None => false,
         }
     }
 
+    /// 当前层（空栈时 panic：根栈恒有 ≥1 层，见 `RemoveLayer` 的补层逻辑）。
     pub fn current(&self) -> &Layer {
-        &self.layers[self.current]
+        self.layer_at(&self.current)
+            .expect("当前层路径失效（应当由结构操作维护）")
     }
 
     pub fn current_mut(&mut self) -> &mut Layer {
-        let idx = self.current;
-        &mut self.layers[idx]
+        let path = self.current.clone();
+        self.layer_at_mut(&path)
+            .expect("当前层路径失效（应当由结构操作维护）")
     }
 
     pub fn current_id(&self) -> u64 {
-        self.layers[self.current].id
+        self.current().id
     }
 
-    /// 当前层的 id（栈里找不到时 `None`）。
+    /// 顶层 id 查找（平栈便捷入口；嵌套请用 [`LayerStack::path_of_id`]）。
     pub fn index_of_id(&self, id: u64) -> Option<usize> {
         self.layers.iter().position(|l| l.id == id)
     }
 
-    /// 按 id 取层（等价 MyPaint 的按对象引用寻址）。
+    /// 按 id 取层（深搜整棵树，等价 MyPaint 的按对象引用寻址）。
     pub fn layer_by_id(&self, id: u64) -> Option<&Layer> {
-        self.index_of_id(id).map(|i| &self.layers[i])
+        self.walk().into_iter().find(|(_, l)| l.id == id).map(|(_, l)| l)
     }
 
     pub fn layer_by_id_mut(&mut self, id: u64) -> Option<&mut Layer> {
-        let idx = self.index_of_id(id)?;
-        Some(&mut self.layers[idx])
+        let path = self.path_of_id(id)?;
+        self.layer_at_mut(&path)
     }
 
     /// 按 id 取该层表面（供命令系统就地改像素）。
     pub fn surface_by_id(&mut self, id: u64) -> Option<&mut PigmentSurface> {
-        self.layer_by_id_mut(id).map(|l| &mut l.surface)
+        self.layer_by_id_mut(id).and_then(|l| l.surface_mut())
     }
 
-    /// 某坐标是否有**笔迹**（任一层有 tile；不含背景）。
+    /// 交换同一父层下的两个兄弟（`BubbleLayerUp/Down` 用；空 `parent` = 根层）。
+    ///
+    /// 换位是自逆操作，撤销就是再换一次。
+    pub fn swap_siblings(&mut self, parent: &[usize], a: usize, b: usize) -> bool {
+        let Some(layers) = self.layers_in_mut(parent) else {
+            return false;
+        };
+        if a >= layers.len() || b >= layers.len() || a == b {
+            return false;
+        }
+        layers.swap(a, b);
+        self.touch();
+        true
+    }
+
+    /// 某坐标是否有**笔迹**（整棵树任一绘画层有 tile；不含背景）。
     ///
     /// GPU 同步的判据：背景 tile 不上传——面板底色就是文档背景色
     /// （`workspace` 的填充取 [`LayerStack::background_color`]），二者无缝衔接。
     pub fn has_paint_at(&self, tx: i32, ty: i32) -> bool {
-        self.layers
-            .iter()
-            .any(|l| l.surface.tile_entry(tx, ty).is_some())
+        self.walk().into_iter().any(|(_, l)| {
+            l.surface()
+                .is_some_and(|s| s.tile_entry(tx, ty).is_some())
+        })
     }
 
-    /// 某坐标是否需要 GPU 上的合成结果（背景可见，或任一层有 tile）。
+    /// 某坐标是否需要 GPU 上的合成结果（背景可见，或任一绘画层有 tile）。
     pub fn has_content_at(&self, tx: i32, ty: i32) -> bool {
-        self.background_visible
-            || self.layers.iter().any(|l| l.surface.tile_entry(tx, ty).is_some())
+        self.background_visible || self.has_paint_at(tx, ty)
     }
 
     /// 合成版本号：任何影响"所有 tile 合成结果"的变化（结构/背景/属性）
@@ -364,48 +921,136 @@ impl LayerStack {
     /// 两者合起来当水位线。
     pub fn composite_revision(&self) -> u64 {
         let mut rev = self.rev;
-        for l in &self.layers {
-            rev = rev.wrapping_add(l.surface.clock().wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        for (_, layer) in self.walk() {
+            if let Some(surface) = layer.surface() {
+                rev = rev.wrapping_add(surface.clock().wrapping_mul(0x9E37_79B9_7F4A_7C15));
+            }
         }
         rev
     }
 
     // ---- 结构操作（`group.py` insert/pop；撤销命令在 pigment-engine 侧做）----
 
+    /// 在 `path` 处插入层并返回实际路径（`tree.py:1638 deepinsert`）。
+    ///
+    /// 路径的**最后一段**是插入索引（钳位，允许 9999/负数语义按 `insert` 处理），
+    /// 前面的段必须指向存在的组。
+    pub fn insert_at(&mut self, path: &[usize], layer: Layer) -> Option<Vec<usize>> {
+        let (index, parent) = path.split_last()?;
+        let index = (*index).min(self.layers_in(parent)?.len());
+        let inserted_id = layer.id;
+        self.layers_in_mut(parent)?.insert(index, layer);
+        let mut p = parent.to_vec();
+        p.push(index);
+        // 当前层在插入点之后 → 跟着后移（`group.py:320` insert 的语义）
+        if self.current.len() > parent.len() && self.current.starts_with(parent) {
+            let shifted = &self.current[parent.len()];
+            if *shifted >= index {
+                let mut c = self.current.clone();
+                c[parent.len()] += 1;
+                self.current = c;
+            }
+        }
+        self.touch();
+        debug_assert_eq!(self.path_of_id(inserted_id), Some(p.clone()));
+        Some(p)
+    }
+
+    /// 按路径移除层并返回它（`tree.py:1691 deeppop`）。
+    pub fn remove_at(&mut self, path: &[usize]) -> Option<Layer> {
+        let (index, parent) = path.split_last()?;
+        let removed = {
+            let layers = self.layers_in_mut(parent)?;
+            if *index >= layers.len() {
+                return None;
+            }
+            layers.remove(*index)
+        };
+        // 当前层失效/后移
+        if self.current.starts_with(parent) && self.current.len() > parent.len() {
+            let shifted = self.current[parent.len()];
+            if shifted > *index {
+                let mut c = self.current.clone();
+                c[parent.len()] -= 1;
+                self.current = c;
+            } else if shifted == *index {
+                let mut c = self.current.clone();
+                c.truncate(parent.len());
+                self.current = c;
+            }
+        }
+        self.fix_current();
+        self.touch();
+        Some(removed)
+    }
+
+    /// 取任意深度子栈（空路径 = 自己）。
+    fn layers_in(&self, path: &[usize]) -> Option<&Vec<Layer>> {        let mut stack = self;
+        for i in path {
+            stack = stack.layers.get(*i)?.stack()?;
+        }
+        Some(&stack.layers)
+    }
+
+    fn layers_in_mut(&mut self, path: &[usize]) -> Option<&mut Vec<Layer>> {
+        let mut stack = self;
+        for i in path {
+            let layer = stack.layers.get_mut(*i)?;
+            stack = match &mut layer.content {
+                LayerContent::Group(s) => s,
+                LayerContent::Painting(_) => return None,
+            };
+        }
+        Some(&mut stack.layers)
+    }
+
+    /// 当前路径失效时回退到最近的可用层（`set_current_path` 的裁剪语义）。
+    fn fix_current(&mut self) {
+        let mut p = std::mem::take(&mut self.current);
+        while !p.is_empty() && self.layer_at(&p).is_none() {
+            p.pop();
+        }
+        if p.is_empty() && !self.layers.is_empty() {
+            p = vec![0];
+        }
+        self.current = p;
+    }
+
     /// 在 `index` 前插入层并返回实际索引（`group.py:320` `insert` 的钳位语义）。
     pub fn insert(&mut self, index: usize, layer: Layer) -> usize {
         let index = index.min(self.layers.len());
         self.layers.insert(index, layer);
-        if self.current >= index {
-            self.current += 1;
+        if let Some(first) = self.current.first_mut() {
+            if *first >= index {
+                *first += 1;
+            }
         }
         self.touch();
         index
     }
 
-    /// 移除指定索引的层（`group.py:286` `pop`）。
+    /// 按顶层索引移除层（`group.py:286` `pop`）。
     ///
     /// 允许把栈删空：「至少一层」的约束由 RemoveLayer 命令负责（照
     /// `lib/command.py:1040-1055` 的 `CREATE_PAINTING_LAYER_IF_EMPTY`）；
     /// 补层逻辑在命令里，撤销才能精确恢复结构。
     /// 按 id 移除层（返回被移除的层；id 不存在时 `None`）。
     pub fn remove_by_id(&mut self, id: u64) -> Option<Layer> {
-        let idx = self.index_of_id(id)?;
-        Some(self.remove(idx))
+        let path = self.path_of_id(id)?;
+        self.remove_at(&path)
     }
 
+    /// 按顶层索引移除层。
     pub fn remove(&mut self, index: usize) -> Layer {
         let removed = self.layers.remove(index);
-        if !self.layers.is_empty() {
-            if self.current >= index && self.current > 0 {
-                self.current -= 1;
-            }
-            self.current = self.current.min(self.layers.len() - 1);
-        } else {
-            self.current = 0;
-        }
+        self.fix_current();
         self.touch();
         removed
+    }
+
+    /// 整棵树的数据外接框（`group.py:348 get_bbox` = 各子层并集）。
+    pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
+        union_bbox(self.walk().into_iter().map(|(_, l)| l.data_bbox()))
     }
 
     // ---- 背景层（`tree.py:54-58` / `data.py:1023-1060`）----
@@ -444,9 +1089,10 @@ impl LayerStack {
 
     /// 把 `(tx, ty)` 处的栈合成结果写入 `dst`（fix15 预乘，长度 = tile 通道数）。
     ///
-    /// 返回 `true` 表示结果非空透明块：背景可见，或该坐标存在任一层的 tile。
+    /// 返回 `true` 表示结果非空透明块：背景可见，或该坐标存在任一层的内容。
     /// 语义照 `tree.py:796-811` 的 op 流（背景 BLIT → 子层自底向上）与
-    /// `tiledsurface.py:440-457` 的透明源规则。
+    /// `group.py:424-432` 的 PUSH/POP（组的隔离缓冲/直通决定），透明源规则见
+    /// `tiledsurface.py:440-457`。
     pub fn composite_tile(&self, tx: i32, ty: i32, dst: &mut [u16]) -> bool {
         debug_assert_eq!(dst.len(), TILE_CHANNELS);
 
@@ -463,33 +1109,17 @@ impl LayerStack {
             dst.fill(0);
         }
 
-        // 子层自底向上
-        for (_, layer) in self.iter_bottom_up() {
-            let opacity = layer.effective_opacity();
-            let mode = layer.mode;
-            match layer.surface.tile(tx, ty) {
-                Some(src) => {
-                    tile_combine(mode, src.as_flattened().as_flattened(), dst, dst_has_alpha, opacity);
-                    dst_has_alpha = true;
-                    has_content = true;
-                }
-                None => {
-                    // 透明源规则（tiledsurface.py:443-452）：
-                    //  - 模式在零 alpha 下无效果 → 跳过（dst 有 alpha 且
-                    //    模式清背景时先清零）
-                    //  - 其余（DestIn/DestAtop）→ 用全零源照常 tile_combine
-                    if !mode.zero_alpha_has_effect() {
-                        if dst_has_alpha && mode.zero_alpha_clears_backdrop() {
-                            dst.fill(0);
-                        }
-                        continue;
-                    }
-                    let zero = empty_tile();
-                    tile_combine(mode, zero.as_flattened().as_flattened(), dst, dst_has_alpha, opacity);
-                    dst_has_alpha = true;
-                }
-            }
-        }
+        // 子层自底向上（组的隔离/直通在 composite_layer 里递归处理）
+        let mut pool: Vec<Vec<u16>> = Vec::new();
+        has_content |= composite_layers(
+            &self.layers,
+            tx,
+            ty,
+            dst,
+            &mut dst_has_alpha,
+            0,
+            &mut pool,
+        );
         has_content
     }
 
@@ -574,6 +1204,27 @@ impl LayerStack {
     }
 }
 
+/// 若干个 `(x, y, w, h)` 的并集（忽略空矩形；全空返回全 0）。
+fn union_bbox(rects: impl Iterator<Item = (i32, i32, i32, i32)>) -> (i32, i32, i32, i32) {
+    let mut acc: Option<(i32, i32, i32, i32)> = None;
+    for b in rects {
+        if b.2 <= 0 || b.3 <= 0 {
+            continue;
+        }
+        acc = Some(match acc {
+            None => b,
+            Some((x0, y0, w, h)) => {
+                let nx = x0.min(b.0);
+                let ny = y0.min(b.1);
+                let nx1 = (x0 + w).max(b.0 + b.2);
+                let ny1 = (y0 + h).max(b.1 + b.3);
+                (nx, ny, nx1 - nx, ny1 - ny)
+            }
+        });
+    }
+    acc.unwrap_or((0, 0, 0, 0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,7 +1249,7 @@ mod tests {
         assert_eq!(l.opacity, 1.0);
         assert!(l.visible);
         assert!(!l.locked);
-        assert_eq!(l.mode, DEFAULT_MODE);
+        assert_eq!(l.mode, LayerMode::DEFAULT);
         assert_eq!(l.effective_opacity(), 1.0);
         // group.py:370-376：不可见 → 0
         let mut l2 = Layer::new();
@@ -611,7 +1262,7 @@ mod tests {
     #[test]
     fn layer_thumbnail_halves_in_fix15_space() {
         let mut l = Layer::new();
-        l.mode = CombineMode::Normal; // 直接透传，便于逐位比对
+        l.set_mode(LayerMode::Standard(CombineMode::Normal)); // 直接透传，便于逐位比对
         // 2×2 全不透明，R 通道取 1/2/3/4（fix15 直接写，跳过 8 位量化）
         let vals: [[u16; 4]; 4] = [
             [1, 0, 0, 1 << 15],
@@ -620,12 +1271,12 @@ mod tests {
             [4, 0, 0, 1 << 15],
         ];
         {
-            let t = l.surface.tile_request_start(0, 0);
+            let t = l.surface_mut().unwrap().tile_request_start(0, 0);
             t[0][0] = vals[0];
             t[0][1] = vals[1];
             t[1][0] = vals[2];
             t[1][1] = vals[3];
-            l.surface.tile_request_end(0, 0);
+            l.surface_mut().unwrap().tile_request_end(0, 0);
         }
         // 64×64 的 bbox 取 level 1 → 32×32
         let (px, w, h) = l.render_thumbnail_rgba8((0, 0, 64, 64), 1);
@@ -648,11 +1299,11 @@ mod tests {
     #[test]
     fn layer_thumbnail_blocks_align_to_the_mipmap_grid() {
         let mut l = Layer::new();
-        l.mode = CombineMode::Normal;
+        l.set_mode(LayerMode::Standard(CombineMode::Normal));
         {
-            let t = l.surface.tile_request_start(0, 0);
+            let t = l.surface_mut().unwrap().tile_request_start(0, 0);
             t[0][0] = [1 << 15, 1 << 15, 1 << 15, 1 << 15];
-            l.surface.tile_request_end(0, 0);
+            l.surface_mut().unwrap().tile_request_end(0, 0);
         }
         let (px, w, h) = l.render_thumbnail_rgba8((0, 0, 64, 64), 1);
         assert_eq!((w, h), (32, 32));
@@ -667,8 +1318,8 @@ mod tests {
     #[test]
     fn layer_thumbnail_applies_own_opacity() {
         let mut l = Layer::new();
-        l.mode = CombineMode::Normal;
-        l.surface = solid_surface([255, 0, 0], 255);
+        l.set_mode(LayerMode::Standard(CombineMode::Normal));
+        l.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
         let (full, _, _) = l.render_thumbnail_rgba8((0, 0, 64, 64), 0);
         assert_eq!(&full[0..4], &[255, 0, 0, 255]);
 
@@ -681,10 +1332,10 @@ mod tests {
     fn index_zero_is_the_topmost_layer() {
         // group.py:44-48：_layers[0] 是最顶层
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = CombineMode::Normal;
+        st.layer_mut(0).set_mode(LayerMode::Standard(CombineMode::Normal));
         let mut red = Layer::new();
-        red.mode = CombineMode::Normal;
-        red.surface = solid_surface([255, 0, 0], 255);
+        red.set_mode(LayerMode::Standard(CombineMode::Normal));
+        red.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
         st.insert(0, red);
         // index 0 = red（最顶），index 1 = 底下的空层
         let mut dst = vec![0u16; TILE_CHANNELS];
@@ -696,10 +1347,10 @@ mod tests {
     #[test]
     fn invisible_layer_shows_what_is_below() {
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = CombineMode::Normal;
+        st.layer_mut(0).set_mode(LayerMode::Standard(CombineMode::Normal));
         let mut blue = Layer::new();
-        blue.mode = CombineMode::Normal;
-        blue.surface = solid_surface([0, 0, 255], 255);
+        blue.set_mode(LayerMode::Standard(CombineMode::Normal));
+        blue.content = LayerContent::Painting(solid_surface([0, 0, 255], 255));
         st.insert(0, blue);
         st.layer_mut(0).visible = false;
         let mut dst = vec![0u16; TILE_CHANNELS];
@@ -712,11 +1363,11 @@ mod tests {
     #[test]
     fn half_opacity_layer_blends_over_background() {
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = CombineMode::Normal;
+        st.layer_mut(0).set_mode(LayerMode::Standard(CombineMode::Normal));
         let mut red = Layer::new();
-        red.mode = CombineMode::Normal;
+        red.set_mode(LayerMode::Standard(CombineMode::Normal));
         red.opacity = 0.5;
-        red.surface = solid_surface([255, 0, 0], 255);
+        red.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
         st.insert(0, red);
         let mut dst = vec![0u16; TILE_CHANNELS];
         st.composite_tile(0, 0, &mut dst);
@@ -731,15 +1382,15 @@ mod tests {
     #[test]
     fn hidden_background_yields_transparency() {
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = CombineMode::Normal;
+        st.layer_mut(0).set_mode(LayerMode::Standard(CombineMode::Normal));
         st.set_background_visible(false);
         let mut dst = vec![0u16; TILE_CHANNELS];
         assert!(!st.composite_tile(0, 0, &mut dst), "无内容应返回 false");
         assert!(dst.iter().all(|&v| v == 0));
         // 有内容的层仍应出现
         let mut red = Layer::new();
-        red.mode = CombineMode::Normal;
-        red.surface = solid_surface([255, 0, 0], 255);
+        red.set_mode(LayerMode::Standard(CombineMode::Normal));
+        red.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
         st.insert(0, red);
         let mut dst2 = vec![0u16; TILE_CHANNELS];
         assert!(st.composite_tile(0, 0, &mut dst2));
@@ -763,10 +1414,10 @@ mod tests {
     #[test]
     fn render_rect_rgba8_matches_tile_composition() {
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = CombineMode::Normal;
+        st.layer_mut(0).set_mode(LayerMode::Standard(CombineMode::Normal));
         let mut red = Layer::new();
-        red.mode = CombineMode::Normal;
-        red.surface = solid_surface([255, 0, 0], 255);
+        red.set_mode(LayerMode::Standard(CombineMode::Normal));
+        red.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
         st.insert(0, red);
         let w = TILE_SIZE as u32;
         let mut buf = vec![0u8; (w * w * 4) as usize];
@@ -776,5 +1427,227 @@ mod tests {
         let mut buf2 = vec![0u8; 4];
         st.render_rect_rgba8((TILE_SIZE as i32 * 5, 0, 1, 1), true, &mut buf2);
         assert_eq!(&buf2, &[255, 255, 255, 255]);
+    }
+
+    // ---- B2-6 组（`group.py`）----
+
+    /// 组默认值：空子栈、默认模式（隔离的 SpectralWGM）、`is_group` 为真。
+    #[test]
+    fn group_defaults_match_layer_stack() {
+        let g = Layer::new_group();
+        assert!(g.is_group());
+        assert_eq!(g.child_count(), 0, "组初始无子层（group.py:78）");
+        assert_eq!(g.mode, LayerMode::DEFAULT);
+        assert_eq!(g.opacity, 1.0);
+        assert!(g.surface().is_none(), "组没有表面");
+        assert!(!g.paintable_self(), "组不可画（LayerBase.get_paintable=False）");
+        // 组也能当 False 用？源码特意保证「len=0 的组永不为假」——这里用类型保证
+        assert!(Layer::new().surface().is_some());
+    }
+
+    /// 直通组不隔离：子层直接作用于父背板，组自身 mode/opacity 不参与；
+    /// 隔离组 PUSH/POP：子层先进透明缓冲，再用组的 opacity 合上来。
+    #[test]
+    fn isolated_vs_pass_through_group_compositing() {
+        // 子层：不透明红
+        let mut child = Layer::new();
+        child.set_mode(LayerMode::Standard(CombineMode::Normal));
+        child.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
+
+        // 隔离组（默认模式）+ 组不透明度 0.5
+        let mut g = Layer::new_group();
+        g.set_mode(LayerMode::Standard(CombineMode::Normal));
+        g.stack_mut().unwrap().layers.push(child.clone());
+        assert!(g.set_opacity(0.5));
+        let mut st = LayerStack::from_children(vec![g.clone()]);
+        st.set_background_visible(false);
+        let mut dst = vec![0u16; TILE_CHANNELS];
+        st.composite_tile(0, 0, &mut dst);
+        let px = color::tile_to_rgba8_alpha_single([dst[0], dst[1], dst[2], dst[3]]);
+        assert_eq!([px[0], px[1], px[2]], [255, 0, 0], "色相不变");
+        assert!(
+            (px[3] as i32 - 128).abs() <= 3,
+            "组不透明度 0.5 应体现在 alpha：{}",
+            px[3]
+        );
+
+        // 直通组：组 opacity 被强制 1.0，子层直接作用于背板 → alpha 满
+        let mut g2 = Layer::new_group();
+        g2.stack_mut().unwrap().layers.push(child);
+        let (mode_changed, opacity_changed) = g2.set_mode(LayerMode::PassThrough);
+        assert!(mode_changed);
+        assert!(opacity_changed || g2.opacity == 1.0);
+        assert!(!g2.set_opacity(0.3), "直通组的 opacity 不可改（core.py:281）");
+        let mut st = LayerStack::from_children(vec![g2]);
+        st.set_background_visible(false);
+        let mut dst = vec![0u16; TILE_CHANNELS];
+        st.composite_tile(0, 0, &mut dst);
+        let px = color::tile_to_rgba8_alpha_single([dst[0], dst[1], dst[2], dst[3]]);
+        assert_eq!([px[0], px[1], px[2], px[3]], [255, 0, 0, 255], "直通=直接落背板");
+    }
+
+    /// 组不可见 → 整棵子树都不出现（`get_render_ops` 对不可见返回 []）。
+    #[test]
+    fn invisible_group_hides_children() {
+        let mut child = Layer::new();
+        child.set_mode(LayerMode::Standard(CombineMode::Normal));
+        child.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
+        let mut g = Layer::new_group();
+        g.set_mode(LayerMode::Standard(CombineMode::Normal));
+        g.stack_mut().unwrap().layers.push(child);
+        g.visible = false;
+        let mut st = LayerStack::from_children(vec![g]);
+        // 背景隐藏 → 什么都不该有
+        st.set_background_visible(false);
+        let mut dst = vec![0u16; TILE_CHANNELS];
+        let content = st.composite_tile(0, 0, &mut dst);
+        assert!(!content);
+        assert!(dst.iter().all(|&v| v == 0), "隐藏组的子层也不能漏出来");
+        // branch_visible 对子层为假
+        assert!(!st.branch_visible(&[0, 0]));
+    }
+
+    /// 树/路径寻址：walk 序 = 组在前、子层紧跟；deepget/deepindex 对得上。
+    #[test]
+    fn walk_paths_and_current_tracking() {
+        let mut a = Layer::new(); // 顶层 0
+        a.name = Some("A".into());
+        let mut g = Layer::new_group(); // 顶层 1（组）
+        g.name = Some("G".into());
+        let mut b = Layer::new(); // (1, 0)
+        b.name = Some("B".into());
+        let mut c = Layer::new(); // (1, 1)
+        c.name = Some("C".into());
+        g.stack_mut().unwrap().layers.push(b.clone());
+        g.stack_mut().unwrap().layers.push(c.clone());
+        let mut d = Layer::new(); // 顶层 2
+        d.name = Some("D".into());
+
+        let mut st = LayerStack::from_children(vec![a.clone(), g.clone(), d.clone()]);
+        let names: Vec<(Vec<usize>, String)> = st
+            .walk()
+            .into_iter()
+            .map(|(p, l)| (p, l.name.clone().unwrap_or_default()))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                (vec![0], "A".into()),
+                (vec![1], "G".into()),
+                (vec![1, 0], "B".into()),
+                (vec![1, 1], "C".into()),
+                (vec![2], "D".into()),
+            ]
+        );
+        assert_eq!(st.path_of_id(b.id), Some(vec![1, 0]));
+        assert_eq!(st.layer_at(&[1, 1]).map(|l| l.id), Some(c.id));
+        assert!(st.layer_at(&[0, 0]).is_none(), "非组不能再往里走");
+        assert!(st.layer_at(&[9]).is_none());
+
+        // 当前层跟踪：切到 (1,1)，删掉 (1,0) 后仍是同一层（索引前移）
+        st.set_current_path(&[1, 1]);
+        assert_eq!(st.current_path(), &[1, 1]);
+        assert_eq!(st.current_id(), c.id);
+
+        let mut st2 = st.clone();
+        st2.remove_at(&[1, 0]).unwrap();
+        assert_eq!(st2.current_path(), &[1, 0], "C 前移到索引 0");
+        assert_eq!(st2.current_id(), c.id, "当前层不变");
+    }
+
+    /// `insert_at` 的钳位与当前层后移语义（`group.py:320`）。
+    #[test]
+    fn insert_at_clamps_and_shifts_current() {
+        let mut st = LayerStack::from_children(vec![Layer::new(), Layer::new()]);
+        st.set_current_path(&[1]);
+        let new = Layer::new();
+        let new_id = new.id;
+        let p = st.insert_at(&[0], new).unwrap();
+        assert_eq!(p, vec![0]);
+        assert_eq!(st.current_path(), &[2], "当前层跟着后移");
+        // 越界索引钳位到末尾
+        let last = Layer::new();
+        let last_id = last.id;
+        assert_eq!(st.insert_at(&[999], last).unwrap(), vec![3]);
+        assert_eq!(st.path_of_id(last_id), Some(vec![3]));
+        assert_eq!(st.len(), 4);
+        // 组内插入
+        let mut g = Layer::new_group();
+        g.name = Some("G".into());
+        st.insert_at(&[4], g).unwrap();
+        let inner = Layer::new();
+        let inner_id = inner.id;
+        assert_eq!(st.insert_at(&[4, 0], inner).unwrap(), vec![4, 0]);
+        assert_eq!(st.path_of_id(inner_id), Some(vec![4, 0]));
+        let _ = new_id;
+    }
+
+    /// 模式/不透明度的设置器语义（`core.py:281`/`:473`）。
+    #[test]
+    fn mode_and_opacity_rules() {
+        let mut l = Layer::new();
+        // 普通层不接受直通 → 回落默认
+        let (changed, _) = l.set_mode(LayerMode::PassThrough);
+        assert!(!changed);
+        assert_eq!(l.mode, LayerMode::DEFAULT);
+
+        let mut g = Layer::new_group();
+        g.opacity = 0.4;
+        let (changed, opacity_changed) = g.set_mode(LayerMode::PassThrough);
+        assert!(changed && opacity_changed);
+        assert_eq!(g.opacity, 1.0, "直通模式强制 opacity=1（core.py:483）");
+        assert!(!g.set_opacity(0.2), "直通的 opacity 不可改");
+        // 从直通切回标准模式后 opacity 可以改
+        g.set_mode(LayerMode::Standard(CombineMode::Normal));
+        assert!(g.set_opacity(0.2));
+    }
+
+    /// 可画性：组、锁、隐藏分支都不可画（`data.py:1364 get_paintable`）。
+    #[test]
+    fn paintable_surface_rules() {
+        let mut st = LayerStack::new(); // [空绘画层]
+        assert!(st.paintable_surface_mut().is_some());
+
+        // 当前层是组 → 不可画
+        let mut g = Layer::new_group();
+        g.stack_mut().unwrap().layers.push(Layer::new());
+        let g_id = g.id;
+        st.insert_at(&[0], g).unwrap();
+        st.set_current_by_id(g_id);
+        assert!(st.paintable_surface_mut().is_none(), "组不可画");
+
+        // 组内的绘画层：组可见且未锁 → 可画
+        st.set_current_path(&[0, 0]);
+        assert!(st.paintable_surface_mut().is_some());
+
+        // 组锁定 → 子层不可画（branch_locked）
+        st.layer_at_mut(&[0]).unwrap().locked = true;
+        assert!(st.paintable_surface_mut().is_none());
+        st.layer_at_mut(&[0]).unwrap().locked = false;
+
+        // 组隐藏 → 子层不可画（branch_visible）
+        st.layer_at_mut(&[0]).unwrap().visible = false;
+        assert!(st.paintable_surface_mut().is_none());
+    }
+
+    /// 组的 bbox = 子层并集；组缩略图能画出子层内容（solo + 组 op）。
+    #[test]
+    fn group_bbox_and_thumbnail() {
+        let mut child = Layer::new();
+        child.set_mode(LayerMode::Standard(CombineMode::Normal));
+        child.content = LayerContent::Painting(solid_surface([255, 0, 0], 255));
+        let mut g = Layer::new_group();
+        g.set_mode(LayerMode::Standard(CombineMode::Normal));
+        g.stack_mut().unwrap().layers.push(child);
+        assert_eq!(g.data_bbox(), (0, 0, TILE_SIZE as i32, TILE_SIZE as i32));
+
+        let (px, w, h) = g.render_thumbnail_rgba8((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), 0);
+        assert_eq!((w, h), (TILE_SIZE as u32, TILE_SIZE as u32));
+        assert_eq!(&px[0..4], &[255, 0, 0, 255], "组的缩略图含子层内容");
+
+        // 组不透明度 0.5 → 缩略图 alpha 减半（solo 不重置 opacity）
+        g.set_opacity(0.5);
+        let (px2, _, _) = g.render_thumbnail_rgba8((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), 0);
+        assert!(px2[3] < 200 && px2[3] > 60, "alpha={}", px2[3]);
     }
 }

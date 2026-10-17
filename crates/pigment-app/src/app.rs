@@ -209,6 +209,15 @@ pub struct PigmentApp {
     /// 行内重命名编辑框是否**已经拿到过焦点**（焦点要下一帧才到手，
     /// 首帧的 `has_focus() == false` 不是"失焦"）。
     pub(crate) rename_focused: bool,
+    /// 正在重命名的层路径（B2-6：层可以嵌在组里，索引不够用）。
+    pub(crate) rename_path: Vec<usize>,
+    // ---- 图层树（B2-6）----
+    /// 折叠的组（按空格不折叠：MyPaint 默认折叠，本实现默认展开）。
+    pub(crate) layers_collapsed: std::collections::HashSet<Vec<usize>>,
+    /// 正在拖动的层路径（MyPaint treeview 的 DnD 重排）。
+    pub(crate) layer_drag: Option<Vec<usize>>,
+    /// 当前落点（deepinsert 路径）。
+    pub(crate) layer_drop_target: Option<Vec<usize>>,
 }
 
 // ---- 文档 I/O ----
@@ -358,6 +367,10 @@ impl PigmentApp {
             layer_rename: None,
             rename_buf: String::new(),
             rename_focused: false,
+            rename_path: Vec::new(),
+            layers_collapsed: std::collections::HashSet::new(),
+            layer_drag: None,
+            layer_drop_target: None,
             dock: crate::shell::dock::DockState {
                 left: vec![crate::shell::dock::Group {
                     panels: vec![crate::shell::dock::PanelId::BrushGroups],
@@ -659,17 +672,25 @@ impl PigmentApp {
     }
 
     /// 把一个事件喂给当前作画命令：记录事件流 + 落到画布。
+    ///
+    /// 当前层不可画（组 / 锁 / 祖先隐藏）时**什么都不画**——照
+    /// `Brushwork._check_recording_started` 对非可画层 `_stroke_target_layer =
+    /// None`（`command.py:403-408`）的语义，事件流也不记录。
     pub(crate) fn paint_event(&mut self, ev: StrokeEvent) {
         let (Some(mut bw), Some(mut st)) = (self.brushwork.take(), self.stroke_state.take()) else {
             return;
         };
-        bw.stroke_to(
-            self.doc.surface_mut(),
-            &self.brush,
-            &self.brush_name,
-            &mut st,
-            ev,
-        );
+        match self.doc.paintable_surface_mut() {
+            Some(surface) => {
+                bw.stroke_to(surface, &self.brush, &self.brush_name, &mut st, ev);
+            }
+            None => {
+                // 不可画：整段作画作废（MyPaint 同样不产生命令）
+                self.brushwork = None;
+                self.stroke_state = None;
+                return;
+            }
+        }
         self.brushwork = Some(bw);
         self.stroke_state = Some(st);
     }
@@ -683,7 +704,10 @@ impl PigmentApp {
             return;
         };
         // 没画到东西的命令直接丢弃（`if changed: model.do(cmd)`）
-        if bw.stop_recording(self.doc.surface_mut(), &st, false) {
+        let Some(surface) = self.doc.paintable_surface_mut() else {
+            return;
+        };
+        if bw.stop_recording(surface, &st, false) {
             self.doc.do_brushwork(bw);
         }
     }
@@ -871,21 +895,46 @@ impl PigmentApp {
             // ---- 停靠面板（S6）----
             "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
             | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
-            // ---- 图层（B2-5；动态 sensitivity 照源码 enable 语义）----
-            "NewPaintingLayerAbove" | "DuplicateLayer" | "RemoveLayer" => true,
-            // 组嵌套未移植（layerswindow 的 NewLayerGroupAbove）
-            "NewLayerGroupAbove" => false,
-            "RaiseLayerInStack" => self.doc.layers().current_index() > 0,
-            "LowerLayerInStack" => {
+            // ---- 图层（B2-5/B2-6；动态 sensitivity 照源码 enable 语义）----
+            "NewPaintingLayerAbove" | "NewLayerGroupAbove" | "DuplicateLayer" | "RemoveLayer" => {
+                true
+            }
+            "RaiseLayerInStack" | "LowerLayerInStack" => {
+                // 同层内的兄弟间换位（`_bubble_layer` 的跨组分支未移植）
                 let ls = self.doc.layers();
-                ls.current_index() + 1 < ls.len()
+                let path = ls.current_path().to_vec();
+                let (idx, parent) = match path.split_last() {
+                    Some((last, rest)) => (*last, rest.to_vec()),
+                    None => return false,
+                };
+                let count = if parent.is_empty() {
+                    ls.len()
+                } else {
+                    ls.layer_at(&parent).map(|l| l.child_count()).unwrap_or(0)
+                };
+                if id == "RaiseLayerInStack" {
+                    idx > 0
+                } else {
+                    idx + 1 < count
+                }
             }
             "MergeLayerDown" => {
-                // `get_merge_down_target` 的平栈判据（tree.py:2003）
+                // `get_merge_down_target` 的判据（tree.py:2003）：下一个兄弟存在、
+                // 未锁、可归一化（`normalizable` 与命令共用）
                 let ls = self.doc.layers();
-                let i = ls.current_index();
-                match (ls.try_layer(i), ls.try_layer(i + 1)) {
-                    (Some(up), Some(lo)) => up.visible && lo.visible && !lo.locked,
+                let path = ls.current_path().to_vec();
+                let Some((idx, parent)) = path.split_last() else {
+                    return false;
+                };
+                let mut target = parent.to_vec();
+                target.push(idx + 1);
+                match (ls.layer_at(&path), ls.layer_at(&target)) {
+                    (Some(upper), Some(lower)) => {
+                        !ls.branch_locked(&path)
+                            && !ls.branch_locked(&target)
+                            && pigment_engine::command::normalizable(upper)
+                            && pigment_engine::command::normalizable(lower)
+                    }
                     _ => false,
                 }
             }
@@ -1000,7 +1049,11 @@ impl PigmentApp {
                 self.doc.add_layer();
                 ctx.request_repaint();
             }
-            // "NewLayerGroupAbove"：组嵌套未移植（action_available 恒 false），到不了这里
+            // `NewLayerGroupAbove` → `AddLayer(layer_class=LayerStack)`（layerswindow）
+            "NewLayerGroupAbove" => {
+                self.doc.add_group();
+                ctx.request_repaint();
+            }
             "RemoveLayer" => {
                 self.doc.remove_layer();
                 ctx.request_repaint();
@@ -1100,9 +1153,13 @@ impl PigmentApp {
             }
             "pigment:dump-canvas" => {
                 // 导出 CPU 侧画布为 PNG，与屏幕对照可区分「CPU 无内容」与「显存没同步」
-                match crate::dump::dump_surface_png(self.doc.surface()) {
-                    Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
-                    Err(e) => eprintln!("导出失败: {e}"),
+                // 组没有表面 → 只导出当前可画层
+                match self.doc.paintable_surface() {
+                    Some(surface) => match crate::dump::dump_surface_png(surface) {
+                        Ok(p) => println!("已导出 CPU 画布快照: {}", p.display()),
+                        Err(e) => eprintln!("导出失败: {e}"),
+                    },
+                    None => self.set_status("当前层是组，没有可导出的表面".to_string(), now),
                 }
             }
             "pigment:prev-brush" | "pigment:next-brush" => {

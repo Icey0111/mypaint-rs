@@ -215,10 +215,20 @@ impl PigmentApp {
                     .exp()
             ));
             let resident = self_.renderer.lock().unwrap().resident();
+            // B2-6：组没有表面 → 统计整棵树（各绘画层相加）
+            let (tiles, bytes) = self_
+                .doc
+                .layers()
+                .walk()
+                .into_iter()
+                .filter_map(|(_, l)| l.surface())
+                .fold((0usize, 0usize), |(t, b), s| {
+                    (t + s.tile_count(), b + s.memory_bytes())
+                });
             ui.label(format!(
                 "tiles {} · {:.1} MiB · 显存 {resident}",
-                self_.doc.surface().tile_count(),
-                self_.doc.surface().memory_bytes() as f64 / 1048576.0
+                tiles,
+                bytes as f64 / 1048576.0
             ));
         };
         // RTL：先画的在最右。诊断最左 → 最后画；工具条条目逆序迭代。

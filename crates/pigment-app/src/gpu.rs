@@ -519,8 +519,8 @@ mod tests {
     #[test]
     fn plans_content_tiles_not_yet_uploaded() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 1, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
         let visible = vec![(0, 0), (1, 0), (2, 0)]; // (2,0) 是空白 tile
         let rev = st.composite_revision();
         let plan = plan_uploads(
@@ -536,8 +536,8 @@ mod tests {
     #[test]
     fn skips_tiles_already_synced() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 1, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
         let rev = st.composite_revision();
         let uploaded = |_c: (i32, i32)| Some(rev);
         let visible = vec![(0, 0), (1, 0)];
@@ -547,8 +547,8 @@ mod tests {
     #[test]
     fn replans_after_cpu_change() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 1, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
         let mut uploaded: HashMap<(i32, i32), u64> = HashMap::new();
         for c in [(0, 0), (1, 0)] {
             uploaded.insert(c, st.composite_revision());
@@ -556,7 +556,7 @@ mod tests {
         // 只改 (1,0)：全局合成版本号被抬高。
         // 粒度权衡（记账为后续逐 tile 哈希优化）：两个 tile 都会重传，
         // (0,0) 重传的是相同内容——正确性不受影响，代价是少量冗余带宽。
-        touch(&mut st.current_mut().surface, 1, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
         let rev = st.composite_revision();
         let plan = plan_uploads(
             |c| uploaded.get(&c).copied(),
@@ -578,8 +578,8 @@ mod tests {
     #[test]
     fn planning_is_idempotent_across_discarded_passes() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 3, 2);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 3, 2);
         let visible = vec![(0, 0), (3, 2)];
         let rev = st.composite_revision();
         // GPU 侧完全没有这些 tile（模拟第一趟 pass 被丢弃、什么都没上传）
@@ -606,7 +606,7 @@ mod tests {
         let mut st = LayerStack::new();
         let mut visible = Vec::new();
         for tx in 0..10 {
-            touch(&mut st.current_mut().surface, tx, 0);
+            touch(&mut st.current_mut().surface_mut().unwrap(), tx, 0);
             visible.push((tx, 0));
         }
         let rev = st.composite_revision();
@@ -634,11 +634,11 @@ mod tests {
     #[test]
     fn plans_eviction_for_tiles_removed_by_undo() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 1, 0);
-        let sshot = st.current().surface.save_snapshot();
-        touch(&mut st.current_mut().surface, 2, 0);
-        let _ = st.current_mut().surface.load_snapshot(&sshot); // 撤销：只剩 (0,0)(1,0)
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
+        let sshot = st.current().surface().unwrap().save_snapshot();
+        touch(&mut st.current_mut().surface_mut().unwrap(), 2, 0);
+        let _ = st.current_mut().surface_mut().unwrap().load_snapshot(&sshot); // 撤销：只剩 (0,0)(1,0)
 
         let visible = vec![(0, 0), (1, 0), (2, 0)];
         // 显存里三块都在（撤销前上传过）
@@ -654,8 +654,8 @@ mod tests {
     #[test]
     fn does_not_evict_tiles_still_present_on_cpu() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
-        touch(&mut st.current_mut().surface, 1, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 1, 0);
         let visible = vec![(0, 0), (1, 0)];
         assert!(
             plan_evictions(|_| true, &visible, |c| st.has_paint_at(c.0, c.1)).is_empty(),
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn does_not_evict_when_not_resident() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
         let visible = vec![(0, 0), (7, 7)];
         assert!(
             plan_evictions(|_| false, &visible, |c| st.has_paint_at(c.0, c.1)).is_empty(),
@@ -679,7 +679,7 @@ mod tests {
     #[test]
     fn eviction_is_limited_to_the_visible_set() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
         let visible = vec![(0, 0)]; // (9,9) 曾被上传但现在不在视口里
         assert!(plan_evictions(|c| c == (9, 9), &visible, |c| st.has_paint_at(c.0, c.1)).is_empty());
     }
@@ -689,7 +689,7 @@ mod tests {
     #[test]
     fn eviction_planning_is_idempotent() {
         let mut st = LayerStack::new();
-        touch(&mut st.current_mut().surface, 0, 0);
+        touch(&mut st.current_mut().surface_mut().unwrap(), 0, 0);
         let visible = vec![(0, 0), (1, 0)];
         let resident = |c: (i32, i32)| c == (1, 0);
         let a = plan_evictions(resident, &visible, |c| st.has_paint_at(c.0, c.1));

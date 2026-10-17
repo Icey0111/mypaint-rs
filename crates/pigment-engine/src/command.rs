@@ -29,6 +29,7 @@ use std::collections::VecDeque;
 
 use hokusai::{Brush, BrushState};
 use pigment_surface::combine::CombineMode;
+use pigment_surface::layer::LayerMode;
 use pigment_surface::{Layer, LayerStack, PigmentSurface, SurfaceSnapshot};
 
 use crate::stroke::{Stroke, StrokeEvent};
@@ -50,27 +51,23 @@ pub struct DocContext<'a> {
 }
 
 impl<'a> DocContext<'a> {
-    /// 当前层表面（作画入口）。
-    pub fn current_surface_mut(&mut self) -> &mut PigmentSurface {
-        &mut self.layers.current_mut().surface
+    /// 当前层可画的表面（作画入口）；组/锁/隐藏分支 → `None`
+    /// （`data.py:1364 get_paintable`）。
+    pub fn current_surface_mut(&mut self) -> Option<&mut PigmentSurface> {
+        self.layers.paintable_surface_mut()
     }
 
     /// 按 id 解析目标层表面（等价 `command.py` 的 `_target_layer()`）。
     ///
-    /// id 不在栈里时回退当前层——正常运行到不了这里：撤销按 LIFO 进行，
-    /// RemoveLayer 的 undo 会先于在其上作画的 Brushwork 的 undo 恢复图层。
-    fn surface_for(&mut self, id: u64) -> &mut PigmentSurface {
-        if self.layers.surface_by_id(id).is_none() {
+    /// id 不是绘画层（组）或不在栈里时返回 `None`——笔刷据此跳过（源码
+    /// `Brushwork._check_recording_started` 对非可画层 `_stroke_target_layer = None`）。
+    fn surface_for(&mut self, id: u64) -> Option<&mut PigmentSurface> {
+        if self.layers.layer_by_id(id).is_none() {
             // 正常运行到不了这里：撤销按 LIFO，RemoveLayer 的 undo 会先于
             // 在其上作画的 Brushwork 的 undo 恢复图层。
             debug_assert!(false, "layer {id} 不在栈里（撤销顺序被破坏？）");
         }
-        // 借用限制下分两次解析（第二次必命中，或回退当前层）
-        if self.layers.surface_by_id(id).is_some() {
-            self.layers.surface_by_id(id).unwrap()
-        } else {
-            self.current_surface_mut()
-        }
+        self.layers.surface_by_id(id)
     }
 }
 
@@ -512,7 +509,9 @@ impl Command for Brushwork {
             None => return false,
         };
         if !self.sshot_after_applied {
-            ctx.surface_for(id).load_snapshot(after);
+            if let Some(surface) = ctx.surface_for(id) {
+                surface.load_snapshot(after);
+            }
             self.sshot_after_applied = true;
         }
         *ctx.unsaved_painting_time = self.time_after;
@@ -523,7 +522,9 @@ impl Command for Brushwork {
         assert!(self.recording_finished, "先调 stop_recording()");
         let id = self.resolve_target(ctx);
         if let Some(before) = &self.sshot_before {
-            ctx.surface_for(id).load_snapshot(before);
+            if let Some(surface) = ctx.surface_for(id) {
+                surface.load_snapshot(before);
+            }
         }
         *ctx.unsaved_painting_time = self.time_before;
         self.sshot_after_applied = false;
@@ -555,7 +556,9 @@ impl Command for Brushwork {
         let Ok(stroke) = seq.copy_using_different_brush(brush, name) else {
             return false;
         };
-        let surface = ctx.surface_for(id);
+        let Some(surface) = ctx.surface_for(id) else {
+            return false;
+        };
         // 回到画前状态，再用新笔重放整条事件流
         surface.load_snapshot(&before);
         if !stroke.render(surface) {
@@ -573,18 +576,27 @@ impl Command for Brushwork {
 // 均按图层 id 寻址（等价 MyPaint 持图层对象引用）。属性类命令在 redo 时
 // 捕获旧值、undo 恢复（照源码 `_old_xxx = layer.x; layer.x = new` 的次序）。
 
-/// `AddLayer`（`lib/command.py:971`）：插入一层并把当前层切过去。
+/// `AddLayer`（`lib/command.py:971`）：在 `insert_path` 处插入一层并把当前层切过去。
+///
+/// `insert_path` 是 **deepinsert 路径**：前几段指向存在的组，最后一段是插入索引
+/// （可越界，按 `list.insert` 钳位）。
 pub struct AddLayer {
     layer: Option<Layer>,
-    insert_index: usize,
-    inserted_index: usize,
+    insert_path: Vec<usize>,
+    inserted_path: Vec<usize>,
     prev_current: u64,
     is_import: bool,
 }
 
 impl AddLayer {
-    pub fn new(insert_index: usize, layer: Layer, is_import: bool) -> Self {
-        Self { layer: Some(layer), insert_index, inserted_index: insert_index, prev_current: 0, is_import }
+    pub fn new(insert_path: Vec<usize>, layer: Layer, is_import: bool) -> Self {
+        Self {
+            layer: Some(layer),
+            insert_path,
+            inserted_path: Vec::new(),
+            prev_current: 0,
+            is_import,
+        }
     }
 }
 
@@ -592,16 +604,19 @@ impl Command for AddLayer {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         self.prev_current = ctx.layers.current_id();
         let layer = self.layer.take().expect("double redo()?");
-        self.inserted_index = ctx.layers.insert(self.insert_index, layer);
-        let id = ctx.layers.layer(self.inserted_index).id;
-        ctx.layers.set_current_by_id(id);
+        let Some(p) = ctx.layers.insert_at(&self.insert_path, layer) else {
+            return false; // 父路径不是组/不存在（源码 raise IndexError）
+        };
+        self.inserted_path = p.clone();
+        ctx.layers.set_current_path(&p);
         true
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
         // 对齐源码的 deepremove(self._layer)：LIFO 保证插入的层还在原地
-        let layer = ctx.layers.remove(self.inserted_index);
-        self.layer = Some(layer);
+        if let Some(layer) = ctx.layers.remove_at(&self.inserted_path) {
+            self.layer = Some(layer);
+        }
         ctx.layers.set_current_by_id(self.prev_current);
     }
 
@@ -609,19 +624,26 @@ impl Command for AddLayer {
         // command.py:1003-1010：导入用 "Import Layers"，否则 "Add {DEFAULT_NAME}"
         if self.is_import {
             "Import Layers".to_string()
+        } else if self
+            .layer
+            .as_ref()
+            .map(|l| l.is_group())
+            .unwrap_or(false)
+        {
+            "Add Group".to_string() // group.py:63 LayerStack.DEFAULT_NAME = "Group"
         } else {
             "Add Layer".to_string() // data.py PaintingLayer.DEFAULT_NAME = "Layer"
         }
     }
 }
 
-/// `RemoveLayer`（`lib/command.py:1025`）：移除"构造时的当前层"；
-/// 栈被清空时补一层新的（`CREATE_PAINTING_LAYER_IF_EMPTY`）。
+/// `RemoveLayer`（`lib/command.py:1025`）：移除构造时的当前层；
+/// **根栈**被清空时补一层新的（`CREATE_PAINTING_LAYER_IF_EMPTY`；组可以空着）。
 pub struct RemoveLayer {
     target_id: u64,
-    index_at_construction: usize,
+    path: Vec<usize>,
     removed: Option<Layer>,
-    /// 栈被清空时补进来的替代层 id（`CREATE_PAINTING_LAYER_IF_EMPTY`）。
+    /// 根栈被清空时补进来的替代层 id（`CREATE_PAINTING_LAYER_IF_EMPTY`）。
     replacement_id: Option<u64>,
 }
 
@@ -629,7 +651,7 @@ impl RemoveLayer {
     pub fn new(ctx: &mut DocContext<'_>) -> Self {
         Self {
             target_id: ctx.layers.current_id(),
-            index_at_construction: ctx.layers.current_index(),
+            path: ctx.layers.current_path().to_vec(),
             removed: None,
             replacement_id: None,
         }
@@ -639,15 +661,15 @@ impl RemoveLayer {
 impl Command for RemoveLayer {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         assert!(self.removed.is_none(), "double redo()?");
-        self.removed = Some(ctx.layers.remove_by_id(self.target_id).expect("目标层已不在栈里"));
+        let Some(removed) = ctx.layers.remove_at(&self.path) else {
+            return false;
+        };
+        self.removed = Some(removed);
         if ctx.layers.is_empty() {
             let repl = Layer::new();
             self.replacement_id = Some(repl.id);
-            ctx.layers.insert(usize::MAX, repl);
+            ctx.layers.insert(0, repl);
         }
-        // 照源码：当前层指向被移除处上方的层（或第 0 层）
-        let idx = self.index_at_construction.min(ctx.layers.len() - 1);
-        ctx.layers.set_current_index(idx);
         true
     }
 
@@ -656,8 +678,7 @@ impl Command for RemoveLayer {
             ctx.layers.remove_by_id(rid);
         }
         let removed = self.removed.take().expect("undo 先于 redo？");
-        let index = self.index_at_construction.min(ctx.layers.len());
-        ctx.layers.insert(index, removed);
+        ctx.layers.insert_at(&self.path, removed);
         ctx.layers.set_current_by_id(self.target_id);
     }
 
@@ -694,14 +715,14 @@ impl Command for SelectLayer {
     }
 }
 
-/// `DuplicateLayer`（`lib/command.py:1202`）：原位复制当前层。
+/// `DuplicateLayer`（`lib/command.py:1202`）：原位复制当前层（**深拷贝子树**）。
 ///
 /// `deepinsert(self._path, layer_copy)` —— 副本落在原层的位置上，
 /// 原层被推到其下；当前层切到副本。像素是 COW 共享（MyPaint 用
 /// deepcopy 急拷贝；可观察行为一致，首笔作画才真正分离）。
 pub struct DuplicateLayer {
-    /// 原层位置（`_path`）：插入/移除都用它。
-    path: usize,
+    /// 原层路径（`_path`）：插入/移除都用它。
+    path: Vec<usize>,
     /// 被复制的原层 id —— undo 后当前层要回到它（源码靠「路径不变 → 路径上
     /// 的层又变回原层」实现，我们按 id 寻址，须显式设回）。
     orig_id: u64,
@@ -712,7 +733,7 @@ pub struct DuplicateLayer {
 impl DuplicateLayer {
     pub fn new(ctx: &mut DocContext<'_>) -> Self {
         Self {
-            path: ctx.layers.current_index(),
+            path: ctx.layers.current_path().to_vec(),
             orig_id: ctx.layers.current_id(),
             copy_id: 0,
         }
@@ -723,12 +744,16 @@ impl Command for DuplicateLayer {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         // 源码每次 redo 都重新 `deepcopy(layers.current)`：撤销后又在原层上
         // 画了东西，再 redo 得到的副本**包含**那些新笔迹（缓存旧副本会丢）。
-        let mut copy = ctx.layers.current().clone();
+        let Some(mut copy) = ctx.layers.layer_at(&self.path).cloned() else {
+            return false;
+        };
         copy.id = pigment_surface::layer::allocate_layer_id();
         self.copy_id = copy.id;
-        ctx.layers.insert(self.path, copy);
+        let Some(p) = ctx.layers.insert_at(&self.path, copy) else {
+            return false;
+        };
         // `set_current_path(self._path)`：当前层 = 副本
-        ctx.layers.set_current_index(self.path);
+        ctx.layers.set_current_path(&p);
         true
     }
 
@@ -745,7 +770,9 @@ impl Command for DuplicateLayer {
 
 /// `BubbleLayerUp` / `BubbleLayerDown`（`lib/command.py:1226/1240`）。
 ///
-/// "Up" = 朝栈顶（index 0 方向）。
+/// "Up" = 朝栈顶（同层内 index 0 方向）。**只在与当前层同级的兄弟之间换位**；
+/// 跨组边界的冒泡（`tree.py:1830 _bubble_layer` 的出组/入组分支）未移植，
+/// 组间移动走 `RestackLayer`（面板拖动）。
 pub struct BubbleLayer {
     id: u64,
     up: bool,
@@ -758,34 +785,48 @@ impl BubbleLayer {
     pub fn down(id: u64) -> Self {
         Self { id, up: false }
     }
+
+    /// 与相邻兄弟换位；`up = true` 朝栈顶。返回是否真的动了。
+    fn swap(&self, ctx: &mut DocContext<'_>, up: bool) -> bool {
+        let Some(path) = ctx.layers.path_of_id(self.id) else {
+            return false;
+        };
+        let Some((index, parent)) = path.split_last() else {
+            return false;
+        };
+        let (index, parent) = (*index, parent.to_vec());
+        let count = if parent.is_empty() {
+            ctx.layers.len()
+        } else {
+            ctx.layers
+                .layer_at(&parent)
+                .map(|l| l.child_count())
+                .unwrap_or(0)
+        };
+        let target = if up {
+            index.checked_sub(1)
+        } else {
+            Some(index + 1).filter(|t| *t < count)
+        };
+        let Some(target) = target else {
+            return false; // 已在端点
+        };
+        let moved = ctx.layers.swap_siblings(&parent, index, target);
+        if moved {
+            ctx.layers.set_current_by_id(self.id);
+        }
+        moved
+    }
 }
 
 impl Command for BubbleLayer {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
-        let Some(idx) = ctx.layers.index_of_id(self.id) else {
-            return false;
-        };
-        let target = if self.up { idx.checked_sub(1) } else { Some(idx + 1) };
-        let Some(target) = target.filter(|&t| t < ctx.layers.len()) else {
-            return false; // 已在端点，动不了
-        };
-        let layer = ctx.layers.remove(idx);
-        ctx.layers.insert(target, layer);
-        ctx.layers.set_current_by_id(self.id);
-        true
+        self.swap(ctx, self.up)
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        // 反向再换一次
-        let Some(idx) = ctx.layers.index_of_id(self.id) else {
-            return;
-        };
-        let target = if self.up { idx + 1 } else { idx.checked_sub(1).unwrap_or(idx) };
-        if target < ctx.layers.len() {
-            let layer = ctx.layers.remove(idx);
-            ctx.layers.insert(target, layer);
-            ctx.layers.set_current_by_id(self.id);
-        }
+        // 换位是自逆的：反方向再换一次
+        self.swap(ctx, !self.up);
     }
 
     fn display_name(&self) -> String {
@@ -794,42 +835,6 @@ impl Command for BubbleLayer {
         } else {
             "Move Layer Down".to_string()
         }
-    }
-}
-
-/// `RestackLayer`（`lib/command.py:1254`）：把层移到指定索引（拖拽重排用）。
-pub struct RestackLayer {
-    id: u64,
-    from_index: usize,
-    to_index: usize,
-}
-
-impl RestackLayer {
-    pub fn new(id: u64, from_index: usize, to_index: usize) -> Self {
-        Self { id, from_index, to_index }
-    }
-}
-
-impl Command for RestackLayer {
-    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
-        let Some(idx) = ctx.layers.index_of_id(self.id) else {
-            return false;
-        };
-        let layer = ctx.layers.remove(idx);
-        ctx.layers.insert(self.to_index, layer);
-        ctx.layers.set_current_by_id(self.id);
-        true
-    }
-    fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        let Some(idx) = ctx.layers.index_of_id(self.id) else {
-            return;
-        };
-        let layer = ctx.layers.remove(idx);
-        ctx.layers.insert(self.from_index.min(ctx.layers.len()), layer);
-        ctx.layers.set_current_by_id(self.id);
-    }
-    fn display_name(&self) -> String {
-        "Move Layer in Stack".to_string()
     }
 }
 
@@ -1014,13 +1019,15 @@ impl Command for SetLayerOpacity {
         if self.old.is_none() {
             self.old = Some(layer.opacity);
         }
-        layer.opacity = self.new_opacity;
+        // 走设置器：直通组的 opacity 不可改（core.py:281-293）
+        layer.set_opacity(self.new_opacity);
         ctx.layers.touch();
         true
     }
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
-            layer.opacity = self.old.unwrap_or(1.0);
+            let old = self.old.unwrap_or(1.0);
+            layer.set_opacity(old);
         }
         ctx.layers.touch();
     }
@@ -1029,9 +1036,7 @@ impl Command for SetLayerOpacity {
             return false;
         };
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
-            if layer.opacity != *opacity {
-                layer.opacity = *opacity;
-            }
+            layer.set_opacity(*opacity);
         }
         self.new_opacity = *opacity;
         ctx.layers.touch();
@@ -1046,12 +1051,12 @@ impl Command for SetLayerOpacity {
 /// （源码就是这么写的——为 NormalizeLayerMode 的联动留的口子）。
 pub struct SetLayerMode {
     id: u64,
-    new_mode: CombineMode,
-    old: Option<(CombineMode, f32)>,
+    new_mode: LayerMode,
+    old: Option<(LayerMode, f32)>,
 }
 
 impl SetLayerMode {
-    pub fn new(id: u64, mode: CombineMode) -> Self {
+    pub fn new(id: u64, mode: LayerMode) -> Self {
         Self { id, new_mode: mode, old: None }
     }
 }
@@ -1064,15 +1069,18 @@ impl Command for SetLayerMode {
         if self.old.is_none() {
             self.old = Some((layer.mode, layer.opacity));
         }
-        layer.mode = self.new_mode;
+        // 照 `core.py:473-494` 的设置器语义（直通强制 opacity=1、非法回落默认）
+        layer.set_mode(self.new_mode);
         ctx.layers.touch();
         true
     }
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
             if let Some((mode, opacity)) = self.old {
-                layer.mode = mode;
-                layer.opacity = opacity;
+                // 顺序照 `command.py:1557-1560`：先 mode 后 opacity
+                // （pass-through 下 opacity 会被拒，必须先把 mode 换回来）
+                layer.set_mode(mode);
+                layer.set_opacity(opacity);
             }
         }
         ctx.layers.touch();
@@ -1082,38 +1090,57 @@ impl Command for SetLayerMode {
     }
 }
 
-/// `MergeLayerDown`（`lib/command.py:889`）：当前层并入下面一层。
+/// `MergeLayerDown`（`lib/command.py:889`）：当前层并入**下一个兄弟**。
 ///
-/// 像素语义照 `tree.py:2035-2119` 的 `layer_new_merge_down`：两层都必须
-/// 可见、下层须可合并（存在、可见、未锁），逐 tile 按各层**自身**的模式
-/// （SpectralWGM 保留、其余归一为 Normal）与有效不透明度合成到一块新层；
+/// 结构照 `tree.py:2003 get_merge_down_target`：目标 = `path[:-1] + (path[-1]+1,)`，
+/// 换言之只在**同一父层内**往下并；两层都须可归一化
+/// （`core.py:644 get_mode_normalizable`：零 alpha 有作用/会减背板 alpha 的
+/// 模式不行）且未锁。
+///
+/// 像素语义：逐 tile 把两层各自**自己的 op**（`Layer::compose_tile_into`——
+/// 包含组隔离/直通与层自身模式、有效不透明度）按「先下后上」叠到新层；
 /// 新层模式照 `:2092-2095`（上层是 SpectralWGM → SpectralWGM，否则 Normal）。
+/// 记账：MyPaint 的 `layer_new_normalized` 还会渲染并**减去背板**
+/// （对 Multiply 这类依赖背板的模式才严格等价），本实现取「自身 op 叠合」的
+/// 近似——视觉结果在两层之间一致，与更下方背板的交互可能不同。
 pub struct MergeLayerDown {
+    path: Vec<usize>,
+    target_path: Vec<usize>,
     upper_id: u64,
-    lower_id: u64,
-    upper_index: usize,
     merged: Option<Layer>,
     upper_layer: Option<Layer>,
     lower_layer: Option<Layer>,
 }
 
+/// `core.py:644 get_mode_normalizable`：零 alpha 有作用或会减背板 alpha 的模式
+/// 不能归一化（`modes.py:197/205` 的两个集合）。
+pub fn normalizable(layer: &Layer) -> bool {
+    match layer.mode.combine() {
+        Some(mode) => !mode.zero_alpha_has_effect() && !mode.can_decrease_alpha(),
+        // 直通组（mode=-1）不在两个集合里 → 可归一化（`tree.py:1946-1947`）
+        None => true,
+    }
+}
+
 impl MergeLayerDown {
     pub fn new(ctx: &mut DocContext<'_>) -> Option<Self> {
-        let upper_index = ctx.layers.current_index();
-        let lower_index = upper_index + 1;
-        if lower_index >= ctx.layers.len() {
+        let path = ctx.layers.current_path().to_vec();
+        let (index, parent) = path.split_last()?;
+        let mut target_path = parent.to_vec();
+        target_path.push(index + 1);
+        let upper = ctx.layers.layer_at(&path)?;
+        let lower = ctx.layers.layer_at(&target_path)?;
+        // 两端都须未锁（含祖先锁）且可归一化
+        if ctx.layers.branch_locked(&path) || ctx.layers.branch_locked(&target_path) {
             return None;
         }
-        let upper = ctx.layers.layer(upper_index);
-        let lower = ctx.layers.layer(lower_index);
-        // get_merge_down_target（tree.py:2003）的平面栈版
-        if !upper.visible || !lower.visible || lower.locked {
+        if !normalizable(upper) || !normalizable(lower) {
             return None;
         }
         Some(Self {
+            path,
+            target_path,
             upper_id: upper.id,
-            lower_id: lower.id,
-            upper_index,
             merged: None,
             upper_layer: None,
             lower_layer: None,
@@ -1123,90 +1150,164 @@ impl MergeLayerDown {
 
 impl Command for MergeLayerDown {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
-        let merged = self.merged.take().unwrap_or_else(|| {
-            // 首次执行：现场计算合并结果
-            let upper = ctx.layers.layer_by_id(self.upper_id).expect("上层丢失").clone();
-            let lower = ctx.layers.layer_by_id(self.lower_id).expect("下层丢失").clone();
-            let merged_mode = if upper.mode == CombineMode::SpectralWGM {
-                CombineMode::SpectralWGM
-            } else {
-                CombineMode::Normal
-            };
-            let mut merged = Layer::new();
-            merged.mode = merged_mode;
-            // 合并名字：照 tree.py:2097-2106（取有意义的名字，", " 连接）
-            let names: Vec<String> = [lower.name.clone(), upper.name.clone()]
-                .into_iter()
-                .flatten()
-                .collect();
-            if !names.is_empty() {
-                merged.name = Some(names.join(", "));
-            }
-            // 逐 tile 合成：先下层后上层，各用自身模式与有效不透明度
-            let mut coords: Vec<(i32, i32)> = Vec::new();
-            for (c, _) in lower.surface.tiles() {
-                coords.push(c);
-            }
-            for (c, _) in upper.surface.tiles() {
-                if !coords.contains(&c) {
-                    coords.push(c);
+        let merged = match self.merged.take() {
+            Some(m) => m,
+            None => {
+                // 首次执行：现场计算合并结果
+                let upper = ctx.layers.layer_at(&self.path).expect("上层丢失").clone();
+                let lower = ctx.layers.layer_at(&self.target_path).expect("下层丢失").clone();
+                let merged_mode = if upper.mode.combine() == Some(CombineMode::SpectralWGM) {
+                    LayerMode::Standard(CombineMode::SpectralWGM)
+                } else {
+                    LayerMode::Standard(CombineMode::Normal)
+                };
+                let mut merged = Layer::new();
+                merged.set_mode(merged_mode);
+                // 合并名字：照 tree.py:2097-2106（取有意义的名字，", " 连接）
+                let names: Vec<String> = [lower.name.clone(), upper.name.clone()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if !names.is_empty() {
+                    merged.name = Some(names.join(", "));
                 }
-            }
-            for (tx, ty) in coords {
-                let mut dst = vec![0u16; 64 * 64 * 4];
-                for layer in [&lower, &upper] {
-                    if !layer.visible {
-                        continue;
+                // 逐 tile 叠合：先下层后上层，各用自身 op（模式/不透明度都在内）
+                let mut coords: Vec<(i32, i32)> = lower.tile_coords();
+                for c in upper.tile_coords() {
+                    if !coords.contains(&c) {
+                        coords.push(c);
                     }
-                    let mode = if layer.mode == CombineMode::SpectralWGM {
-                        CombineMode::SpectralWGM
-                    } else {
-                        CombineMode::Normal
-                    };
-                    match layer.surface.tile(tx, ty) {
-                        Some(src) => {
-                            let flat: Vec<u16> =
-                                src.as_flattened().as_flattened().to_vec();
-                            pigment_surface::combine::tile_combine(
-                                mode,
-                                &flat,
-                                &mut dst,
-                                true,
-                                layer.effective_opacity(),
-                            );
+                }
+                let mut buf = vec![0u16; 64 * 64 * 4];
+                let mut acc = vec![0u16; 64 * 64 * 4];
+                for (tx, ty) in coords {
+                    acc.fill(0);
+                    let mut has_alpha = true;
+                    let mut any = false;
+                    for layer in [&lower, &upper] {
+                        if !layer.compose_tile_into(tx, ty, &mut buf) {
+                            continue;
                         }
-                        None => continue,
+                        pigment_surface::combine::tile_combine(
+                            CombineMode::Normal,
+                            &buf,
+                            &mut acc,
+                            has_alpha,
+                            1.0,
+                        );
+                        has_alpha = true;
+                        any = true;
+                    }
+                    if any {
+                        if let Some(surface) = merged.surface_mut() {
+                            surface.paste_tile(tx, ty, &acc);
+                        }
                     }
                 }
-                merged.surface.paste_tile(tx, ty, &dst);
+                merged
             }
-            merged
-        });
-        // 弹出两层、插入合并层（照源码次序：先 lower 再 upper，同位插入）
-        self.lower_layer = ctx.layers.remove_by_id(self.lower_id);
-        self.upper_layer = ctx.layers.remove_by_id(self.upper_id);
-        let idx = self.upper_index.min(ctx.layers.len());
-        ctx.layers.insert(idx, merged);
-        let merged_id = ctx.layers.layer(idx).id;
+        };
+        // 弹出两层、在同一位置插入合并层（照源码次序：先 lower 再 upper）
+        self.lower_layer = ctx.layers.remove_at(&self.target_path);
+        self.upper_layer = ctx.layers.remove_at(&self.path);
+        let Some(p) = ctx.layers.insert_at(&self.path, merged) else {
+            return false;
+        };
+        let merged_id = ctx.layers.layer_at(&p).map(|l| l.id).unwrap_or(0);
         ctx.layers.set_current_by_id(merged_id);
         true
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        // 取出合并层，塞回两层
-        let merged = ctx.layers.remove(self.upper_index.min(ctx.layers.len() - 1));
-        self.merged = Some(merged);
+        // 取出合并层，塞回两层（同一位置：先 lower 再 upper）
+        let merged = ctx.layers.remove_at(&self.path);
+        self.merged = merged;
         let lower = self.lower_layer.take().expect("undo 先于 redo？");
         let upper = self.upper_layer.take().expect("undo 先于 redo？");
-        let idx = self.upper_index.min(ctx.layers.len());
-        ctx.layers.insert(idx, lower);
-        let idx2 = self.upper_index.min(ctx.layers.len());
-        ctx.layers.insert(idx2, upper);
+        ctx.layers.insert_at(&self.target_path, lower);
+        ctx.layers.insert_at(&self.path, upper);
         ctx.layers.set_current_by_id(self.upper_id);
     }
 
     fn display_name(&self) -> String {
         "Merge Down".to_string()
+    }
+}
+
+/// `RestackLayer`（`lib/command.py:1254`）：把一层挪到另一个位置（可跨组）。
+///
+/// 目标路径是 **deepinsert 语义**：前几段指向组，最后一段是插入索引。
+/// 用「占位层」保索引稳定（照 `command.py:1310-1337`）：先把源位置换成一个
+/// 空占位层，插入移动层，再删占位层——否则目标在同父层下方时索引会漂。
+///
+/// 记账：源码「目标父是数据层 → 现场新建父组」的分支未移植（面板拖动只允许
+/// 拖进组或拖到行间）；`ValueError` 的三种校验改为 `new` 返回 `None`。
+pub struct RestackLayer {
+    src_path: Vec<usize>,
+    targ_path: Vec<usize>,
+    moved_id: u64,
+    /// redo 之后移动层的新路径（undo 用它定位）。
+    after_path: Vec<usize>,
+}
+
+impl RestackLayer {
+    pub fn new(ctx: &mut DocContext<'_>, src_path: Vec<usize>, targ_path: Vec<usize>) -> Option<Self> {
+        if targ_path.is_empty() || targ_path.starts_with(&src_path) {
+            return None; // 不能挪进自己/自己内部，也不能挪到根
+        }
+        let moved = ctx.layers.layer_at(&src_path)?;
+        // 目标父必须是存在的组（空路径 = 根）
+        let parent = &targ_path[..targ_path.len() - 1];
+        if !parent.is_empty() && ctx.layers.layer_at(parent).map(|l| l.is_group()) != Some(true) {
+            return None;
+        }
+        Some(Self {
+            src_path,
+            targ_path,
+            moved_id: moved.id,
+            after_path: Vec::new(),
+        })
+    }
+
+    fn move_to(&mut self, ctx: &mut DocContext<'_>, src: &[usize], targ: &[usize]) -> bool {
+        let Some(layer) = ctx.layers.remove_at(src) else {
+            return false;
+        };
+        // 占位层保住源位置的索引（照 command.py:1310-1314）
+        let placeholder = Layer::new();
+        let ph_id = placeholder.id;
+        if ctx.layers.insert_at(src, placeholder).is_none() {
+            return false;
+        }
+        if ctx.layers.insert_at(targ, layer).is_none() {
+            ctx.layers.remove_by_id(ph_id);
+            return false;
+        }
+        ctx.layers.remove_by_id(ph_id);
+        match ctx.layers.path_of_id(self.moved_id) {
+            Some(p) => {
+                self.after_path = p.clone();
+                ctx.layers.set_current_path(&p);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Command for RestackLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let (src, targ) = (self.src_path.clone(), self.targ_path.clone());
+        self.move_to(ctx, &src, &targ)
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        let (src, targ) = (self.after_path.clone(), self.src_path.clone());
+        self.move_to(ctx, &src, &targ);
+    }
+
+    fn display_name(&self) -> String {
+        "Move Layer in Stack".to_string()
     }
 }
 
@@ -1375,7 +1476,7 @@ mod tests {
         let mut state = BrushState::default();
         let mut bw = Brushwork::new();
         bw.target_layer = Some(stack.current_id());
-        let surface = &mut stack.current_mut().surface;
+        let surface = &mut stack.current_mut().surface_mut().expect("Test: 当前层必须是绘画层");
         for i in 0..40 {
             let ev = StrokeEvent::new(
                 0.016,
@@ -1399,10 +1500,10 @@ mod tests {
         let mut st = LayerStack::new();
         let mut t = 0.0;
         let bw = paint_a_stroke(&mut st);
-        assert!(st.current().surface.tile_count() > 0, "应先画出内容");
+        assert!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count() > 0, "应先画出内容");
         let painted: Vec<_> = st
             .current()
-            .surface
+            .surface().unwrap()
             .tiles()
             .map(|(c, tile)| (c, tile.pixels().to_vec()))
             .collect();
@@ -1413,15 +1514,15 @@ mod tests {
 
         // 撤销 → 画布清空
         assert!(stack.undo(&mut ctx(&mut st, &mut t)).is_some());
-        assert_eq!(st.current().surface.tile_count(), 0, "撤销后不该有像素");
+        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0, "撤销后不该有像素");
         assert_eq!(t, 0.0);
 
         // 重做 → 像素逐个还原
         assert!(stack.redo(&mut ctx(&mut st, &mut t)).is_some());
-        assert_eq!(st.current().surface.tile_count(), painted.len());
+        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), painted.len());
         for (coord, px) in &painted {
             assert_eq!(
-                st.current().surface.tile(coord.0, coord.1).map(|t| t.to_vec()),
+                st.current().surface().expect("Test: 当前层必须是绘画层").tile(coord.0, coord.1).map(|t| t.to_vec()),
                 Some(px.clone()),
                 "重做应逐像素还原 {coord:?}"
             );
@@ -1456,9 +1557,9 @@ mod tests {
         let state = BrushState::default();
         let mut st = LayerStack::new();
         let mut bw = Brushwork::new();
-        bw.start_recording(&st.current().surface, &brush, "Test", &state).unwrap();
+        bw.start_recording(&st.current().surface().expect("Test: 当前层必须是绘画层"), &brush, "Test", &state).unwrap();
         assert!(
-            !bw.stop_recording(&mut st.current_mut().surface, &state, false),
+            !bw.stop_recording(&mut st.current_mut().surface_mut().expect("Test: 当前层必须是绘画层"), &state, false),
             "空笔画返回 false"
         );
         assert!(bw.stroke().unwrap().is_empty());
@@ -1471,7 +1572,7 @@ mod tests {
         let mut state = BrushState::default();
         let mut st = LayerStack::new();
         let mut bw = Brushwork::new();
-        let surface = &mut st.current_mut().surface;
+        let surface = &mut st.current_mut().surface_mut().expect("Test: 当前层必须是绘画层");
         for i in 0..40 {
             let ev = StrokeEvent::new(0.016, i as f32 * 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
             bw.stroke_to(surface, &brush, "Test", &mut state, ev);
@@ -1487,14 +1588,14 @@ mod tests {
     fn solid_stack() -> LayerStack {
         // 两层：0=红（顶），1=空（底），模式 Normal
         let mut st = LayerStack::new();
-        st.layer_mut(0).mode = pigment_surface::combine::CombineMode::Normal;
+        st.layer_mut(0).set_mode(pigment_surface::layer::LayerMode::Standard(pigment_surface::combine::CombineMode::Normal));
         let mut red = Layer::new();
-        red.mode = pigment_surface::combine::CombineMode::Normal;
+        red.set_mode(pigment_surface::layer::LayerMode::Standard(pigment_surface::combine::CombineMode::Normal));
         let mut px = Vec::new();
         for _ in 0..64 * 64 {
             px.extend_from_slice(&[255, 0, 0, 255]);
         }
-        red.surface.load_from_rgba8(&px, 0, 0, 64, 64);
+        red.surface_mut().unwrap().load_from_rgba8(&px, 0, 0, 64, 64);
         st.insert(0, red);
         st
     }
@@ -1508,7 +1609,7 @@ mod tests {
         st.set_current_index(0);
 
         assert!(stack.do_command(
-            Box::new(AddLayer::new(0, Layer::new(), false)),
+            Box::new(AddLayer::new(vec![0], Layer::new(), false)),
             &mut ctx(&mut st, &mut t)
         ));
         assert_eq!(st.len(), 3);
@@ -1528,7 +1629,7 @@ mod tests {
         let mut t = 0.0;
         let mut stack = CommandStack::new(8);
         let red_id = st.layer(0).id;
-        let red_tiles = st.layer(0).surface.tile_count();
+        let red_tiles = st.layer(0).surface().unwrap().tile_count();
         assert!(red_tiles > 0);
         st.set_current_index(0);
 
@@ -1540,7 +1641,7 @@ mod tests {
         stack.undo(&mut ctx(&mut st, &mut t));
         assert_eq!(st.len(), 2);
         let restored = st.layer_by_id(red_id).expect("撤销应恢复红层");
-        assert_eq!(restored.surface.tile_count(), red_tiles);
+        assert_eq!(restored.surface().unwrap().tile_count(), red_tiles);
         assert_eq!(st.current_id(), red_id, "撤销后当前层回到被恢复的层");
     }
 
@@ -1613,18 +1714,18 @@ mod tests {
         assert_eq!(st.layer_by_id(id).unwrap().opacity, 0.5);
 
         assert!(stack.do_command(
-            Box::new(SetLayerMode::new(id, pigment_surface::combine::CombineMode::Multiply)),
+            Box::new(SetLayerMode::new(id, LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply))),
             &mut ctx(&mut st, &mut t)
         ));
         assert_eq!(
             st.layer_by_id(id).unwrap().mode,
-            pigment_surface::combine::CombineMode::Multiply
+            LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply)
         );
 
         stack.undo(&mut ctx(&mut st, &mut t)); // 撤销模式
         assert_eq!(
             st.layer_by_id(id).unwrap().mode,
-            pigment_surface::combine::CombineMode::Normal
+            LayerMode::Standard(pigment_surface::combine::CombineMode::Normal)
         );
         stack.undo(&mut ctx(&mut st, &mut t)); // 撤销不透明度
         assert_eq!(st.layer_by_id(id).unwrap().opacity, 1.0);
@@ -1635,7 +1736,7 @@ mod tests {
             "Set Layer Opacity: 34.5%"
         );
         assert_eq!(
-            SetLayerMode::new(id, pigment_surface::combine::CombineMode::SpectralWGM).display_name(),
+            SetLayerMode::new(id, LayerMode::Standard(pigment_surface::combine::CombineMode::SpectralWGM)).display_name(),
             "Set Layer Mode: Pigment"
         );
     }
@@ -1652,13 +1753,13 @@ mod tests {
         assert_eq!(st.len(), 1, "两层并一层");
         let merged = st.layer(0);
         assert!(
-            merged.surface.tile_count() > 0,
+            merged.surface().unwrap().tile_count() > 0,
             "合并层应携带红层的内容"
         );
 
         stack.undo(&mut ctx(&mut st, &mut t));
         assert_eq!(st.len(), 2);
-        assert!(st.layer(0).surface.tile_count() > 0, "上层应带着像素回来");
+        assert!(st.layer(0).surface().unwrap().tile_count() > 0, "上层应带着像素回来");
         assert_eq!(st.current_id(), st.layer(0).id);
     }
 
@@ -1675,7 +1776,7 @@ mod tests {
         for _ in 0..3 {
             stack.undo(&mut ctx(&mut st, &mut t));
         }
-        assert_eq!(st.current().surface.tile_count(), 0, "三次撤销后应回到空画布");
+        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0, "三次撤销后应回到空画布");
     }
 
     /// 撤销之后再画一笔：redo 栈被清空（新命令顶掉旧的分支）。
@@ -1702,7 +1803,7 @@ mod tests {
         let mut stack = CommandStack::new(8);
         let bw = paint_a_stroke(&mut st);
         stack.do_command(Box::new(bw), &mut ctx(&mut st, &mut t));
-        let before: Vec<(i32, i32)> = st.current().surface.tiles().map(|(c, _)| c).collect();
+        let before: Vec<(i32, i32)> = st.current().surface().expect("Test: 当前层必须是绘画层").tiles().map(|(c, _)| c).collect();
 
         // 换成半径更大的笔刷重绘
         let fatter = test_brush(4.0);
@@ -1714,7 +1815,7 @@ mod tests {
             },
         );
         assert!(name.is_some());
-        let after: Vec<(i32, i32)> = st.current().surface.tiles().map(|(c, _)| c).collect();
+        let after: Vec<(i32, i32)> = st.current().surface().expect("Test: 当前层必须是绘画层").tiles().map(|(c, _)| c).collect();
         assert_ne!(before, after, "更大的笔刷应铺到更多 tile");
         let display = stack.get_last_command().unwrap().display_name();
         assert!(
@@ -1724,7 +1825,7 @@ mod tests {
 
         // 更新后的状态仍可撤销回起笔前
         stack.undo(&mut ctx(&mut st, &mut t));
-        assert_eq!(st.current().surface.tile_count(), 0);
+        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0);
     }
 
     /// 不能更新已经被撤销掉的命令：此时命令在 redo 栈上，`undo()` 清掉了

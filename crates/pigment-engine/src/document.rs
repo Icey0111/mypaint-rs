@@ -28,6 +28,7 @@
 
 use std::collections::BTreeMap;
 
+use pigment_surface::layer::{LayerContent, LayerMode};
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
@@ -35,6 +36,30 @@ use crate::command::{
     DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
+
+/// 把 `fileio` 载入的层树转成 `pigment_surface` 的图层树（`_layers` 序不变）。
+fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
+    nodes
+        .into_iter()
+        .map(|d| {
+            let content = match d.content {
+                fileio::OraContent::Painting(surface) => LayerContent::Painting(surface),
+                fileio::OraContent::Group(children) => {
+                    // 组：子层递归建栈（组可以是空栈，group.py:78）
+                    LayerContent::Group(LayerStack::from_children(ora_layers_to_layers(children)))
+                }
+            };
+            let mut layer = Layer::new();
+            layer.content = content;
+            layer.name = d.name;
+            layer.mode = d.mode;
+            layer.opacity = d.opacity;
+            layer.visible = d.visible;
+            layer.locked = d.locked;
+            layer
+        })
+        .collect()
+}
 
 /// 文档模型：一个图层栈 + 一条撤销栈 + 画幅/分辨率/设置。
 pub struct Document {
@@ -97,17 +122,40 @@ impl Document {
         &mut self.layers
     }
 
-    /// **当前层**的表面。作画请走 [`Document::surface_mut`]；
-    /// 显示合成应走 [`LayerStack::composite_tile`]（含背景与各层混合模式）。
+    /// **当前层**的表面（只对绘画层有意义；组会 panic）。
+    ///
+    /// 作画请走 [`Document::surface_mut`]（它会跳过组/锁/隐藏分支）；
+    /// 显示合成走 [`LayerStack::composite_tile`]（含背景与各层混合模式）。
     #[inline]
     pub fn surface(&self) -> &PigmentSurface {
-        &self.layers.current().surface
+        self.layers
+            .current()
+            .surface()
+            .expect("当前层是组，没有表面（用 paintable_surface_mut / composite_tile）")
     }
 
-    /// 当前层表面的可变借用（照旧供作画热路径使用）。
+    /// 当前层表面的可变借用（供作画热路径使用；组会 panic）。
+    ///
+    /// UI 作画入口请用 [`Document::paintable_surface_mut`]：当前层是组、
+    /// 被锁或祖先不可见时它是 `None`（`data.py:1364 get_paintable`）。
     #[inline]
     pub fn surface_mut(&mut self) -> &mut PigmentSurface {
-        &mut self.layers.current_mut().surface
+        self.layers
+            .current_mut()
+            .surface_mut()
+            .expect("当前层是组，没有表面（用 paintable_surface_mut）")
+    }
+
+    /// 可画的当前表面；不可画（组/锁/隐藏分支）时 `None`。
+    #[inline]
+    pub fn paintable_surface_mut(&mut self) -> Option<&mut PigmentSurface> {
+        self.layers.paintable_surface_mut()
+    }
+
+    /// 当前层的**只读**表面（组 → `None`；诊断/导出用）。
+    #[inline]
+    pub fn paintable_surface(&self) -> Option<&PigmentSurface> {
+        self.layers.current().surface()
     }
 
     /// 当前层（只读）。
@@ -136,13 +184,33 @@ impl Document {
         )
     }
 
-    // ---- 图层操作入口（构造命令 + 入栈；B2-3）----
+    // ---- 图层操作入口（构造命令 + 入栈；B2-3 起按路径寻址，B2-6 起支持组）----
 
-    /// 新建图层并插入到当前层之上（`lib/document.py` 的 `add_layer`；
-    /// UI 层 `layerswindow` 的 AddLayerAction 走这里）。
+    /// 当前层路径（`tree.py:954`）。
+    pub fn current_path(&self) -> &[usize] {
+        self.layers.current_path()
+    }
+
+    /// 在 `insert_path` 处新建一层（`document.py:1290 add_layer`）。
+    pub fn add_layer_at(&mut self, insert_path: Vec<usize>, layer: Layer, is_import: bool) -> bool {
+        self.do_command(Box::new(crate::command::AddLayer::new(
+            insert_path,
+            layer,
+            is_import,
+        )))
+    }
+
+    /// 在**当前层位置**新建绘画层（`NewPaintingLayerAbove`：
+    /// `add_layer(path=current_path)`，新层落在当前层的同父同索引）。
     pub fn add_layer(&mut self) -> bool {
-        let index = self.layers.current_index();
-        self.do_command(Box::new(crate::command::AddLayer::new(index, Layer::new(), false)))
+        let path = self.layers.current_path().to_vec();
+        self.add_layer_at(path, Layer::new(), false)
+    }
+
+    /// 在**当前层位置**新建组（`NewLayerGroupAbove`：`layer_class=LayerStack`）。
+    pub fn add_group(&mut self) -> bool {
+        let path = self.layers.current_path().to_vec();
+        self.add_layer_at(path, Layer::new_group(), false)
     }
 
     /// 移除当前层（`RemoveLayer`）。
@@ -153,19 +221,19 @@ impl Document {
     }
 
     /// 切换当前层（`SelectLayer`，自动撤销类）。
-    pub fn select_layer(&mut self, index: usize) {
-        if index >= self.layers.len() {
+    pub fn select_layer(&mut self, path: &[usize]) {
+        let Some(layer) = self.layers.layer_at(path) else {
             return;
-        }
+        };
+        let new = layer.id;
         let prev = self.layers.current_id();
-        let new = self.layers.layer(index).id;
         if prev == new {
             return;
         }
         self.do_command(Box::new(crate::command::SelectLayer::new(prev, new)));
     }
 
-    /// 当前层上移一格（朝栈顶；`BubbleLayerUp`）。
+    /// 当前层上移一格（朝同层栈顶；`BubbleLayerUp`）。
     pub fn bubble_layer_up(&mut self) -> bool {
         let id = self.layers.current_id();
         self.do_command(Box::new(crate::command::BubbleLayer::up(id)))
@@ -177,7 +245,17 @@ impl Document {
         self.do_command(Box::new(crate::command::BubbleLayer::down(id)))
     }
 
-    /// 合并当前层到下层（`MergeLayerDown`；不可合并时静默不做——
+    /// 把 `src_path` 的层挪到 `targ_path`（deepinsert 语义；可跨组）。
+    /// 返回命令是否入栈（非法目标 / 目标父不是组时返回 false）。
+    pub fn restack_layer(&mut self, src_path: Vec<usize>, targ_path: Vec<usize>) -> bool {
+        let (stack, mut ctx) = self.split();
+        let Some(cmd) = crate::command::RestackLayer::new(&mut ctx, src_path, targ_path) else {
+            return false;
+        };
+        stack.do_command(Box::new(cmd), &mut ctx)
+    }
+
+    /// 合并当前层到下一个兄弟（`MergeLayerDown`；不可合并时静默不做——
     /// UI 侧的动作可用性检查共用 [`crate::command::MergeLayerDown::new`] 的判据）。
     pub fn merge_layer_down(&mut self) -> bool {
         let (stack, mut ctx) = self.split();
@@ -195,8 +273,8 @@ impl Document {
     }
 
     /// 设置图层可见性（`SetLayerVisibility`）。
-    pub fn set_layer_visible(&mut self, index: usize, visible: bool) -> bool {
-        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+    pub fn set_layer_visible(&mut self, path: &[usize], visible: bool) -> bool {
+        let Some(id) = self.layers.layer_at(path).map(|l| l.id) else {
             return false;
         };
         // 合并语义（document.py:1368-1378）：栈顶已是**同层同类**命令 → update
@@ -211,8 +289,8 @@ impl Document {
     }
 
     /// 设置图层锁定（`SetLayerLocked`）。
-    pub fn set_layer_locked(&mut self, index: usize, locked: bool) -> bool {
-        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+    pub fn set_layer_locked(&mut self, path: &[usize], locked: bool) -> bool {
+        let Some(id) = self.layers.layer_at(path).map(|l| l.id) else {
             return false;
         };
         // 合并语义（document.py:1380-1390）
@@ -224,8 +302,8 @@ impl Document {
     }
 
     /// 设置图层不透明度（`SetLayerOpacity`）。
-    pub fn set_layer_opacity(&mut self, index: usize, opacity: f32) -> bool {
-        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+    pub fn set_layer_opacity(&mut self, path: &[usize], opacity: f32) -> bool {
+        let Some(id) = self.layers.layer_at(path).map(|l| l.id) else {
             return false;
         };
         // 合并语义（document.py:1392-1410）：滑条连续拖动只在栈顶更新
@@ -236,17 +314,17 @@ impl Document {
         self.do_command(Box::new(crate::command::SetLayerOpacity::new(id, opacity)))
     }
 
-    /// 设置图层混合模式（`SetLayerMode`）。
-    pub fn set_layer_mode(&mut self, index: usize, mode: pigment_surface::combine::CombineMode) -> bool {
-        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+    /// 设置图层混合模式（`SetLayerMode`；组还可以设 `PassThrough`）。
+    pub fn set_layer_mode(&mut self, path: &[usize], mode: LayerMode) -> bool {
+        let Some(id) = self.layers.layer_at(path).map(|l| l.id) else {
             return false;
         };
         self.do_command(Box::new(crate::command::SetLayerMode::new(id, mode)))
     }
 
     /// 重命名图层（`RenameLayer`）。
-    pub fn rename_layer(&mut self, index: usize, name: Option<String>) -> bool {
-        let Some(id) = self.layers.try_layer(index).map(|l| l.id) else {
+    pub fn rename_layer(&mut self, path: &[usize], name: Option<String>) -> bool {
+        let Some(id) = self.layers.layer_at(path).map(|l| l.id) else {
             return false;
         };
         // 合并语义（document.py:1305-1317）：连续重命名只留栈顶一条
@@ -318,26 +396,9 @@ impl Document {
     ///
     /// 与 MyPaint 一致地**按 tile 边界取整**（`lib/tiledsurface.py` 的
     /// `get_bbox()`），因为它会被 `.ora`/`.png` 导出直接当画幅用。
-    /// 逐层取 [`Layer::data_bbox`] 再并（照 `helpers.coordinate_bounds`）。
+    /// 整棵树逐层取 [`Layer::data_bbox`] 再并（照 `helpers.coordinate_bounds`）。
     pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
-        let mut acc: Option<(i32, i32, i32, i32)> = None;
-        for (_, layer) in self.layers.iter_top_down() {
-            let b = layer.data_bbox();
-            if b.2 == 0 || b.3 == 0 {
-                continue; // 空层不参与并集（否则 (0,0,0,0) 会把外接框拉到原点）
-            }
-            acc = Some(match acc {
-                None => b,
-                Some((x0, y0, w, h)) => {
-                    let nx = x0.min(b.0);
-                    let ny = y0.min(b.1);
-                    let nx1 = (x0 + w).max(b.0 + b.2);
-                    let ny1 = (y0 + h).max(b.1 + b.3);
-                    (nx, ny, nx1 - nx, ny1 - ny)
-                }
-            });
-        }
-        acc.unwrap_or((0, 0, 0, 0))
+        self.layers.data_bbox()
     }
 
     /// 清空文档（`lib/document.py:923`）：丢内容、清栈、作画时长归零。
@@ -448,20 +509,12 @@ impl Document {
         let outcome = match fileio::format_for_path(path) {
             Some(Format::Ora) => {
                 let loaded = fileio::load_ora(path)?;
-                // 组栈：XML 文档序 = 自顶向下（OraLoaded::layers 注释）
-                let mut vec = Vec::with_capacity(loaded.layers.len());
-                for d in loaded.layers {
-                    let mut layer = Layer::new();
-                    layer.surface = d.surface;
-                    layer.name = d.name;
-                    layer.mode = d.mode;
-                    layer.opacity = d.opacity;
-                    layer.visible = d.visible;
-                    layer.locked = d.locked;
-                    vec.push(layer);
-                }
+                // 组栈：XML 文档序 = 自顶向下；组递归成嵌套 LayerStack
+                let vec = ora_layers_to_layers(loaded.layers);
                 let mut st = LayerStack::from_layers(vec);
-                st.set_current_index(loaded.current_index.min(st.len() - 1));
+                if let Some(p) = &loaded.current_path {
+                    st.set_current_path(p);
+                }
                 if loaded.background_found {
                     st.set_background_color(loaded.background_color);
                 }
@@ -704,7 +757,7 @@ mod tests {
         doc.duplicate_layer();
         doc.undo();
         // 撤销后又在原层上改名（等价于"撤销后继续改内容"），再 redo
-        doc.rename_layer(0, Some("After Undo".to_string()));
+        doc.rename_layer(&[0], Some("After Undo".to_string()));
         doc.redo();
 
         // 源码每次 redo 都重新 deepcopy(layers.current)，副本要含新改动
@@ -716,7 +769,7 @@ mod tests {
         let mut doc = Document::new();
         let idx = doc.layers().current_index();
         for pct in [90, 80, 70, 60] {
-            doc.set_layer_opacity(idx, pct as f32 / 100.0);
+            doc.set_layer_opacity(&[idx], pct as f32 / 100.0);
         }
         assert_eq!(doc.layers().layer(idx).opacity, 0.6);
         assert_eq!(doc.command_stack.undo_len(), 1, "滑条连续拖动只入栈一条");
@@ -728,9 +781,9 @@ mod tests {
     fn property_change_of_another_kind_is_not_swallowed() {
         let mut doc = Document::new();
         let idx = doc.layers().current_index();
-        doc.set_layer_opacity(idx, 0.5);
+        doc.set_layer_opacity(&[idx], 0.5);
         // 只比图层 id 的判据会误判成"可合并"，这句改动会被 update 拒绝后丢弃
-        doc.set_layer_visible(idx, false);
+        doc.set_layer_visible(&[idx], false);
 
         assert!(!doc.layers().layer(idx).visible, "可见性改动不能被吃掉");
         assert_eq!(doc.command_stack.undo_len(), 2);
@@ -740,8 +793,8 @@ mod tests {
     fn repeated_visibility_toggles_merge_but_keep_the_first_old_value() {
         let mut doc = Document::new();
         let idx = doc.layers().current_index();
-        doc.set_layer_visible(idx, false);
-        doc.set_layer_visible(idx, true);
+        doc.set_layer_visible(&[idx], false);
+        doc.set_layer_visible(&[idx], true);
         assert_eq!(doc.command_stack.undo_len(), 1);
         assert!(doc.layers().layer(idx).visible);
         doc.undo();
@@ -752,8 +805,8 @@ mod tests {
     fn renames_merge_and_undo_returns_to_the_original_name() {
         let mut doc = Document::new();
         let idx = doc.layers().current_index();
-        doc.rename_layer(idx, Some("A".to_string()));
-        doc.rename_layer(idx, Some("B".to_string()));
+        doc.rename_layer(&[idx], Some("A".to_string()));
+        doc.rename_layer(&[idx], Some("B".to_string()));
         assert_eq!(doc.command_stack.undo_len(), 1, "连续重命名只留栈顶一条");
         assert_eq!(doc.layers().layer(idx).name.as_deref(), Some("B"));
 
@@ -770,13 +823,13 @@ mod tests {
         let idx = doc.layers().current_index();
 
         let r0 = doc.layers().composite_revision();
-        doc.set_layer_visible(idx, false);
+        doc.set_layer_visible(&[idx], false);
         let r1 = doc.layers().composite_revision();
         assert_ne!(r0, r1, "可见性变化要抬高水位线");
-        doc.set_layer_opacity(idx, 0.5);
+        doc.set_layer_opacity(&[idx], 0.5);
         let r2 = doc.layers().composite_revision();
         assert_ne!(r1, r2, "不透明度变化要抬高水位线");
-        doc.set_layer_mode(idx, pigment_surface::combine::CombineMode::Multiply);
+        doc.set_layer_mode(&[idx], LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply));
         let r3 = doc.layers().composite_revision();
         assert_ne!(r2, r3, "混合模式变化要抬高水位线");
 
@@ -793,7 +846,7 @@ mod tests {
         assert!(doc.layers().has_paint_at(0, 0), "先确认有笔迹");
         let before = doc.layers().composite_tile_rgba8(0, 0).unwrap();
 
-        doc.set_layer_visible(idx, false);
+        doc.set_layer_visible(&[idx], false);
         let after = doc.layers().composite_tile_rgba8(0, 0);
         // 背景仍可见 → tile 还在，但内容应是纯背景色（白）
         let after = after.expect("背景可见时 tile 仍有内容");

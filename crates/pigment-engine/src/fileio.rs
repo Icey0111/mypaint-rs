@@ -55,6 +55,7 @@ use std::path::Path;
 use hokusai::tile::TILE_SIZE;
 use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::color::{self, CANVAS_BG};
+use pigment_surface::layer::{LayerContent, LayerMode};
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::zip::{ZipArchive, ZipWriter};
@@ -329,11 +330,31 @@ fn write_close_element(out: &mut String, indent: usize, tag: &str) {
     out.push_str(">\n");
 }
 
+/// 一个待写出的 `.ora` 图层元素：`layer`（自闭合）或 `stack`（带子元素）。
+struct OraElement {
+    tag: &'static str,
+    attrs: Vec<(&'static str, String)>,
+    children: Vec<OraElement>,
+}
+
+/// 递归写出一棵元素树（缩进照 `indent_etree`）。
+fn write_elems(out: &mut String, indent: usize, elems: &[OraElement]) {
+    for e in elems {
+        if e.tag == "layer" {
+            write_empty_element(out, indent, "layer", &e.attrs);
+        } else {
+            write_open_element(out, indent, e.tag, &e.attrs);
+            write_elems(out, indent + 1, &e.children);
+            write_close_element(out, indent, e.tag);
+        }
+    }
+}
+
 /// 生成 `stack.xml`（照搬 `_save_layers_to_new_orazip` 拼装 `image` 的部分，
-/// B2-4 起多图层 + 背景层）。
+/// B2-4 起多图层 + 背景层，B2-6 起嵌套 `<stack>` 组）。
 ///
-/// - `layer_elems`：自顶向下各 `<layer>` 的属性（`group.py:503-508` 按
-///   `_layers` 序写出 —— index 0 = 最顶层在文档最前）
+/// - `layer_elems`：自顶向下的元素树（`group.py:503-508` 按 `_layers` 序写出
+///   —— index 0 = 最顶层在文档最前，组展开成嵌套 `<stack>`）
 /// - `bg_elem`：背景层元素，总是根 stack 的**最后一个**子元素
 ///   （`tree.py:2513-2526`，`bg_path = (len(self),)`）
 /// - 根 `<stack>`：`RootLayerStack.INITIAL_MODE = CombineNormal`
@@ -346,7 +367,7 @@ fn build_stack_xml(
     yres: Option<u32>,
     frame_active: bool,
     json_settings_entry: Option<&str>,
-    layer_elems: &[Vec<(&'static str, String)>],
+    layer_elems: &[OraElement],
     bg_elem: Option<&[(&'static str, String)]>,
 ) -> String {
     let mut s = String::with_capacity(1024);
@@ -397,10 +418,8 @@ fn build_stack_xml(
     ];
     write_open_element(&mut s, 1, "stack", &stack_attrs);
 
-    // ---- 图层（自顶向下）----
-    for attrs in layer_elems {
-        write_empty_element(&mut s, 2, "layer", attrs);
-    }
+    // ---- 图层（自顶向下；组递归）----
+    write_elems(&mut s, 2, layer_elems);
     // ---- 背景层：根 stack 的最后一个子元素 ----
     if let Some(bg) = bg_elem {
         write_empty_element(&mut s, 2, "layer", bg);
@@ -550,45 +569,20 @@ pub fn save_ora(
 
     // 2. 图层数据：自顶向下（`_layers` 序），每层写**自己的**数据外接框
     //    （`data.py:411` 用 `self.get_bbox()`，不是画幅），坐标相对画幅左上角。
-    let mut layer_elems: Vec<Vec<(&'static str, String)>> = Vec::new();
-    for (i, layer) in layers.iter_top_down() {
-        let rect = surface_tile_bbox(&layer.surface);
-        let entry = format!("data/{}", make_refname("layer", &[i], ".png"));
-        let tmp_png = temp_sibling(filename.as_ref(), &format!("layer-{i:02}.png"));
-        layer
-            .surface
-            .save_as_png(&tmp_png, rect, true, bg_rgb)
-            .map_err(FileError::Png)?;
-        let bytes = std::fs::read(&tmp_png)?;
-        let _ = std::fs::remove_file(&tmp_png);
-        zip.add_stored(&entry, &bytes)?;
-        let (lx, ly, _, _) = rect;
-        // `_get_stackxml_element("layer", x, y)` + `_save_rect_to_ora` 的 src
-        let mut attrs: Vec<(&'static str, String)> = vec![
-            ("x", (lx - bx).to_string()),
-            ("y", (ly - by).to_string()),
-            ("opacity", fmt_float_py(layer.opacity)),
-            (
-                "visibility",
-                if layer.visible { "visible" } else { "hidden" }.to_string(),
-            ),
-            ("composite-op", layer.mode.ora_name().to_string()),
-            ("src", entry),
-        ];
-        if let Some(n) = &layer.name {
-            if !n.is_empty() {
-                attrs.push(("name", n.clone()));
-            }
-        }
-        if layer.locked {
-            attrs.push(("edit-locked", "true".to_string()));
-        }
-        // 「Update the initially-selected flag on all layers」（document.py:2077-2079）
-        if i == layers.current_index() {
-            attrs.push(("selected", "true".to_string()));
-        }
-        layer_elems.push(attrs);
-    }
+    //    组递归成 `<stack>`（`group.py:487-530`）；层 PNG 名 = `layer-01-02.png`
+    //    （`data.py:463 _make_refname` 的路径拼接）。
+    let mut layer_elems: Vec<OraElement> = Vec::new();
+    let current_path = layers.current_path().to_vec();
+    save_layer_elems(
+        &mut zip,
+        &mut layer_elems,
+        layers,
+        filename.as_ref(),
+        &[],
+        bx,
+        by,
+        &current_path,
+    )?;
 
     // 3. 背景层（`tree.py:2513-2526` 总是写；`data.py:1068`）：
     //    - 整幅铺满画幅的不透明 PNG（背景表面循环平铺 → 纯色即等价）
@@ -679,9 +673,101 @@ pub fn save_ora(
     Ok(OraSaved { bbox, thumbnail: thumb })
 }
 
+/// 递归写出层的 PNG 与 XML 元素（`group.py:487-530` + `data.py:471-484`）。
+fn save_layer_elems(
+    zip: &mut ZipWriter,
+    out: &mut Vec<OraElement>,
+    stack: &LayerStack,
+    filename: &Path,
+    path: &[usize],
+    bx: i32,
+    by: i32,
+    current_path: &[usize],
+) -> Result<(), FileError> {
+    for (i, layer) in stack.iter_top_down() {
+        let mut p = path.to_vec();
+        p.push(i);
+        let selected = p == current_path;
+        let mut attrs: Vec<(&'static str, String)> = Vec::new();
+        if let Some(n) = &layer.name {
+            if !n.is_empty() {
+                attrs.push(("name", n.clone()));
+            }
+        }
+        match &layer.content {
+            LayerContent::Painting(surface) => {
+                let rect = surface_tile_bbox(surface);
+                let entry = format!("data/{}", make_refname("layer", &p, ".png"));
+                let tmp_png = temp_sibling(filename, &make_refname("layer", &p, ".png"));
+                surface
+                    .save_as_png(&tmp_png, rect, true, CANVAS_BG)
+                    .map_err(FileError::Png)?;
+                let bytes = std::fs::read(&tmp_png)?;
+                let _ = std::fs::remove_file(&tmp_png);
+                zip.add_stored(&entry, &bytes)?;
+                let (lx, ly, _, _) = rect;
+                // `_get_stackxml_element("layer", x, y)` + `_save_rect_to_ora` 的 src
+                attrs.push(("x", (lx - bx).to_string()));
+                attrs.push(("y", (ly - by).to_string()));
+                attrs.push(("opacity", fmt_float_py(layer.opacity)));
+                attrs.push((
+                    "visibility",
+                    if layer.visible { "visible" } else { "hidden" }.to_string(),
+                ));
+                if let Some(name) = layer.mode.ora_name() {
+                    attrs.push(("composite-op", name.to_string()));
+                }
+                attrs.push(("src", entry));
+                if layer.locked {
+                    attrs.push(("edit-locked", "true".to_string()));
+                }
+                if selected {
+                    attrs.push(("selected", "true".to_string()));
+                }
+                out.push(OraElement {
+                    tag: "layer",
+                    attrs,
+                    children: Vec::new(),
+                });
+            }
+            LayerContent::Group(sub) => {
+                // `group.py:500-530`：stack 元素带组自己的 flags；
+                // 直通模式在 ORA 里没有对应 composite-op → 丢 opacity/composite-op
+                // 并写 isolation="auto"。
+                if layer.mode.is_pass_through() {
+                    attrs.push(("isolation", "auto".to_string()));
+                } else {
+                    attrs.push(("opacity", fmt_float_py(layer.opacity)));
+                    attrs.push((
+                        "visibility",
+                        if layer.visible { "visible" } else { "hidden" }.to_string(),
+                    ));
+                    if let Some(name) = layer.mode.ora_name() {
+                        attrs.push(("composite-op", name.to_string()));
+                    }
+                    attrs.push(("isolation", "isolate".to_string()));
+                }
+                if layer.locked {
+                    attrs.push(("edit-locked", "true".to_string()));
+                }
+                if selected {
+                    attrs.push(("selected", "true".to_string()));
+                }
+                let mut children: Vec<OraElement> = Vec::new();
+                save_layer_elems(zip, &mut children, sub, filename, &p, bx, by, current_path)?;
+                out.push(OraElement {
+                    tag: "stack",
+                    attrs,
+                    children,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 图层自身的数据外接框（tile 对齐；`SurfaceBackedLayer.get_bbox` 的平栈版）。
-fn surface_tile_bbox(s: &PigmentSurface) -> (i32, i32, i32, i32) {
-    let ts = TILE_SIZE as i32;
+fn surface_tile_bbox(s: &PigmentSurface) -> (i32, i32, i32, i32) {    let ts = TILE_SIZE as i32;
     let mut it = s.tiles().map(|(c, _)| c);
     let Some(first) = it.next() else {
         return (0, 0, 0, 0);
@@ -734,29 +820,56 @@ pub fn load_png(
     Ok(PngLoaded { bbox })
 }
 
+/// 载入的一层的内容：绘画层的数据，或组的子层（`group.py:138-149`）。
+pub enum OraContent {
+    Painting(PigmentSurface),
+    Group(Vec<OraLayerData>),
+}
+
 /// 单个载入图层的数据（`_layer_new_from_orazip` 的产物 + 通用 flags，
 /// flags 解析照 `core.py:167-178` `_load_common_flags_from_ora_elem`）。
 pub struct OraLayerData {
-    pub surface: PigmentSurface,
+    pub content: OraContent,
     pub name: Option<String>,
-    pub mode: CombineMode,
+    /// 组的 `isolation="auto"` + Normal + opacity 1 会转成 [`LayerMode::PassThrough`]
+    /// （`group.py:116-127`）。
+    pub mode: LayerMode,
     pub opacity: f32,
     pub visible: bool,
     pub locked: bool,
     pub initially_selected: bool,
 }
 
+impl OraLayerData {
+    /// 本节点及其后代的层数（`walk()` 的条目数，用于状态栏）。
+    pub fn descendant_count(&self) -> usize {
+        match &self.content {
+            OraContent::Painting(_) => 1,
+            OraContent::Group(children) => {
+                1 + children.iter().map(|c| c.descendant_count()).sum::<usize>()
+            }
+        }
+    }
+}
+
 impl std::fmt::Debug for OraLayerData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OraLayerData")
-            .field("name", &self.name)
+        let mut d = f.debug_struct("OraLayerData");
+        d.field("name", &self.name)
             .field("mode", &self.mode)
             .field("opacity", &self.opacity)
             .field("visible", &self.visible)
             .field("locked", &self.locked)
-            .field("initially_selected", &self.initially_selected)
-            .field("tiles", &self.surface.tile_count())
-            .finish()
+            .field("initially_selected", &self.initially_selected);
+        match &self.content {
+            OraContent::Painting(surface) => {
+                d.field("tiles", &surface.tile_count());
+            }
+            OraContent::Group(children) => {
+                d.field("children", &children.len());
+            }
+        }
+        d.finish()
     }
 }
 
@@ -772,16 +885,16 @@ pub struct OraLoaded {
     pub mypaint_version: Option<String>,
     /// 目标版本对当前实现的兼容度（对应 `_compat_check`，`:1788`）。
     pub compatibility: Option<Compatibility>,
-    /// 自顶向下的图层（index 0 = 最顶层；XML 文档序 = `_layers` 序，
-    /// `group.py:124-131` 按文档序 append 回栈顶）。
+    /// 根 stack 的子层（自顶向下；index 0 = 最顶层，`group.py:124-131`），
+    /// 组以 `OraContent::Group` 递归携带子层。
     pub layers: Vec<OraLayerData>,
     /// 背景色（文件里没有可用背景 tile 时保持默认白）。
     pub background_color: [u8; 3],
     /// 文件里是否读到了可用的背景 tile（`tree.py:2395-2420`）。
     pub background_found: bool,
-    /// 载入后应选中的层（`_set_current_path_after_ora_load`：先找
-    /// `selected` 标记的最上层，否则第 0 层）。
-    pub current_index: usize,
+    /// 载入后应选中的层（`_set_current_path_after_ora_load`：按 walk 序找
+    /// `selected` 标记的最上层，否则第一项 = `(0,)`）。
+    pub current_path: Option<Vec<usize>>,
 }
 
 /// 载入 OpenRaster（照搬 `lib/document.py:1804` `load_ora`）。
@@ -822,26 +935,110 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
         .and_then(|entry| z.read(entry).ok())
         .map(|b| String::from_utf8_lossy(&b).into_owned());
 
-    // 子元素按文档序 → index 0 = 最顶层（见 OraLoaded::layers 注释）
-    let mut out_layers: Vec<OraLayerData> = Vec::new();
+    // 子元素按文档序 → index 0 = 最顶层；组递归（`group.py:138-149`）
     let mut background_color = [255u8, 255, 255];
     let mut background_found = false;
-    for l in &img.layers {
-        // 背景判定（`tree.py:2395-2420`）：只允许一个背景
-        if let Some(bg_src) = &l.bg_tile {
-            if let Ok(png) = z.read(bg_src) {
-                match uniform_tile_color(&png) {
-                    Some(rgb) => {
-                        if !background_found {
-                            background_color = rgb;
-                            background_found = true;
+    let mut out_layers = build_ora_layers(&img.layers, &z, true, 0, &mut background_found, &mut background_color)?;
+    if out_layers.is_empty() {
+        // `_set_current_path_after_ora_load` 的 num_loaded==0 分支：
+        // 「Adding an empty painting layer」（`CREATE_PAINTING_LAYER_IF_EMPTY`）
+        out_layers.push(OraLayerData {
+            content: OraContent::Painting(PigmentSurface::new()),
+            name: None,
+            mode: LayerMode::DEFAULT,
+            opacity: 1.0,
+            visible: true,
+            locked: false,
+            initially_selected: false,
+        });
+    }
+    // `_set_current_path_after_ora_load`：按 walk 序取第一个标了 selected 的，
+    // 否则第一项（最顶层）。
+    let current_path = find_selected_path(&out_layers).or_else(|| Some(vec![0]));
+
+    Ok(OraLoaded {
+        bbox: (0, 0, image_w, image_h),
+        xres,
+        yres,
+        frame_enabled: img.frame_active,
+        settings_json,
+        mypaint_version: img.mypaint_version.clone(),
+        compatibility: img.mypaint_version.as_deref().and_then(compatibility),
+        layers: out_layers,
+        background_color,
+        background_found,
+        current_path,
+    })
+}
+
+/// 按文档序（自顶向下）递归构造载入结果；组递归进 `OraContent::Group`。
+///
+/// `top_level` 只对根 stack 的直接子元素做背景判定（`BackgroundLayer` 是根
+/// 独有的概念，`tree.py:2395-2420`）。
+fn build_ora_layers(
+    nodes: &[XmlLayer],
+    z: &ZipArchive,
+    top_level: bool,
+    depth: usize,
+    background_found: &mut bool,
+    background_color: &mut [u8; 3],
+) -> Result<Vec<OraLayerData>, FileError> {
+    let mut out: Vec<OraLayerData> = Vec::new();
+    for l in nodes {
+        // 背景判定：只允许一个，且只看根 stack 的直接子元素
+        if top_level {
+            if let Some(bg_src) = &l.bg_tile {
+                if let Ok(png) = z.read(bg_src) {
+                    if let Some(rgb) = uniform_tile_color(&png) {
+                        if !*background_found {
+                            *background_color = rgb;
+                            *background_found = true;
                             continue;
                         }
                     }
                     // `BackgroundError` → 警告并按普通图层继续（源码同）
-                    None => {}
                 }
             }
+        }
+        if l.is_group {
+            let children = build_ora_layers(
+                &l.children,
+                z,
+                false,
+                depth + 1,
+                background_found,
+                background_color,
+            )?;
+            let composite = l
+                .composite_op
+                .as_deref()
+                .and_then(CombineMode::from_ora_name);
+            let opacity = l.opacity.unwrap_or(1.0).clamp(0.0, 1.0);
+            // `group.py:116-127`：唯一能表达"非隔离"的组合 =
+            // Normal + opacity 1 + isolation="auto" → 内部转成直通模式。
+            let isolation_auto = l
+                .isolation
+                .as_deref()
+                .map(|v| v.trim().eq_ignore_ascii_case("auto"))
+                .unwrap_or(true);
+            let mode = if composite.unwrap_or(DEFAULT_MODE) == CombineMode::Normal
+                && opacity == 1.0
+                && isolation_auto
+            {
+                LayerMode::PassThrough
+            } else {
+                LayerMode::Standard(composite.unwrap_or(DEFAULT_MODE))
+            };
+            out.push(OraLayerData {
+                content: OraContent::Group(children),
+                name: l.name.clone().filter(|s| !s.is_empty()),
+                mode,
+                opacity,
+                visible: l.visible.unwrap_or(true),
+                locked: l.locked,
+                initially_selected: l.selected,
+            });
+            continue;
         }
         let Some(src) = &l.src else { continue };
         let png = z
@@ -855,47 +1052,37 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
             .as_deref()
             .and_then(CombineMode::from_ora_name)
             .unwrap_or(DEFAULT_MODE);
-        out_layers.push(OraLayerData {
-            surface,
+        out.push(OraLayerData {
+            content: OraContent::Painting(surface),
             name: l.name.clone().filter(|s| !s.is_empty()),
-            mode,
+            mode: LayerMode::Standard(mode),
             opacity: l.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
             visible: l.visible.unwrap_or(true),
             locked: l.locked,
             initially_selected: l.selected,
         });
     }
-    if out_layers.is_empty() {
-        // `_set_current_path_after_ora_load` 的 num_loaded==0 分支：
-        // 「Adding an empty painting layer」（`CREATE_PAINTING_LAYER_IF_EMPTY`）
-        out_layers.push(OraLayerData {
-            surface: PigmentSurface::new(),
-            name: None,
-            mode: DEFAULT_MODE,
-            opacity: 1.0,
-            visible: true,
-            locked: false,
-            initially_selected: false,
-        });
-    }
-    let current_index = out_layers
-        .iter()
-        .position(|l| l.initially_selected)
-        .unwrap_or(0);
+    Ok(out)
+}
 
-    Ok(OraLoaded {
-        bbox: (0, 0, image_w, image_h),
-        xres,
-        yres,
-        frame_enabled: img.frame_active,
-        settings_json,
-        mypaint_version: img.mypaint_version.clone(),
-        compatibility: img.mypaint_version.as_deref().and_then(compatibility),
-        layers: out_layers,
-        background_color,
-        background_found,
-        current_index,
-    })
+/// walk 序（组在子层之前、子层紧跟组）里第一个 `selected` 的路径。
+fn find_selected_path(layers: &[OraLayerData]) -> Option<Vec<usize>> {
+    fn walk(nodes: &[OraLayerData], prefix: &[usize]) -> Option<Vec<usize>> {
+        for (i, l) in nodes.iter().enumerate() {
+            let mut p = prefix.to_vec();
+            p.push(i);
+            if l.initially_selected {
+                return Some(p);
+            }
+            if let OraContent::Group(children) = &l.content {
+                if let Some(found) = walk(children, &p) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+    walk(layers, &[])
 }
 
 /// 判断一块 PNG 是否是**纯色不透明** tile（`tiledsurface.BackgroundError`
@@ -919,8 +1106,10 @@ fn uniform_tile_color(png: &[u8]) -> Option<[u8; 3]> {
 
 // ---- stack.xml 解析 ----
 
-/// 解析出的 `layer` 元素（含全部通用 flags；`<stack>` 元素的 layer 型子元素
-/// 也按文档序收集进来 —— 组嵌套已记账为后续小项，B2 平栈处理）。
+/// 解析出的 `layer` / `stack` 元素（含全部通用 flags）。
+///
+/// `<stack>` 用 `is_group = true` + `children` 表达（`group.py:138-149` 按
+/// 文档序 append：第一个子元素 = 最顶层）；`layer` 的 `src` 指向数据 PNG。
 #[derive(Debug, Clone, Default)]
 pub struct XmlLayer {
     pub src: Option<String>,
@@ -934,6 +1123,12 @@ pub struct XmlLayer {
     pub composite_op: Option<String>,
     /// `mypaint:background-tile` 或 legacy `background_tile`。
     pub bg_tile: Option<String>,
+    /// 是 `<stack>` 元素（组）。
+    pub is_group: bool,
+    /// `isolation` 属性（缺省语义 = "auto"，`group.py:119`）。
+    pub isolation: Option<String>,
+    /// 组子元素（文档序 = 自顶向下）。
+    pub children: Vec<XmlLayer>,
 }
 
 /// 解析出的 `image` 元素（只取本实现用得到的字段）。
@@ -946,14 +1141,14 @@ pub struct XmlImage {
     pub frame_active: bool,
     pub mypaint_version: Option<String>,
     pub json_settings: Option<String>,
-    /// 文档序（第一个 = 最顶层）。
+    /// 根 stack 的子元素（文档序，第一个 = 最顶层）。
     pub layers: Vec<XmlLayer>,
 }
 
 /// 解析 `stack.xml`。
 ///
-/// 只用 `quick-xml` 的事件流做浅层遍历：`image` 的属性 + 全部 `layer` 元素
-/// （含嵌套在 `stack` 里的，按文档序 —— 即自顶向下）。
+/// 用 `quick-xml` 的事件流做**结构**遍历：`image` 的属性 + 一棵
+/// `Stack/Layer` 树（`<stack>` 组可任意嵌套，子元素按文档序 —— 即自顶向下）。
 ///
 /// 注意 `quick-xml` **不会**在 EOF 处对未闭合的元素报错（实测
 /// `<image><unclosed>` 会安静地以 `Eof` 收尾），所以这里自己维护开放元素
@@ -968,14 +1163,30 @@ pub fn parse_stack_xml(xml: &str) -> Result<XmlImage, FileError> {
     let mut saw_image = false;
     let mut depth = 0i32;
     let mut open_tags: Vec<String> = Vec::new();
+    // 打开中的 `<stack>` 组（最后一个 = 当前容器）。
+    let mut stack_chain: Vec<XmlLayer> = Vec::new();
     let mut buf = Vec::new();
+    // 把节点挂到当前容器（没有打开中的组 → 根 stack 的子层）
+    fn attach(img: &mut XmlImage, stack_chain: &mut [XmlLayer], node: XmlLayer) {
+        match stack_chain.last_mut() {
+            Some(parent) => parent.children.push(node),
+            None => img.layers.push(node),
+        }
+    }
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Start(e)) => {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).into_owned();
                 let attrs = collect_attrs(&e);
-                apply_element(&mut img, &tag, &attrs, &mut saw_image);
+                if tag == "image" {
+                    apply_image_attrs(&mut img, &attrs, &mut saw_image);
+                } else if tag == "stack" {
+                    stack_chain.push(layer_from_attrs(&attrs, true));
+                } else if tag == "layer" {
+                    let node = layer_from_attrs(&attrs, false);
+                    attach(&mut img, &mut stack_chain, node);
+                }
                 depth += 1;
                 open_tags.push(tag);
             }
@@ -983,9 +1194,32 @@ pub fn parse_stack_xml(xml: &str) -> Result<XmlImage, FileError> {
                 let name = e.name();
                 let tag = String::from_utf8_lossy(name.as_ref()).into_owned();
                 let attrs = collect_attrs(&e);
-                apply_element(&mut img, &tag, &attrs, &mut saw_image);
+                match tag.as_str() {
+                    "image" => apply_image_attrs(&mut img, &attrs, &mut saw_image),
+                    "layer" => {
+                        let node = layer_from_attrs(&attrs, false);
+                        attach(&mut img, &mut stack_chain, node);
+                    }
+                    // 空的 <stack/>（无子层的组）
+                    "stack" => {
+                        let node = layer_from_attrs(&attrs, true);
+                        attach(&mut img, &mut stack_chain, node);
+                    }
+                    _ => {}
+                }
             }
-            Ok(Event::End(_)) => {
+            Ok(Event::End(e)) => {
+                let tag = String::from_utf8_lossy(e.name().as_ref()).into_owned();
+                if tag == "stack" {
+                    if let Some(node) = stack_chain.pop() {
+                        if stack_chain.is_empty() {
+                            // 最外层 <stack> 是根栈容器，它的子层才是顶层图层
+                            img.layers.extend(node.children);
+                        } else {
+                            attach(&mut img, &mut stack_chain, node);
+                        }
+                    }
+                }
                 depth -= 1;
                 open_tags.pop();
             }
@@ -1025,53 +1259,49 @@ fn collect_attrs(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, String)>
     attrs
 }
 
-/// 把 `<image>` / `<layer>` 的属性并进结果。
-fn apply_element(
-    img: &mut XmlImage,
-    tag: &str,
-    attrs: &[(String, String)],
-    saw_image: &mut bool,
-) {
+/// 把 `<image>` 的属性并进结果。
+fn apply_image_attrs(img: &mut XmlImage, attrs: &[(String, String)], saw_image: &mut bool) {
     let get = |k: &str| attrs.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
     let get_i32 = |k: &str| {
         get(k)
             .and_then(|v| v.trim().parse::<i32>().ok())
             .unwrap_or(0)
     };
-    match tag {
-        "image" => {
-            *saw_image = true;
-            img.width = get_i32("w");
-            img.height = get_i32("h");
-            img.xres = get_i32("xres");
-            img.yres = get_i32("yres");
-            img.frame_active = get(ATTR_NS_FRAME_ACTIVE)
-                .or_else(|| get("frame-active"))
-                .map(|v| xsd2bool(&v))
-                .unwrap_or(false);
-            img.mypaint_version = get(ATTR_NS_VERSION).or_else(|| get("version"));
-            img.json_settings = get(ATTR_NS_JSON_SETTINGS).or_else(|| get("json-settings"));
-        }
-        "layer" => {
-            let opacity = get("opacity").and_then(|v| v.trim().parse::<f32>().ok());
-            let visible = get("visibility").map(|v| v.to_ascii_lowercase() != "hidden");
-            let locked = get("edit-locked").map(|v| xsd2bool(&v)).unwrap_or(false);
-            let selected = get("selected").map(|v| xsd2bool(&v)).unwrap_or(false);
-            let bg_tile = get(ATTR_NS_BG_TILE).or_else(|| get(ATTR_BG_TILE_LEGACY));
-            img.layers.push(XmlLayer {
-                src: get("src"),
-                name: get("name"),
-                x: get_i32("x"),
-                y: get_i32("y"),
-                opacity,
-                visible,
-                locked,
-                selected,
-                composite_op: get("composite-op"),
-                bg_tile,
-            });
-        }
-        _ => {} // stack / 其他元素本轮忽略（组嵌套已记账）
+    *saw_image = true;
+    img.width = get_i32("w");
+    img.height = get_i32("h");
+    img.xres = get_i32("xres");
+    img.yres = get_i32("yres");
+    img.frame_active = get(ATTR_NS_FRAME_ACTIVE)
+        .or_else(|| get("frame-active"))
+        .map(|v| xsd2bool(&v))
+        .unwrap_or(false);
+    img.mypaint_version = get(ATTR_NS_VERSION).or_else(|| get("version"));
+    img.json_settings = get(ATTR_NS_JSON_SETTINGS).or_else(|| get("json-settings"));
+}
+
+/// 把 `<layer>` / `<stack>` 的属性变成节点（`core.py:167-178` 的 flags 解析）。
+fn layer_from_attrs(attrs: &[(String, String)], is_group: bool) -> XmlLayer {
+    let get = |k: &str| attrs.iter().find(|(kk, _)| kk == k).map(|(_, v)| v.clone());
+    let get_i32 = |k: &str| {
+        get(k)
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .unwrap_or(0)
+    };
+    XmlLayer {
+        src: get("src"),
+        name: get("name"),
+        x: get_i32("x"),
+        y: get_i32("y"),
+        opacity: get("opacity").and_then(|v| v.trim().parse::<f32>().ok()),
+        visible: get("visibility").map(|v| v.to_ascii_lowercase() != "hidden"),
+        locked: get("edit-locked").map(|v| xsd2bool(&v)).unwrap_or(false),
+        selected: get("selected").map(|v| xsd2bool(&v)).unwrap_or(false),
+        composite_op: get("composite-op"),
+        bg_tile: get(ATTR_NS_BG_TILE).or_else(|| get(ATTR_BG_TILE_LEGACY)),
+        is_group,
+        isolation: get("isolation"),
+        children: Vec::new(),
     }
 }
 
@@ -1211,7 +1441,11 @@ mod tests {
     }
 
     /// 测试辅助：构造一个 `<layer>` 的属性向量（按 save_ora 的写法）。
-    fn test_layer_attrs(
+    fn test_layer_elem(attrs: Vec<(&'static str, String)>) -> OraElement {
+    OraElement { tag: "layer", attrs, children: Vec::new() }
+}
+
+fn test_layer_attrs(
         src: &str,
         x: i32,
         y: i32,
@@ -1260,7 +1494,7 @@ mod tests {
     #[test]
     fn stack_xml_writes_opacity_as_python_float() {
         let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(1, 1, None, None, false, None, &[layer], None);
+        let xml = build_stack_xml(1, 1, None, None, false, None, &[test_layer_elem(layer)], None);
         assert!(xml.contains("opacity=\"1.0\""), "opacity 应写成 1.0：{xml}");
         assert!(!xml.contains("opacity=\"1\""), "不该出现 Python 不会写的 \"1\"：{xml}");
     }
@@ -1290,14 +1524,7 @@ mod tests {
     #[test]
     fn stack_xml_matches_real_sample_layout() {
         let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(
-            128,
-            128,
-            None,
-            None,
-            false,
-            Some(ORA_JSON_SETTINGS_ZIP_PATH),
-            &[layer],
+        let xml = build_stack_xml(128, 128, None, None, false, None, &[test_layer_elem(layer)],
             Some(&test_bg_attrs()),
         );
         assert!(
@@ -1347,7 +1574,7 @@ mod tests {
             "svg:src-over",
             Some("a <b> \"c\""),
         );
-        let xml = build_stack_xml(1, 1, None, None, false, None, &[layer], None);
+        let xml = build_stack_xml(1, 1, None, None, false, None, &[test_layer_elem(layer)], None);
         assert!(xml.contains("data/a&amp;b.png"));
         assert!(xml.contains("name=\"a &lt;b&gt; &quot;c&quot;\""));
     }
@@ -1356,7 +1583,7 @@ mod tests {
     fn stack_xml_omits_xres_when_zero() {
         let mk = |x: Option<u32>, y: Option<u32>| {
             let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-            build_stack_xml(1, 1, x, y, false, None, &[layer], None)
+            build_stack_xml(1, 1, x, y, false, None, &[test_layer_elem(layer)], None)
         };
         let xml = mk(Some(0), Some(0));
         assert!(!xml.contains("xres"), "xres=0 时不该写出（源码 `if xres and yres`）");
@@ -1384,7 +1611,7 @@ mod tests {
             Some(300),
             true,
             Some(ORA_JSON_SETTINGS_ZIP_PATH),
-            &[layer],
+            &[test_layer_elem(layer)],
             Some(&test_bg_attrs()),
         );
         let img = parse_stack_xml(&xml).unwrap();
@@ -1448,8 +1675,12 @@ mod tests {
             img.json_settings.as_deref(),
             Some("data/mypaint-settings.json")
         );
-        assert_eq!(img.layers.len(), 1, "嵌套在 stack 里的 layer 也要收到");
-        assert_eq!((img.layers[0].x, img.layers[0].y), (1664, 1088));
+        assert_eq!(img.layers.len(), 1, "根栈只有一个子层（组 G）");
+        assert!(img.layers[0].is_group, "G 是组");
+        assert_eq!(img.layers[0].children.len(), 1);
+        let inner = &img.layers[0].children[0];
+        assert_eq!((inner.x, inner.y), (1664, 1088), "嵌套层的 x/y 要保留");
+        assert_eq!(inner.src.as_deref(), Some("data/layer-00-00.png"));
     }
 
     #[test]
@@ -1514,7 +1745,7 @@ mod tests {
         for p in block.chunks_exact_mut(4) {
             p.copy_from_slice(&[255, 0, 0, 255]);
         }
-        layer.surface.load_from_rgba8(&block, 0, 0, 8, 8);
+        layer.surface_mut().unwrap().load_from_rgba8(&block, 0, 0, 8, 8);
 
         let (out, w, h) = render_layer_thumbnail(&layer, (0, 0, 64, 64));
         assert_eq!((w, h), (64, 64));

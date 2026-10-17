@@ -458,7 +458,17 @@ fn loads_real_mypaint_fill_outlines() {
         panic!("应识别为 ORA");
     };
     assert_eq!((bbox.2, bbox.3), (3456, 3008));
-    assert!(doc.surface().tile_count() > 0, "应读出实际像素");
+    // 载入后当前层可能落在组上（fill_outlines 的顶层是组）→ 用整棵树判内容
+    let walked = doc.layers().walk();
+    assert!(
+        walked.iter().any(|(_, l)| l.surface().map(|s| s.tile_count() > 0) == Some(true)),
+        "应读出实际像素"
+    );
+    assert!(walked.iter().any(|(_, l)| l.is_group()), "组结构要保留（fill_outlines 有嵌套 stack）");
+    assert!(
+        walked.iter().any(|(p, _)| p.len() > 1),
+        "至少有一层嵌在组里"
+    );
     // 该文件的 mypaint:version 若存在，必须能被判定（不能 panic）
     let _ = compatibility;
     // 它带 data/mypaint-settings.json，应被读进 settings
@@ -500,13 +510,14 @@ fn ora_round_trips_layer_stack() {
     paint(&mut doc, 40.0, 4.0); // 第 0 层（顶层）有内容
 
     use pigment_surface::combine::CombineMode;
+use pigment_surface::layer::LayerMode;
     // 再加一层：空的、改名、半透明、Multiply、隐藏、锁定
     assert!(doc.add_layer());
-    doc.rename_layer(0, Some("Top".to_string()));
-    doc.set_layer_opacity(0, 0.5);
-    doc.set_layer_mode(0, CombineMode::Multiply);
-    doc.set_layer_visible(0, false);
-    doc.set_layer_locked(0, true);
+    doc.rename_layer(&[0], Some("Top".to_string()));
+    doc.set_layer_opacity(&[0], 0.5);
+    doc.set_layer_mode(&[0], LayerMode::Standard(CombineMode::Multiply));
+    doc.set_layer_visible(&[0], false);
+    doc.set_layer_locked(&[0], true);
     // 背景改成非默认色
     doc.layers_mut().set_background_color([24, 48, 96]);
 
@@ -523,12 +534,12 @@ fn ora_round_trips_layer_stack() {
     let top = d2.layers().layer(0);
     assert_eq!(top.name.as_deref(), Some("Top"));
     assert_eq!(top.opacity, 0.5);
-    assert_eq!(top.mode, CombineMode::Multiply);
+    assert_eq!(top.mode, LayerMode::Standard(CombineMode::Multiply));
     assert!(!top.visible);
     assert!(top.locked);
     assert_eq!(d2.layers().current_index(), 0, "选中层应恢复到 save 时的当前层");
     // 底层像素还在
-    assert!(d2.layers().layer(1).surface.tile_count() > 0, "底层内容应随文件回来");
+    assert!(d2.layers().layer(1).surface().unwrap().tile_count() > 0, "底层内容应随文件回来");
     assert!(d2.layers().layer(1).visible && !d2.layers().layer(1).locked);
     // 背景色
     assert_eq!(d2.layers().background_color(), [24, 48, 96]);
@@ -550,11 +561,18 @@ fn real_files_load_all_layers() {
     }
     let mut doc = Document::new();
     doc.load(&f).unwrap();
-    // fill_outlines.ora 的 stack 里有 12 个 <layer>（含背景元素被吸收成背景色）
+    // fill_outlines.ora 的 stack 里有 12 个 layer 元素（背景元素被吸收成背景色），
+    // 其中若干嵌在 3 个嵌套 stack 组里 → 按 walk() 数整棵树。
+    let walked = doc.layers().walk();
     assert!(
-        doc.layers().len() >= 10,
-        "应读出全部图层（含组内平铺），实际 {}",
-        doc.layers().len()
+        walked.len() >= 10,
+        "应读出全部图层（含组内子层），实际 {}",
+        walked.len()
+    );
+    assert!(walked.iter().any(|(_, l)| l.is_group()), "组要保留");
+    assert!(
+        walked.iter().any(|(p, _)| p.len() > 1),
+        "至少有一层嵌在组里（fill_outlines 有嵌套 stack）"
     );
     assert_eq!(
         doc.layers().background_color(),
@@ -563,9 +581,9 @@ fn real_files_load_all_layers() {
     );
 }
 
-/// 组嵌套已记账：带 <stack> 组的文件载入时平铺为普通层（不丢层）。
+/// B2-6：`<stack>` 组在载入时**保留结构**（不再是平铺），嵌套层带父组。
 #[test]
-fn nested_stacks_flatten_on_load() {
+fn nested_stacks_keep_structure_on_load() {
     let Some(dir) = ref_tests_dir() else {
         eprintln!("跳过：找不到 _mypaint_ref/tests");
         return;
@@ -580,12 +598,19 @@ fn nested_stacks_flatten_on_load() {
         z.read("stack.xml").unwrap()
     };
     let xml = String::from_utf8_lossy(&xml_bytes).into_owned();
-    let xml_layers = pigment_engine::fileio::parse_stack_xml(&xml).unwrap();
-    let layer_elems = xml_layers.layers.len();
-    // 1 个背景元素 + N 个图层元素（含组内）
     let img = pigment_engine::fileio::parse_stack_xml(&xml).unwrap();
+    // 根 stack 的下标 0 是不是组随样本而定；但至少要有一棵嵌套的子树
+    let has_group = img.layers.iter().any(|l| l.is_group);
+    assert!(has_group, "样本里有 <stack> 组，解析后应保留 is_group");
+    // 背景元素在根 stack 的子层里（含 bg_tile 属性）
     assert!(img.layers.iter().any(|l| l.bg_tile.is_some()));
-    let _ = layer_elems;
+
+    // 载入文档后，walk() 能给出嵌套路径，且组自身的 mode/isolation 对得上
+    let mut doc = Document::new();
+    doc.load(&f).unwrap();
+    let walked = doc.layers().walk();
+    assert!(walked.iter().any(|(_, l)| l.is_group()));
+    assert!(walked.iter().any(|(p, _)| p.len() > 1), "应有嵌在组里的层");
 }
 
 /// 背景_tile 非纯色时按普通图层载入（BackgroundError 的 fallthrough）。

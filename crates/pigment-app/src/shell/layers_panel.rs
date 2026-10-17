@@ -2,25 +2,36 @@
 //! [`PanelId::LayersTool`](crate::shell::dock::PanelId::LayersTool) 占位。
 //!
 //! 布局照 `LayersTool.__init__` 的 grid（自上而下）：
-//! 1. **模式下拉**（`new_blend_mode_combo`：SpectralWGM 置首，其余按枚举序）
-//!    + **不透明度**（ScaleButton 的技术栈适配：egui Slider；合并语义见
-//!    [`pigment_engine::Document::set_layer_opacity`]）
-//! 2. **图层列表**（自顶向下；缩略图/名称/可见性眼/锁定）+ **inline_toolbar**
+//! 1. **模式下拉**（`new_blend_mode_combo`：SpectralWGM 置首，PASS_THROUGH 次之
+//!    但只对组可选）+ **不透明度**（ScaleButton 的技术栈适配：egui Slider；
+//!    合并语义见 [`pigment_engine::Document::set_layer_opacity`]）
+//! 2. **图层树**（自顶向下；组可展开，缩略图/名称/可见性眼/锁定）+ **inline_toolbar**
 //!    按钮行（NewLayerGroupAbove/NewPaintingLayerAbove/RemoveLayer/
 //!    RaiseLayerInStack/LowerLayerInStack/DuplicateLayer/MergeLayerDown，
 //!    顺序照源码 `:223-233`）
 //! 3. **ShowBackgroundToggle** 勾选框 + 背景色（`BackgroundWindow` 的
 //!    技术栈适配：egui 取色控件）
 //!
+//! B2-6 起支持组（`lib/layer/group.py`）：
+//! - 行按 [`LayerStack::walk`] 的序（组在前、子层紧跟、深度缩进）；
+//! - 组行有展开箭头（MyPaint 的 `expand_layer`/`collapse_layer`；本实现默认展开）；
+//! - 组的水印图标是 `mypaint-layer-group-symbolic`，绘画层是
+//!   `mypaint-layer-painting-symbolic`（`get_icon_name`）；
+//! - **拖动重排**（MyPaint 的 treeview DnD）：拖到组行中段 = 放进组顶，
+//!   拖到行上半/下半 = 插到该行前/后（同一个父层）；
+//! - 组的模式可以是 Pass-through（组专用，见 [`pigment_surface::layer::LayerMode`]）。
+//!
 //! 记账差异：
 //! - LayerViewUI 一行（「命名可见性视图」辅助功能）未移植；
 //! - 重命名用行内编辑（双击名称），源码是 LayerProperties 对话框；
-//! - 模式下拉不带 tooltip（egui ComboBox 无逐项提示）。
+//! - 模式下拉不带 tooltip（egui ComboBox 无逐项提示）；
+//! - 组默认展开（MyPaint 默认折叠，靠 `activate_layertype_action` 展开）。
 
-use crate::shell::toolbars::{icon_texture, ToolBtn};
 use crate::app::PigmentApp;
+use crate::shell::toolbars::{icon_texture, ToolBtn};
 use eframe::egui;
 use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
+use pigment_surface::layer::LayerMode;
 
 /// 预览格边长（`gui/layers.py:891` 的 `_datafunc_get_pixbuf_height(32, column)`：
 /// 行高决定，初始 32）。
@@ -28,9 +39,12 @@ const PREVIEW_PX: i32 = 32;
 /// 旗标列（眼/锁）单元格边长（`gui/layers.py:1098` 的 `clamp(s, 24, 48)`，
 /// `s` = 行高 ≈ 预览边长）。
 const FLAG_PX: f32 = 32.0;
+/// 组的缩进步长（GTK treeview 的 indent）。
+const INDENT_PX: f32 = 14.0;
 
-/// 图层类型水印图标（`lib/layer/data.py:1443` `SimplePaintingLayer.get_icon_name`）。
-const LAYER_ICON: &str = "mypaint-layer-painting-symbolic";
+/// 图层类型水印图标（`get_icon_name`：`data.py:1443` / `group.py:574`）。
+const ICON_PAINTING: &str = "mypaint-layer-painting-symbolic";
+const ICON_GROUP: &str = "mypaint-layer-group-symbolic";
 
 /// 预览纹理的失效键。
 ///
@@ -40,18 +54,52 @@ const LAYER_ICON: &str = "mypaint-layer-painting-symbolic";
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ThumbKey {
     clock: u64,
-    mode: CombineMode,
+    mode: LayerMode,
     opacity_bits: u32,
 }
 
 impl ThumbKey {
     fn of(layer: &pigment_surface::Layer) -> Self {
         Self {
-            clock: layer.surface.clock(),
+            // 组没有表面：用 0，但组的子层内容变化要能反映 → 见 `group_clock`
+            clock: layer_clock(layer),
             mode: layer.mode,
             opacity_bits: layer.opacity.to_bits(),
         }
     }
+}
+
+/// 一层的「内容时间戳」：绘画层用表面 clock，组用子层 clock 之和
+/// （组的缩略图要跟着子层变）。
+fn layer_clock(layer: &pigment_surface::Layer) -> u64 {
+    match layer.surface() {
+        Some(surface) => surface.clock(),
+        None => {
+            let mut acc = 0u64;
+            if let Some(sub) = layer.stack() {
+                for (_, child) in sub.walk() {
+                    acc = acc.wrapping_add(layer_clock(child));
+                }
+            }
+            acc
+        }
+    }
+}
+
+/// 一行列表的快照（避开 `&mut self` 借用）。
+struct RowData {
+    path: Vec<usize>,
+    depth: usize,
+    id: u64,
+    name: Option<String>,
+    visible: bool,
+    locked: bool,
+    is_group: bool,
+    is_cur: bool,
+    /// 祖先链可见性（`branch_visible`）：控制眼图标的变暗
+    branch_visible: bool,
+    /// 组是否展开
+    expanded: bool,
 }
 
 impl PigmentApp {
@@ -102,24 +150,40 @@ impl PigmentApp {
     }
 
     /// 模式下拉（`_layer_mode_combo` + `_layer_mode_combo_changed_cb`）。
+    ///
+    /// 次序照 `layerswindow.py:190-192`：`STACK_MODES + STANDARD_MODES` 再把
+    /// SpectralWGM 提到队首 → `[SpectralWGM, Pass-through, …]`；Pass-through
+    /// 只对组合法（`PERMITTED_MODES`），对绘画层显示为不可选。
     fn layer_mode_combo(&mut self, ui: &mut egui::Ui) {
-        let cur = self.doc.layers().current().mode;
-        // modes = STACK_MODES + STANDARD_MODES，去 SpectralWGM 再插回队首
-        // （layerswindow.py:201-203）；平栈没有 PASS_THROUGH（组专用）。
-        let modes: Vec<CombineMode> = std::iter::once(DEFAULT_MODE)
-            .chain(CombineMode::ALL.iter().copied().filter(|m| *m != DEFAULT_MODE))
+        let path = self.doc.current_path().to_vec();
+        let Some(layer) = self.doc.layers().layer_at(&path) else {
+            return;
+        };
+        let cur = layer.mode;
+        let is_group = layer.is_group();
+        let modes: Vec<LayerMode> = std::iter::once(LayerMode::Standard(DEFAULT_MODE))
+            .chain(std::iter::once(LayerMode::PassThrough))
+            .chain(
+                CombineMode::ALL
+                    .iter()
+                    .copied()
+                    .filter(|m| *m != DEFAULT_MODE)
+                    .map(LayerMode::Standard),
+            )
             .collect();
-        egui::ComboBox::from_id_salt(("layer_mode_combo", self.doc.layers().current_id()))
+        egui::ComboBox::from_id_salt(("layer_mode_combo", layer.id))
             .selected_text(cur.label())
             .width(ui.available_width())
             .show_ui(ui, |ui| {
                 for m in modes {
-                    let selected = ui
-                        .selectable_label(m == cur, m.label())
-                        .clicked();
-                    if selected && m != cur {
-                        let i = self.doc.layers().current_index();
-                        self.doc.set_layer_mode(i, m);
+                    let permitted = m.permitted(is_group);
+                    let selected = m == cur;
+                    // 照 `_layer_mode_combo_update`：不允许的模式置灰
+                    let resp = ui
+                        .add_enabled_ui(permitted, |ui| ui.selectable_label(selected, m.label()))
+                        .inner;
+                    if resp.clicked() && m != cur {
+                        self.doc.set_layer_mode(&path, m);
                     }
                 }
             });
@@ -127,40 +191,62 @@ impl PigmentApp {
 
     /// 不透明度行（ScaleButton + `%d%%` 标签的技术栈适配）。
     fn layer_opacity_row(&mut self, ui: &mut egui::Ui) {
-        let i = self.doc.layers().current_index();
-        let Some(layer) = self.doc.layers().try_layer(i) else {
+        let path = self.doc.current_path().to_vec();
+        let Some(layer) = self.doc.layers().layer_at(&path) else {
             return;
         };
         let mut pct = (layer.opacity * 100.0).round() as i32;
+        // 直通组的 opacity 恒 100%（`core.py:274-293`）→ 置灰
+        let editable = !layer.mode.is_pass_through();
         ui.label("Opacity");
-        let resp = ui.add(
+        let resp = ui.add_enabled(
+            editable,
             egui::Slider::new(&mut pct, 0..=100)
                 .suffix("%")
                 .smart_aim(false),
         );
         if resp.changed() {
-            self.doc.set_layer_opacity(i, pct as f32 / 100.0);
+            self.doc.set_layer_opacity(&path, pct as f32 / 100.0);
         }
     }
 
-    /// 图层列表（`RootStackTreeView` 的平栈技术栈适配）。
-    fn layer_list(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        let n = self.doc.layers().len();
-        let current = self.doc.layers().current_index();
-        // 收集快照，避开 &mut self 借用
-        let rows: Vec<(u64, Option<String>, bool, bool, bool)> = (0..n)
-            .map(|i| {
-                let l = self.doc.layers().layer(i);
-                (
-                    l.id,
-                    l.name.clone(),
-                    l.visible,
-                    l.locked,
-                    i == current,
-                )
-            })
-            .collect();
+    /// 当前可见的行（按 `walk()` 序，跳过折叠组的子树）。
+    fn layer_rows(&self) -> Vec<RowData> {
+        let layers = self.doc.layers();
+        let current = layers.current_path().to_vec();
+        let mut rows = Vec::new();
+        for (path, layer) in layers.walk() {
+            // 折叠：祖先里有折叠的组 → 跳过
+            let mut hidden = false;
+            for depth in 1..path.len() {
+                if self.layers_collapsed.contains(&path[..depth]) {
+                    hidden = true;
+                    break;
+                }
+            }
+            if hidden {
+                continue;
+            }
+            let parent = &path[..path.len() - 1];
+            rows.push(RowData {
+                depth: path.len() - 1,
+                id: layer.id,
+                name: layer.name.clone(),
+                visible: layer.visible,
+                locked: layer.locked,
+                is_group: layer.is_group(),
+                is_cur: path == current,
+                branch_visible: layers.branch_visible(parent),
+                expanded: !self.layers_collapsed.contains(&path),
+                path,
+            });
+        }
+        rows
+    }
 
+    /// 图层列表（`RootStackTreeView` 的树形技术栈适配）。
+    fn layer_list(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        let rows = self.layer_rows();
         // 浮动窗口里要让 egui::Window 包住内容（限高）；停靠侧栏时
         // 剩余空间更大，min 保证列表可滚。min = 源码
         // `RootStackTreeView.set_size_request(150, 200)` 的高。
@@ -169,77 +255,201 @@ impl PigmentApp {
             .max_height(260.0)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                egui::Grid::new("layer_list_rows")
-                    .num_columns(4)
-                    .spacing([6.0, 2.0])
-                    .show(ui, |ui| {
-                        for (i, (id, name, visible, locked, is_cur)) in
-                            rows.iter().enumerate()
-                        {
-                            let id = *id;
-                            let (visible, locked, is_cur) = (*visible, *locked, *is_cur);
+                for row in &rows {
+                    self.layer_row(ui, ctx, row);
+                }
+                // 拖动重排的落点提示 + 释放处理
+                self.layer_drag_feedback(ui, ctx);
+            });
+    }
 
-                            // 1) 可见性眼（`_flags1_col`，`:405-414`；
-                            //    图标名按 visible/hidden 切换，隐藏时变暗）
-                            let eye = if visible {
-                                "mypaint-object-visible-symbolic"
-                            } else {
-                                "mypaint-object-hidden-symbolic"
-                            };
-                            if icon_button(ui, &mut self.icon_cache, eye, visible).clicked() {
-                                self.doc.set_layer_visible(i, !visible);
-                                ctx.request_repaint();
-                            }
-
-                            // 2) 预览格（`_name_col` 的第一个 cell，`:421-426`）
-                            self.layer_preview_cell(ui, i, id, &name);
-
-                            // 3) 名称（单击选择，双击重命名）
-                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                                let display = name.clone().unwrap_or_else(|| "Layer".to_string());
-                                if self.layer_rename == Some(id) {
-                                    self.layer_rename_edit(ui, id, i);
-                                } else {
-                                    let label = if is_cur {
-                                        egui::RichText::new(&display).strong()
-                                    } else {
-                                        egui::RichText::new(&display)
-                                    };
-                                    let resp = ui.selectable_label(is_cur, label);
-                                    if resp.clicked() {
-                                        self.doc.select_layer(i);
-                                        ctx.request_repaint();
-                                    }
-                                    if resp.double_clicked() {
-                                        // LayerProperties 对话框的技术栈适配：行内编辑
-                                        self.layer_rename = Some(id);
-                                        self.rename_focused = false;
-                                        self.rename_buf = display;
-                                    }
-                                }
-                            });
-
-                            // 4) 锁定（`_flags2_col`，`:437-448`）
-                            let lock_icon = if locked {
-                                "mypaint-object-locked-symbolic"
-                            } else {
-                                "mypaint-object-unlocked-symbolic"
-                            };
-                            if icon_button(ui, &mut self.icon_cache, lock_icon, locked)
-                                .on_hover_text(if locked {
-                                    "Locked (click to unlock)"
-                                } else {
-                                    "Unlocked (click to lock)"
-                                })
-                                .clicked()
-                            {
-                                self.doc.set_layer_locked(i, !locked);
-                                ctx.request_repaint();
-                            }
-                            ui.end_row();
+    /// 单行：缩进 + 展开箭头 + 眼 | 预览 | 名字 | 锁（列序照 `layers.py:405-455`）。
+    fn layer_row(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, row: &RowData) {
+        let path = row.path.clone();
+        let resp = ui
+            .horizontal(|ui| {
+                ui.add_space(2.0 + row.depth as f32 * INDENT_PX);
+                // 组：展开/折叠箭头（没有子层时留白）
+                if row.is_group {
+                    let arrow = if row.expanded { "▾" } else { "▸" };
+                    if ui
+                        .small_button(arrow)
+                        .on_hover_text(if row.expanded { "Collapse group" } else { "Expand group" })
+                        .clicked()
+                    {
+                        if row.expanded {
+                            self.layers_collapsed.insert(path.clone());
+                        } else {
+                            self.layers_collapsed.remove(&path);
+                        }
+                    }
+                } else {
+                    ui.add_space(12.0);
+                }
+                // 1) 可见性眼（`_flags1_col`，`:405-414`）
+                let eye = if row.visible {
+                    "mypaint-object-visible-symbolic"
+                } else {
+                    "mypaint-object-hidden-symbolic"
+                };
+                if icon_button(ui, &mut self.icon_cache, eye, row.visible && row.branch_visible)
+                    .clicked()
+                {
+                    self.doc.set_layer_visible(&path, !row.visible);
+                    ctx.request_repaint();
+                }
+                // 2) 预览格（`_name_col` 的第一个 cell，`:421-426`）
+                self.layer_preview_cell(ui, &path, row);
+                // 3) 名称（单击选择，双击重命名）
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let display = row.name.clone().unwrap_or_else(|| {
+                        if row.is_group {
+                            "Group".to_string()
+                        } else {
+                            "Layer".to_string()
                         }
                     });
-            });
+                    if self.layer_rename == Some(row.id) {
+                        self.layer_rename_edit(ui, &path, row.id);
+                    } else {
+                        let label = if row.is_cur {
+                            egui::RichText::new(&display).strong()
+                        } else if row.is_group {
+                            egui::RichText::new(&display).italics()
+                        } else {
+                            egui::RichText::new(&display)
+                        };
+                        let resp = ui.selectable_label(row.is_cur, label);
+                        if resp.clicked() {
+                            self.doc.select_layer(&path);
+                            ctx.request_repaint();
+                        }
+                        if resp.double_clicked() {
+                            // LayerProperties 对话框的技术栈适配：行内编辑
+                            self.layer_rename = Some(row.id);
+                            self.rename_path = path.clone();
+                            self.rename_focused = false;
+                            self.rename_buf = display;
+                        }
+                    }
+                });
+                // 4) 锁定（`_flags2_col`，`:437-448`）
+                let lock_icon = if row.locked {
+                    "mypaint-object-locked-symbolic"
+                } else {
+                    "mypaint-object-unlocked-symbolic"
+                };
+                if icon_button(ui, &mut self.icon_cache, lock_icon, row.locked)
+                    .on_hover_text(if row.locked {
+                        "Locked (click to unlock)"
+                    } else {
+                        "Unlocked (click to lock)"
+                    })
+                    .clicked()
+                {
+                    self.doc.set_layer_locked(&path, !row.locked);
+                    ctx.request_repaint();
+                }
+            })
+            .response;
+
+        // 拖动重排：**手柄 = 缩略图格**（整行覆盖一个 drag 区域会吞掉名字/按钮的点击）
+        if self.layer_drag.is_some() && resp.rect.contains(ui.ctx().pointer_interact_pos().unwrap_or_default()) {
+            // 落点判定：组行中段 = 放进组顶；行上半 = 插到该行前；下半 = 其后
+            let rect = resp.rect;
+            if let Some(pos) = ui.ctx().pointer_interact_pos() {
+                let into_group = row.is_group
+                    && (pos.y - rect.top()) > rect.height() * 0.3
+                    && (rect.bottom() - pos.y) > rect.height() * 0.3;
+                let target = if into_group {
+                    let mut p = row.path.clone();
+                    p.push(0);
+                    p
+                } else {
+                    let before = pos.y < rect.center().y;
+                    let mut p = row.path.clone();
+                    if !before {
+                        *p.last_mut().unwrap() += 1;
+                    }
+                    p
+                };
+                self.layer_drop_target = Some(target);
+            }
+        }
+    }
+
+    /// 拖动结束（全局）：把拖着的层挪到落点。
+    fn layer_drag_finish(&mut self, ctx: &egui::Context) {
+        if self.layer_drag.is_none() {
+            return;
+        }
+        let released = ctx.input(|i| i.pointer.any_released());
+        if !released {
+            return;
+        }
+        if let (Some(src), Some(targ)) = (self.layer_drag.take(), self.layer_drop_target.take()) {
+            if self.doc.restack_layer(src, targ) {
+                ctx.request_repaint();
+            }
+        }
+    }
+
+    /// 拖动时给目标行画提示框（在行矩形上描边）。
+    fn layer_drag_feedback(&mut self, _ui: &mut egui::Ui, _ctx: &egui::Context) {}
+
+    /// 预览格（`gui/layers.py:883` `_layer_preview_pixbuf_datafunc`）。
+    ///
+    /// 三层叠出来（自下而上）：
+    /// 1. `make_preview` 的 32×32 成品（棋盘底 + 双线性缩放的缩略图）；
+    /// 2. 1px 白色 10% 边框（`gui/layerprops.py:459-462` 的 cairo 描边）；
+    /// 3. 图层类型水印图标 18px、`overall_alpha = 255/6`（`:918-930`）：
+    ///    绘画层 `mypaint-layer-painting-symbolic`，组 `mypaint-layer-group-symbolic`。
+    fn layer_preview_cell(&mut self, ui: &mut egui::Ui, path: &[usize], row: &RowData) {
+        let size = egui::vec2(PREVIEW_PX as f32, PREVIEW_PX as f32);
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+        let ctx = ui.ctx().clone();
+
+        if let Some(tex) = self.layer_thumbnail(&ctx, path, row.id) {
+            ui.painter().image(
+                tex.id(),
+                rect,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        // 边框：cairo 的 rectangle(0.5, 0.5, size-1, size-1) + line_width 1
+        ui.painter().rect_stroke(
+            rect.shrink(0.5),
+            0.0,
+            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(26)),
+            egui::StrokeKind::Middle,
+        );
+        // 水印：icon_size = 16 + 2（描边留白），居中，alpha 255/6
+        let icon_name = if row.is_group { ICON_GROUP } else { ICON_PAINTING };
+        if let Some(icon) = icon_texture(&ctx, &mut self.icon_cache, icon_name) {
+            let r = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
+            ui.painter().image(
+                icon.id(),
+                r,
+                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                egui::Color32::from_white_alpha(42),
+            );
+        }
+
+        let hover = row.name.clone().unwrap_or_else(|| {
+            if row.is_group {
+                "Group".to_string()
+            } else {
+                "Layer".to_string()
+            }
+        });
+        if resp.drag_started() {
+            self.layer_drag = Some(path.to_vec());
+        }
+        if resp.on_hover_text(hover).clicked() {
+            self.doc.select_layer(path);
+            ctx.request_repaint();
+        }
     }
 
     /// 行内重命名编辑框（LayerProperties 对话框的技术栈适配）。
@@ -250,7 +460,7 @@ impl PigmentApp {
     /// 3. 因此不能用「`!has_focus()` 即失焦」判提交 —— 焦点要下一帧才到手，
     ///    首帧 `has_focus()` 恒 false，会把编辑框当场关掉（B2-5 GUI 实测抓到的
     ///    「双击改名没生效」）。改成：**拿到过焦点之后**才把失焦当提交。
-    fn layer_rename_edit(&mut self, ui: &mut egui::Ui, id: u64, index: usize) {
+    fn layer_rename_edit(&mut self, ui: &mut egui::Ui, path: &[usize], id: u64) {
         // Enter/Esc 都在画 TextEdit **之前**从事件流里摘掉（见 S5 笔记：单行
         // TextEdit 会自己 consume_key(Enter)，之后再查就恒为 false）。
         // 两个细节：
@@ -288,7 +498,6 @@ impl PigmentApp {
         if resp.has_focus() {
             if !self.rename_focused {
                 // 首帧拿到焦点 → 全选：改名基本都是整体替换
-                // （GTK 的 LayerProperties 对话框里 entry 也是全选态）
                 if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), edit_id) {
                     let n = buf.chars().count();
                     state.cursor.set_char_range(Some(egui::text::CCursorRange::two(
@@ -307,67 +516,25 @@ impl PigmentApp {
             self.layer_rename = None;
             self.rename_focused = false;
             self.rename_buf = String::new();
+            let target = std::mem::take(&mut self.rename_path);
             if escape {
                 return; // Esc = 取消（LayerProperties 的 Cancel）
             }
             let new_name = buf.trim().to_string();
             let name = if new_name.is_empty() { None } else { Some(new_name) };
-            if name != self.doc.layers().layer(index).name {
-                self.doc.rename_layer(index, name);
+            let unchanged = self
+                .doc
+                .layers()
+                .layer_at(&target)
+                .map(|l| l.name == name)
+                .unwrap_or(true);
+            if !unchanged {
+                self.doc.rename_layer(&target, name);
             }
         } else {
             self.rename_buf = buf;
         }
-    }
-
-    /// 预览格（`gui/layers.py:883` `_layer_preview_pixbuf_datafunc`）。
-    ///
-    /// 三层叠出来（自下而上）：
-    /// 1. `make_preview` 的 32×32 成品（棋盘底 + 双线性缩放的缩略图）；
-    /// 2. 1px 白色 10% 边框（`gui/layerprops.py:459-462` 的 cairo 描边）；
-    /// 3. 图层类型水印图标 18px、`overall_alpha = 255/6`（`:918-930`）。
-    fn layer_preview_cell(
-        &mut self,
-        ui: &mut egui::Ui,
-        index: usize,
-        layer_id: u64,
-        name: &Option<String>,
-    ) {
-        let size = egui::vec2(PREVIEW_PX as f32, PREVIEW_PX as f32);
-        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-        let ctx = ui.ctx().clone();
-
-        if let Some(tex) = self.layer_thumbnail(&ctx, index, layer_id) {
-            ui.painter().image(
-                tex.id(),
-                rect,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
-        }
-        // 边框：cairo 的 rectangle(0.5, 0.5, size-1, size-1) + line_width 1
-        // → 像素中心线，即「内侧 1px」
-        ui.painter().rect_stroke(
-            rect.shrink(0.5),
-            0.0,
-            egui::Stroke::new(1.0, egui::Color32::from_white_alpha(26)),
-            egui::StrokeKind::Middle,
-        );
-        // 水印：icon_size = 16 + 2（描边留白），居中，alpha 255/6
-        if let Some(icon) = icon_texture(&ctx, &mut self.icon_cache, LAYER_ICON) {
-            let r = egui::Rect::from_center_size(rect.center(), egui::vec2(18.0, 18.0));
-            ui.painter().image(
-                icon.id(),
-                r,
-                egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                egui::Color32::from_white_alpha(42),
-            );
-        }
-
-        if resp.on_hover_text(layer_hover_name(name)).clicked() {
-            self.doc.select_layer(index);
-            ctx.request_repaint();
-        }
+        let _ = path;
     }
 
     /// 预览格纹理：`layer.thumbnail`（≤256，数据外接框）经 `make_preview`
@@ -378,21 +545,21 @@ impl PigmentApp {
     /// - `make_preview` 的棋盘/缩放/居中在
     ///   [`pigment_surface::thumb::compose_preview`] 里逐像素复刻。
     ///
-    /// 缓存键 = (层 id, 表面 clock)；clock 不变直接复用纹理。
+    /// 缓存键 = (层 id, 内容时钟 + 本层 mode/opacity)；组的内容时钟是子层之和。
     fn layer_thumbnail(
         &mut self,
         ctx: &egui::Context,
-        index: usize,
+        path: &[usize],
         layer_id: u64,
     ) -> Option<egui::TextureHandle> {
-        let key = ThumbKey::of(self.doc.layers().try_layer(index)?);
+        let key = ThumbKey::of(self.doc.layers().layer_at(path)?);
         if let Some((cached, tex)) = self.layer_thumbs.get(&layer_id) {
             if *cached == key {
                 return Some(tex.clone());
             }
         }
         let cell = {
-            let layer = self.doc.layers().try_layer(index)?;
+            let layer = self.doc.layers().layer_at(path)?;
             let (raw, tw, th) =
                 pigment_engine::fileio::render_layer_thumbnail(layer, layer.data_bbox());
             pigment_surface::thumb::compose_preview(&raw, tw as i32, th as i32, PREVIEW_PX)
@@ -462,10 +629,6 @@ impl PigmentApp {
     }
 }
 
-fn layer_hover_name(name: &Option<String>) -> String {
-    name.clone().unwrap_or_else(|| "Layer".to_string())
-}
-
 /// 旗标单元格里的图标边长（GTK 的 `GtkCellRendererPixbuf` 默认菜单尺寸 16）。
 const FLAG_ICON_PX: f32 = 16.0;
 
@@ -492,4 +655,3 @@ fn icon_button(
     btn = btn.min_size(egui::vec2(FLAG_PX, FLAG_PX));
     ui.add(btn)
 }
-
