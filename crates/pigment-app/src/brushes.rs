@@ -544,6 +544,16 @@ impl BrushPanel {
 
                 let hover_pos = response.hover_pos().filter(|p| rect.contains(*p));
                 let mut hovered: Option<usize> = None;
+                // 拖拽期间 `hover_pos()` 可能为 None（指针被 drag 捕获），
+                // 落点要用 `interact_pointer_pos()` 另算一份。
+                let pointer_slot = response
+                    .interact_pointer_pos()
+                    .or(hover_pos)
+                    .filter(|p| rect.contains(*p))
+                    .map(|p| {
+                        let local = p - rect.min;
+                        index_at(local.x, local.y, tiles_w, count)
+                    });
 
                 for row in first_row..last_row {
                     for col in 0..tiles_w {
@@ -585,10 +595,10 @@ impl BrushPanel {
 
                 // ---- 拖放重排 / 右键菜单 ----
                 if response.drag_started() {
-                    self.drag_from = hovered;
+                    self.drag_from = pointer_slot;
                 }
                 if response.dragged() && self.drag_from.is_some() {
-                    self.drag_hover = hovered;
+                    self.drag_hover = pointer_slot;
                 }
                 if response.drag_stopped() {
                     if let (Some(a), Some(b)) = (self.drag_from, self.drag_hover) {
