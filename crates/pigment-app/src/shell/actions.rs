@@ -1023,6 +1023,20 @@ mod tests {
         assert_eq!(by_id("Undo").unwrap().accel.unwrap().label(), "Ctrl+Z");
     }
 
+    /// B3-5：对称开关的快捷键就是 `u`（`resources.xml:854-860` 里那条
+    /// `<accelerator key="u"/>`）；`FrameToggle` 在源码里**没有**加速键
+    /// （`resources.xml:862-869` 只有 label/tooltip/icon）。
+    #[test]
+    fn symmetry_and_frame_toggles_bindings() {
+        // label 是给菜单显示的文本（单键大写化，与 GTK 的加速键标签一致）
+        assert_eq!(by_id("SymmetryActive").unwrap().accel.unwrap().label(), "U");
+        assert_eq!(
+            lookup(egui::Key::U, Mods::NONE),
+            Some(Bound::Action("SymmetryActive"))
+        );
+        assert!(by_id("FrameToggle").unwrap().accel.is_none());
+    }
+
     #[test]
     fn lookup_prefers_xml_accel_over_hardcoded_fallback() {
         // `[` / `]`：XML 绑的是 Mirror{Vertical,Horizontal}，硬编码兜底想绑

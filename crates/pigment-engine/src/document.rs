@@ -30,6 +30,7 @@
 use std::collections::BTreeMap;
 
 use pigment_surface::layer::{LayerContent, LayerMode};
+use pigment_surface::symmetry::SymmetryType;
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
@@ -65,6 +66,50 @@ fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
 /// 取色取样方块的边长（`tileddrawwidget.py:977` 的 `pick_color(x, y, size=3)`）。
 pub const PICK_COLOR_SIZE: i32 = 3;
 
+/// 中央对称状态 —— `RootLayerStack` 的 `_symmetry_*` 字段（`tree.py:130-138`）。
+///
+/// 源码把这份状态放在**根图层栈**上（`RootLayerStack`，`tree.py:72`），
+/// 由 `set_symmetry_state` 复制给当前层（`tree.py:880-934`）；层的
+/// `set_symmetry_state` 再把它落到表面的 C 结构里（`data.py:499-511`）。
+///
+/// 本项目的三个对应物：
+/// 1. 本结构（文档级的唯一一份状态）；
+/// 2. [`Document::set_symmetry_state`]（写入 + 传播）；
+/// 3. [`pigment_surface::PigmentSurface::set_symmetry_state`]（表面上的执行端）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SymmetrySetup {
+    /// 对称是否开启（`_symmetry_active`）。
+    pub active: bool,
+    /// 中心是否"还没被正式设置过"（`_symmetry_unset`）。
+    ///
+    /// 第一次开启对称时用它决定"要不要按视口中心推一个位置"
+    /// （`gui/document.py:1895-1901`）。源码初值是 `True`（`tree.py:133`），
+    /// 所以第一次开对称会落在视口中心，而不是原点。
+    pub unset: bool,
+    /// 对称中心（模型坐标；源码是**整数**元组，`tree.py:903` 用 `int(round())`）。
+    pub center: (i32, i32),
+    /// 对称类型（`_symmetry_type`）。
+    pub type_: SymmetryType,
+    /// 旋转对称的线条数（`_symmetry_lines`）。
+    pub lines: i32,
+    /// 对称线角度（度，`_symmetry_angle`）。
+    pub angle: f32,
+}
+
+impl Default for SymmetrySetup {
+    /// `tree.py:130-138` 的初值：未设置中心、未开启、垂直镜像、原点、0°、2 条线。
+    fn default() -> Self {
+        Self {
+            active: false,
+            unset: true,
+            center: (0, 0),
+            type_: SymmetryType::Vertical,
+            lines: 2,
+            angle: 0.0,
+        }
+    }
+}
+
 /// 文档模型：一个图层栈 + 一条撤销栈 + 画幅/分辨率/设置。
 pub struct Document {
     layers: LayerStack,
@@ -77,6 +122,8 @@ pub struct Document {
     frame: (i32, i32, i32, i32),
     /// 画框是否启用（`:339` 的 `self._frame_enabled`）。
     frame_enabled: bool,
+    /// 中央对称状态（`RootLayerStack._symmetry_*`，`tree.py:130-138`）。
+    symmetry: SymmetrySetup,
     /// 标称分辨率（`:1780` 的 `self._xres` / `self._yres`，未指定为 `None`）。
     pub xres: Option<u32>,
     pub yres: Option<u32>,
@@ -106,6 +153,7 @@ impl Document {
             unsaved_painting_time: 0.0,
             frame: (0, 0, 0, 0),
             frame_enabled: false,
+            symmetry: SymmetrySetup::default(),
             xres: None,
             yres: None,
             settings: BTreeMap::new(),
@@ -196,12 +244,19 @@ impl Document {
     }
 
     /// 在 `insert_path` 处新建一层（`document.py:1290 add_layer`）。
+    ///
+    /// 与源码 `deepinsert`（`tree.py:1687`）一致：新层插入后就吃一份当前
+    /// 中央对称状态（新层的表面是干净的，对称参数要补上）。
     pub fn add_layer_at(&mut self, insert_path: Vec<usize>, layer: Layer, is_import: bool) -> bool {
-        self.do_command(Box::new(crate::command::AddLayer::new(
-            insert_path,
+        let ok = self.do_command(Box::new(crate::command::AddLayer::new(
+            insert_path.clone(),
             layer,
             is_import,
-        )))
+        )));
+        if ok {
+            self.propagate_symmetry_to(&insert_path);
+        }
+        ok
     }
 
     /// 在**当前层位置**新建绘画层（`NewPaintingLayerAbove`：
@@ -225,6 +280,9 @@ impl Document {
     }
 
     /// 切换当前层（`SelectLayer`，自动撤销类）。
+    ///
+    /// 与源码 `RootLayerStack.set_current_path` 一致，切完把中央对称状态
+    /// 复制给新当前层（`tree.py:973-983` 调 `_propagate_symmetry_state`）。
     pub fn select_layer(&mut self, path: &[usize]) {
         let Some(layer) = self.layers.layer_at(path) else {
             return;
@@ -235,6 +293,7 @@ impl Document {
             return;
         }
         self.do_command(Box::new(crate::command::SelectLayer::new(prev, new)));
+        self.propagate_symmetry_to(path);
     }
 
     /// 当前层上移一格（朝同层栈顶；`BubbleLayerUp`）。
@@ -405,11 +464,23 @@ impl Document {
         self.layers.data_bbox()
     }
 
-    /// 清空文档（`lib/document.py:923`）：丢内容、清栈、作画时长归零。
+    /// 清空文档（`lib/document.py:922`）：丢内容、清栈、作画时长归零。
+    ///
+    /// 与源码一致地把**画框、分辨率、文档设置、对称状态**一并复位
+    /// （`:944-961`：`symmetry_unset = True` +
+    /// `set_symmetry_state(False, (0,0), SymmetryVertical, 2, 0)`、
+    /// `set_frame([0,0,0,0])`、`set_frame_enabled(False)`、`_xres/_yres = None`、
+    /// `_settings.clear()`）。
     pub fn clear(&mut self) {
         self.layers = LayerStack::new();
         self.command_stack.clear();
         self.unsaved_painting_time = 0.0;
+        self.frame = (0, 0, 0, 0);
+        self.frame_enabled = false;
+        self.xres = None;
+        self.yres = None;
+        self.settings.clear();
+        self.symmetry = SymmetrySetup::default();
     }
 
     // ---- 画框（`lib/document.py:827-878`）----
@@ -420,11 +491,14 @@ impl Document {
         self.frame
     }
 
-    /// 设置画框（`:835` 的 `update_frame()`）。
+    /// 设置画框（`:829` `set_frame` → `:835` `update_frame`）。
     ///
-    /// 与源码一致：宽高被钳到非负（源码在 `:846-849` 处对 w/h 取 `max(0, …)`）。
+    /// **不做钳位**，照源码 `new_frame[i] = int(var)`（`:846-849`）：源码里
+    /// 唯一保证画框不退化的是编辑模式的拖拽逻辑（`framewindow.py:376-386`
+    /// 用 `_MIN_FRAME_SIZE = 1` 兜底），以及文件加载时给的图像尺寸。
+    /// 本项目没有移植编辑模式，所以这里如实保存调用方给的值。
     pub fn set_frame(&mut self, x: i32, y: i32, w: i32, h: i32) {
-        self.frame = (x, y, w.max(0), h.max(0));
+        self.frame = (x, y, w, h);
     }
 
     /// 画框是否启用（`:864`）。
@@ -434,6 +508,9 @@ impl Document {
     }
 
     /// 启用/停用画框（`:867`）。
+    ///
+    /// 源码在 `user_initiated=True` 时走 `command.SetFrameEnabled` 入撤销栈
+    /// （`:871-873`）；本移植只做状态（画框的撤销动作未移植，见记账）。
     #[inline]
     pub fn set_frame_enabled(&mut self, enabled: bool) {
         self.frame_enabled = enabled;
@@ -458,6 +535,121 @@ impl Document {
             return self.frame;
         }
         bbox
+    }
+
+    // ---- 对称（`lib/layer/tree.py:809-950` 的 RootLayerStack 部分）----
+
+    /// 中央对称状态（`tree.py:130-138`）。
+    #[inline]
+    pub fn symmetry(&self) -> SymmetrySetup {
+        self.symmetry
+    }
+
+    /// 对称是否开启（`tree.py:819-830` 的 `symmetry_active`）。
+    #[inline]
+    pub fn symmetry_active(&self) -> bool {
+        self.symmetry.active
+    }
+
+    /// 对称中心是否还没被设置过（`tree.py:811-817` 的 `symmetry_unset`）。
+    #[inline]
+    pub fn symmetry_unset(&self) -> bool {
+        self.symmetry.unset
+    }
+
+    /// 直接改 `symmetry_unset`（`tree.py:815-817` 的 setter）。
+    ///
+    /// 唯一的用处是第一次开启对称时把它清掉（`gui/document.py:1897-1898`），
+    /// 让之后的开关不再重新推中心。
+    #[inline]
+    pub fn set_symmetry_unset(&mut self, unset: bool) {
+        self.symmetry.unset = unset;
+    }
+
+    /// 对称中心（`tree.py:832-838`；整数模型坐标）。
+    #[inline]
+    pub fn symmetry_center(&self) -> (i32, i32) {
+        self.symmetry.center
+    }
+
+    /// 对称类型（`tree.py:856-862`）。
+    #[inline]
+    pub fn symmetry_type(&self) -> SymmetryType {
+        self.symmetry.type_
+    }
+
+    /// 旋转对称的线条数（`tree.py:864-870`）。
+    #[inline]
+    pub fn symmetry_lines(&self) -> i32 {
+        self.symmetry.lines
+    }
+
+    /// 对称线角度（`tree.py:872-878`，单位度）。
+    #[inline]
+    pub fn symmetry_angle(&self) -> f32 {
+        self.symmetry.angle
+    }
+
+    /// 设置中央对称状态并传播给当前层（`tree.py:880-922` 的
+    /// `RootLayerStack.set_symmetry_state`）。
+    ///
+    /// `None` = "这一项没变"，与源码的用法一致（`tree.py:940-949` 的
+    /// docstring 说明事件参数里的 None 就是这个意思）；中心按源码取整到
+    /// 整数模型坐标（`:901-903`：`int(round(center[0])), int(round(center[1]))`）。
+    ///
+    /// 真正的 dab 展开在表面上（`pigment_surface::PigmentSurface::draw_dab`），
+    /// 这里只负责"中央状态 → 当前层表面"这一跳（`:913-915`）。
+    pub fn set_symmetry_state(
+        &mut self,
+        active: Option<bool>,
+        center: Option<(i32, i32)>,
+        symmetry_type: Option<SymmetryType>,
+        symmetry_lines: Option<i32>,
+        angle: Option<f32>,
+    ) {
+        if let Some(v) = active {
+            self.symmetry.active = v;
+        }
+        if let Some(c) = center {
+            self.symmetry.center = c;
+        }
+        if let Some(t) = symmetry_type {
+            self.symmetry.type_ = t;
+        }
+        if let Some(l) = symmetry_lines {
+            self.symmetry.lines = l;
+        }
+        if let Some(a) = angle {
+            self.symmetry.angle = a;
+        }
+        let path = self.layers.current_path().to_vec();
+        self.propagate_symmetry_to(&path);
+    }
+
+    /// 把中央状态复制给 `path` 指向的层（`tree.py:924-934`
+    /// `_propagate_symmetry_state`）。
+    ///
+    /// 源码是 `layer.set_symmetry_state(...)`：绘画层把参数落到表面的 C 结构
+    /// （`data.py:499-511`），组层命中 `LayerBase` 的空实现
+    /// （`core.py:851-870`，注释原话 "The base implementation does nothing"）。
+    /// 所以组层这里什么都不做 —— 与源码一致；这也意味着**组里的子层拿不到
+    /// 对称**（上游行为，记账）。
+    fn propagate_symmetry_to(&mut self, path: &[usize]) {
+        let s = self.symmetry;
+        if let Some(layer) = self.layers.layer_at_mut(path) {
+            if let Some(surface) = layer.surface_mut() {
+                // 参数顺序照 C++ 包装层 `TiledSurface::set_symmetry_state`
+                // （`lib/tiledsurface.hpp:57-68`）与 `data.py:505-511` 的调用。
+                surface.set_symmetry_state(
+                    s.active,
+                    s.center.0 as f32,
+                    s.center.1 as f32,
+                    s.type_,
+                    s.lines,
+                    s.angle,
+                );
+            }
+        }
     }
 
     // ---- 洪水填充的包围盒（`lib/document.py:1031` 的 `flood_fill`）----

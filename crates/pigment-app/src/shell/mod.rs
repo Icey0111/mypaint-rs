@@ -28,6 +28,7 @@ pub(crate) mod dock;
 pub(crate) mod layers_panel;
 pub(crate) mod footer;
 pub(crate) mod menubar;
+pub(crate) mod overlays;
 pub(crate) mod toolbars;
 pub(crate) mod topbar;
 pub(crate) mod workspace;

@@ -486,12 +486,9 @@ impl PigmentApp {
     /// 内容、撤销栈、作画时长、当前文件名全部重置）。
     pub(crate) fn new_document(&mut self, now: f64) {
         self.flush_pending_stroke();
+        // `Document::clear` 已经把画框/分辨率/文档设置/对称状态一并复位
+        // （`lib/document.py:944-961`），这里不再重复设一遍。
         self.doc.clear();
-        self.doc.set_frame_enabled(false);
-        self.doc.set_frame(0, 0, 0, 0);
-        self.doc.xres = None;
-        self.doc.yres = None;
-        self.doc.settings.clear();
         self.current_file = None;
         self.force_resync = true; // 表面换了 → 显存全丢重传
         self.view = View::default();
@@ -851,6 +848,19 @@ impl PigmentApp {
         Some((x, y))
     }
 
+    /// 视口中心的模型坐标（整数），用于第一次开启对称时定中心。
+    ///
+    /// 对应 `symmetry_active_toggled_cb` 里的
+    /// `tdw.display_to_model(alloc.width/2, alloc.height/2)`（`gui/document.py:1899-1901`），
+    /// 取整规则照 `symmetry.py:226` 的 `int(round(c))`。画布矩形来自上一帧
+    /// —— 菜单/快捷键触发时本帧还没画到画布，这与源码用 `get_allocation()`
+    /// 是同一类"上次布局"的信息。
+    fn canvas_center_model(&self) -> Option<(i32, i32)> {
+        let rect = self.canvas_rect?;
+        let [x, y] = self.view.screen_to_world(rect.width() * 0.5, rect.height() * 0.5);
+        Some((x.round() as i32, y.round() as i32))
+    }
+
     /// 当前模式的图标名（`mode.get_icon_name()`：取关联动作的 icon-name）。
     pub(crate) fn mode_icon_name(&self) -> Option<&'static str> {
         crate::shell::actions::by_id(self.modes.top().action_name()?).and_then(|a| a.icon_name)
@@ -1135,6 +1145,11 @@ impl PigmentApp {
             "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC" | "ColorPickModeY" => true,
             "FlipColorPickMode" | "FlipColorPickModeH" | "FlipColorPickModeC"
             | "FlipColorPickModeY" => true,
+            // ---- 对称 / 画框开关（B3-5：两个 GtkToggleAction）----
+            // 源码里这两个 toggle 从来没被 set_sensitive(False)
+            // （`resources.xml:852-869`，回调在 `gui/document.py:1066-1072`
+            // 与 `:1889-1905`），所以恒定可用。
+            "SymmetryActive" | "FrameToggle" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -1154,6 +1169,11 @@ impl PigmentApp {
             "Fullscreen" => Some(self.fullscreen),
             "BlendModeNormal" => Some(!self.eraser),
             "BlendModeEraser" => Some(self.eraser),
+            // B3-5：两个 GtkToggleAction 的 active（`resources.xml:854,863`）。
+            // 源码把它们与模型状态双向同步（`gui/document.py:1074-1078`、
+            // `:1907-1916`）；egui 是立即模式，读模型即可。
+            "SymmetryActive" => Some(self.doc.symmetry_active()),
+            "FrameToggle" => Some(self.doc.get_frame_enabled()),
             _ => None,
         }
     }
@@ -1276,6 +1296,55 @@ impl PigmentApp {
             "ShowBackgroundToggle" => {
                 let v = !self.doc.layers().background_visible();
                 self.doc.layers_mut().set_background_visible(v);
+                ctx.request_repaint();
+            }
+            // ---- 对称开关（B3-5：`symmetry_active_toggled_cb`，
+            //      `gui/document.py:1889-1905`）----
+            "SymmetryActive" => {
+                // 源码读的是 `action.get_active()`（toggle 的新状态）；立即模式里
+                // 动作状态就是模型状态，所以"新状态"= 取反。
+                let want_active = !self.doc.symmetry_active();
+                // 从"中心还没设置过"到"要开启"时，中心取**视口中心**
+                // （`:1895-1901`：`tdw.display_to_model(alloc.w/2, alloc.h/2)`），
+                // 取整照 `symmetry.py:226` 的 `int(round(c))`。
+                let mut center = None;
+                if self.doc.symmetry_unset() && want_active {
+                    self.doc.set_symmetry_unset(false);
+                    center = self.canvas_center_model();
+                }
+                // `:1903-1905`：`want_active != already_active or center is not None`
+                // 才落账。源码那句判断是为了容忍动作与模型不同步（`set_active`
+                // 是异步的）；这里 `already_active` 恒等于 `!want_active`。
+                let already_active = self.doc.symmetry_active();
+                if want_active != already_active || center.is_some() {
+                    self.doc
+                        .set_symmetry_state(Some(want_active), center, None, None, None);
+                    let state = if want_active { "开" } else { "关" };
+                    self.set_status(format!("对称绘画：{state}"), now);
+                }
+                ctx.request_repaint();
+            }
+            // ---- 画框开关（B3-5：`toggle_frame_cb`，`gui/document.py:1066-1072`）----
+            "FrameToggle" => {
+                let enabled = self.doc.get_frame_enabled();
+                let desired = !enabled;
+                if enabled != desired {
+                    self.doc.set_frame_enabled(desired);
+                    let (x, y, w, h) = self.doc.get_frame();
+                    // 源码第一次启用画框是「Edit Frame」模式做的
+                    // （`framewindow.py:138-145`：没尺寸就按视口摆一个）；
+                    // 那个模式没移植，这里只报告尺寸，免得用户以为坏了
+                    // （0×0 的画框按 even-odd 填充会整块变暗，与源码一致）。
+                    if desired && (w <= 0 || h <= 0) {
+                        self.set_status(
+                            "画框已启用，但尺寸还是 0×0（编辑画框模式未移植）".to_string(),
+                            now,
+                        );
+                    } else {
+                        let state = if desired { "开" } else { "关" };
+                        self.set_status(format!("画框：{state}（{x},{y} {w}×{h}）"), now);
+                    }
+                }
                 ctx.request_repaint();
             }
             // ---- 工具模式切换（B3-1/B3-2/B3-3）----

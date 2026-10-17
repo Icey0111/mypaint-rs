@@ -27,7 +27,7 @@
 
 use std::collections::VecDeque;
 
-use hokusai::{Brush, BrushState};
+use hokusai::{Brush, BrushState, TiledSurface};
 use pigment_surface::combine::CombineMode;
 use pigment_surface::layer::LayerMode;
 use pigment_surface::{Layer, LayerStack, PigmentSurface, SurfaceSnapshot};
@@ -434,7 +434,15 @@ impl Brushwork {
         if let Some(seq) = self.stroke_seq.as_mut() {
             seq.record_event(ev);
         }
+        // 每个指针事件套一次原子窗口 —— 照 `lib/layer/data.py:1412-1425` 的
+        // `PaintingLayer.stroke_to`（`begin_atomic` / `stroke_to` / `end_atomic`）。
+        //
+        // 这不只是脏区上报：对称矩阵的重算就挂在 `begin_atomic` 上
+        // （`mypaint-tiled-surface.c:94-99`），所以「改了对称参数 → 下一个
+        // 事件立刻生效」靠的正是这一对调用。
+        surface.begin_atomic();
         let painted = ev.apply(brush, state, surface);
+        surface.end_atomic();
         // 见字段文档：暂无切段逻辑
         self.split_due = false;
         painted

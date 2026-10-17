@@ -459,6 +459,21 @@ impl PigmentApp {
                 },
             ));
 
+        // ---- 覆盖层（B3-5）：画框 + 对称辅助线 ----
+        // 源码在 `TiledDrawWidget` 里先画画布、再逐个 `overlay.paint(cr)`
+        // （`tileddrawwidget.py:1150-1156`，挂载顺序见 `drawwindow.py:157-158`）。
+        // 这里的 wgpu callback 就是"画布"，覆盖层排在它之后加进同一帧的
+        // 绘制列表，于是自然压在 tile 之上。
+        //
+        // 裁剪到画布矩形：画框/轴线在视口外还有几何，不裁会画到侧栏上
+        // （源码的 cairo 上下文本来就被裁剪到 TDW 的分配区域）。
+        crate::shell::overlays::paint_canvas_overlays(
+            &ui.painter().with_clip_rect(rect),
+            rect,
+            &self.view,
+            &self.doc,
+        );
+
         // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----
         if let Some(pos) = response.hover_pos() {
             let r = self

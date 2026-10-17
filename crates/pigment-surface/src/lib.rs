@@ -1,8 +1,13 @@
 //! pigment-surface —— pigment 项目的自家 tile 表面后端（无限画布存储层）。
 //!
 //! 实现 hokusai 的 [`TiledSurface`] trait。混合算法（`draw_dab` / `get_color` /
-//! `get_color_pigment`）**刻意全部使用 hokusai-core 的默认实现**，保证与
-//! 参考后端 `MemSurface` 逐像素一致（行为对等由 `tests/parity.rs` 守住）。
+//! `get_color_pigment`）**刻意用 hokusai-core 的默认实现**，保证与参考后端
+//! `MemSurface` 逐像素一致（行为对等由 `tests/parity.rs` 守住）。
+//!
+//! 唯一的覆写是 [`symmetry`]：libmypaint 把对称展开放在表面自己的 `draw_dab`
+//! 里（`mypaint-tiled-surface.c:690-800`），所以这里也照做 —— `draw_dab` =
+//! 默认实现画原始 dab + 对称 pass。**对称关闭时逐像素与 MemSurface 全等**，
+//! 这条由 `tests/symmetry.rs` 单独守（见 `symmetry_off_is_bit_identical_to_reference`）。
 //!
 //! 相对 MemSurface 的增量（为 M2 wgpu 渲染层铺路）：
 //!
@@ -43,15 +48,17 @@ use std::path::Path;
 use std::sync::Arc;
 
 use hokusai::tile::{empty_tile, TilePixels, TILE_SIZE};
-use hokusai::TiledSurface;
+use hokusai::{Dab, TiledSurface};
 
 pub mod color;
 pub mod combine;
 pub mod layer;
 pub mod png;
+pub mod symmetry;
 pub mod thumb;
 
 pub use layer::{Layer, LayerStack};
+pub use symmetry::{SymmetryData, SymmetryState, SymmetryType, Transform};
 
 /// 单个 tile：像素数据 + 同步/淘汰元数据。
 ///
@@ -164,6 +171,12 @@ pub struct PigmentSurface {
     in_atomic: bool,
     /// 全局时钟：revision 与 last_touched 的共同来源。
     clock: u64,
+    /// 对称绘制状态（`mypaint-tiled-surface.h:46` 的 `symmetry_data`）。
+    ///
+    /// 挂在表面上而不是笔刷引擎上，是 libmypaint 的做法：一次 `draw_dab`
+    /// 由表面自己展开成 N 个 dab（`mypaint-tiled-surface.c:690-800`），
+    /// 见 [`symmetry`] 模块。
+    symmetry: SymmetryData,
 }
 
 /// 克隆：与快照一样按 tile 共享 `Arc`（写借出时 COW 自动分离）。
@@ -178,6 +191,7 @@ impl Clone for PigmentSurface {
             dirty: HashSet::new(),
             in_atomic: false,
             clock: self.clock,
+            symmetry: self.symmetry.clone(),
         }
     }
 }
@@ -482,6 +496,11 @@ impl TiledSurface for PigmentSurface {
     }
 
     fn begin_atomic(&mut self) {
+        // 对称矩阵在这里重算：源码的 `mypaint_tiled_surface_begin_atomic`
+        // 做的就是 `mypaint_update_symmetry_state(&self->symmetry_data)`
+        // （`mypaint-tiled-surface.c:94-99`），而 `begin_atomic` 只在"一笔的开头"
+        // 被调用，所以重算永远落在 dab 热路径之外。
+        self.symmetry.update();
         self.in_atomic = true;
         self.dirty.clear();
     }
@@ -491,7 +510,15 @@ impl TiledSurface for PigmentSurface {
         self.dirty.drain().collect()
     }
 
-    // draw_dab / get_color / get_color_pigment：全部走 hokusai-core 默认实现，
+    /// 一次 dab = 原始 dab + 对称展开（`mypaint-tiled-surface.c:690-800`）。
+    ///
+    /// libmypaint 把对称放在**表面**的 `draw_dab` 里，所以笔刷引擎照旧一个
+    /// 事件一个 dab；没开启对称时这里就是原来的默认实现，一个像素都不差。
+    fn draw_dab(&mut self, dab: &Dab) -> bool {
+        self.draw_dab_with_symmetry(dab)
+    }
+
+    // get_color / get_color_pigment：全部走 hokusai-core 默认实现，
     // 与 MemSurface 保持逐像素一致。
 }
 
