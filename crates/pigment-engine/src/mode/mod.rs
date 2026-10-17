@@ -366,6 +366,18 @@ pub trait InteractionMode {
         false
     }
 
+    /// 松开起手按键时是否应弹栈（`OneshotDragMode` 的键盘起手，
+    /// `mode.py:1256-1274`；取色模式 `r` 松开即回原工具）。
+    fn pop_on_key_release(&self) -> bool {
+        false
+    }
+
+    /// 一次拖拽结束后是否应弹栈（`OneshotDragMode.drag_stop_cb` 的修饰键规则，
+    /// `mode.py:1302-1317`）。
+    fn oneshot_pop_after_drag(&self, _modifiers: Modifiers) -> bool {
+        false
+    }
+
     /// 拖拽开始（`drag_start_cb`）。
     fn drag_start(&mut self, _ctx: &mut ModeContext<'_>) {}
     /// 拖拽更新（`drag_update_cb`，参数是**本帧位移**）。
@@ -704,6 +716,16 @@ impl ModeStack {
     /// 栈里是否有某个模式（按 `name()` 比较；调试/测试用）。
     pub fn names(&self) -> Vec<&'static str> {
         self.stack.iter().map(|m| m.name()).collect()
+    }
+
+    /// 栈顶是否要求"松开按键即出栈"（仅键盘起手的 Oneshot 模式）。
+    pub fn top_pops_on_key_release(&self) -> bool {
+        self.top().pop_on_key_release()
+    }
+
+    /// 栈顶是否应在一次拖拽后按修饰键规则出栈。
+    pub fn top_pops_after_drag(&self, modifiers: Modifiers) -> bool {
+        self.top().oneshot_pop_after_drag(modifiers)
     }
 
     /// 把自由手绘配置推给栈里**所有**模式（偏好热更新）。

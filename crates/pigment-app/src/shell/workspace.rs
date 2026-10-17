@@ -909,6 +909,8 @@ impl PigmentApp {
                 if let Some(pos) = response.interact_pointer_pos() {
                     let ev = self.pointer_event(pos, rect, now_ms, 1, mods);
                     self.mode_button_release(ev);
+                    // Oneshot（取色）拖完按修饰键规则回原工具（mode.py:1302-1317）
+                    self.finish_oneshot(mods, now_ms / 1000.0);
                 }
                 // 颜色历史入栈时机对齐 MyPaint：`__input_stroke_ended_cb`
                 // （gui/brushcolor.py:54）——每笔结束后记录，且橡皮不记录。
@@ -939,6 +941,7 @@ impl PigmentApp {
                     self.mode_button_press(press);
                     let release = self.pointer_event(pos, rect, now_ms, 1, mods);
                     self.mode_button_release(release);
+                    self.finish_oneshot(mods, now_ms / 1000.0);
                     self.stroke_dirty = true;
                     if !self.eraser {
                         self.color_manager.push_current_history();

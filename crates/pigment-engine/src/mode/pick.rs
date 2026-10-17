@@ -539,6 +539,18 @@ impl InteractionMode for ColorPickMode {
         self.oneshot.drag_mode.drag.in_drag
     }
 
+    /// 键盘 `r` 起手的取色：松开按键即出栈（`colorpicker.py:53` 的
+    /// `keyup_timeout = 0`，`document.py:2200` 的 `_exit_mode_early_keyup_cb`）。
+    fn pop_on_key_release(&self) -> bool {
+        self.started_from_key_press
+    }
+
+    /// 工具条/菜单起手的取色：一次拖拽后按 Oneshot 规则出栈
+    /// （`mode.py:1302-1317`）。
+    fn oneshot_pop_after_drag(&self, modifiers: super::Modifiers) -> bool {
+        self.pop_after_drag(modifiers)
+    }
+
     /// idle 的等价物：把排队的颜色落地（`_change_color`）。
     fn process_pending(&mut self, ctx: &mut ModeContext<'_>) -> bool {
         self.flush_queued(ctx);
@@ -917,6 +929,45 @@ mod tests {
         // → 拖完留在模式里（源码靠"松开 r"出栈，见模块记账）
         let flip = ColorPickMode::flip(PickVariant::Full, None);
         assert!(!flip.pop_after_drag(Modifiers::NONE));
+    }
+
+    #[test]
+    fn pick_mode_stacks_over_freehand_and_pops_back() {
+        use crate::document::Document;
+        use crate::mode::freehand::FreehandMode;
+        use crate::mode::{ModeStack, Modifiers};
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut picked = None;
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: Some(&mut picked),
+        };
+        let mut stack = ModeStack::new(|| Box::new(FreehandMode::new()));
+        stack.context_push(Box::new(ColorPickMode::new(PickVariant::Full)), &mut ctx);
+        assert_eq!(stack.len(), 2, "取色应叠在自由手绘之上，保留原工具");
+        assert!(stack.top_pops_after_drag(Modifiers::NONE), "工具条起手：拖完回原工具");
+        stack.pop(&mut ctx);
+        assert_eq!(stack.top().name(), "Freehand Drawing");
+
+        // 键盘 Flip：不在拖拽后弹，而是松开按键时弹
+        stack.context_push(
+            Box::new(ColorPickMode::flip(PickVariant::Full, None)),
+            &mut ctx,
+        );
+        assert!(stack.top_pops_on_key_release());
+        assert!(!stack.top_pops_after_drag(Modifiers::NONE));
+        stack.pop(&mut ctx);
+        assert_eq!(stack.top().name(), "Freehand Drawing");
     }
 
     /// HCY 换算与源码一致：`lib/color.py:851-859` 的 doctest 是"往返无误差"，

@@ -1441,6 +1441,27 @@ impl PigmentApp {
         handled
     }
 
+    /// 一次拖拽结束后按 Oneshot 规则出栈（`OneshotDragMode.drag_stop_cb`，
+    /// `mode.py:1302-1317`）：取色模式用工具条起手时，取完就回到原工具。
+    pub(crate) fn finish_oneshot(
+        &mut self,
+        modifiers: pigment_engine::mode::Modifiers,
+        now: f64,
+    ) {
+        let info = self.with_mode(|modes, ctx| {
+            if modes.names().len() > 1 && modes.top_pops_after_drag(modifiers) {
+                modes.pop(ctx);
+                let top = modes.top();
+                Some(format!("{}: {}", top.name(), top.usage()))
+            } else {
+                None
+            }
+        });
+        if let Some(text) = info {
+            self.set_status(text, now);
+        }
+    }
+
     /// 处理模式排队的输入（`GLib.idle_add` 的等价物：每帧一次）。
     pub(crate) fn mode_process_pending(&mut self) {
         self.with_mode(|modes, ctx| modes.process_pending(ctx));
@@ -1506,7 +1527,9 @@ impl PigmentApp {
         };
         let label = new_mode.name().to_string();
         let usage = new_mode.usage().to_string();
-        self.with_mode(|modes, ctx| modes.reset(Some(new_mode), ctx));
+        // `context_push`：保留下面的绘画模式，取完色/松开 `r` 后 pop 回来
+        // （`document.py:2201`）。
+        self.with_mode(|modes, ctx| modes.context_push(new_mode, ctx));
         self.set_status(format!("{label}: {usage}"), now);
     }
 
@@ -1800,10 +1823,44 @@ impl PigmentApp {
                 })
                 .collect()
         });
-        if events.is_empty() {
-            return;
-        }
+        let releases: Vec<(egui::Key, actions::Mods)> = ctx.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::Key {
+                        key,
+                        pressed: false,
+                        modifiers,
+                        ..
+                    } => Some((*key, actions::Mods::from_egui(modifiers))),
+                    _ => None,
+                })
+                .collect()
+        });
         let now = ctx.input(|i| i.time);
+        // 松开：Escape 紧急复位（`keyboard.py:214-221`），键盘起手的 Oneshot
+        // （取色 `r`）回原工具（`document.py:2200` / `colorpicker.py:53`）。
+        for (key, _mods) in releases {
+            if key == egui::Key::Escape {
+                self.with_mode(|modes, ctx| modes.reset(None, ctx));
+                self.set_status("已取消当前操作".to_string(), now);
+                ctx.request_repaint();
+            } else if self.with_mode(|modes, ctx| {
+                if modes.names().len() > 1 && modes.top_pops_on_key_release() {
+                    modes.pop(ctx);
+                    true
+                } else {
+                    false
+                }
+            }) {
+                let text = self.with_mode(|modes, _ctx| {
+                    let top = modes.top();
+                    format!("{}: {}", top.name(), top.usage())
+                });
+                self.set_status(text, now);
+                ctx.request_repaint();
+            }
+        }
         for (key, mods) in events {
             self.dispatch_key(ctx, key, mods, now);
         }
@@ -1811,6 +1868,16 @@ impl PigmentApp {
 
     /// 一个按键事件 → 一个动作。
     fn dispatch_key(&mut self, ctx: &egui::Context, key: egui::Key, mods: actions::Mods, now: f64) {
+        // Escape 先交给当前模式（`freehand.py` 清队列 / `linemode.py` 回滚），
+        // 松开时再由 handle_keys 统一 reset（`keyboard.py:214-221`）。
+        if key == egui::Key::Escape {
+            let handled = self.with_mode(|modes, ctx| {
+                modes.top_mut().key_press(ctx, pigment_engine::mode::Key::Escape)
+            });
+            if handled {
+                return;
+            }
+        }
         // 应用本地扩展键优先（它们占的是源码没碰过的键位，见 `actions::APP_KEYS`）
         if let Some(k) = actions::lookup_app(key, mods) {
             if self.run_app_key(k.id, now) {
