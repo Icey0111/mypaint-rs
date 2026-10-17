@@ -318,6 +318,14 @@ impl LineMode {
         self.invert_modifiers = modifiers;
         self.sx = ev.x;
         self.sy = ev.y;
+        // SequenceMode（Connected Lines）：起点接上一笔终点
+        // （`linemode.py:447-451`）。首笔没有 last_painting_pos 时从按下点起。
+        if self.kind == LineKind::Sequence {
+            if let Some((px, py)) = ctx.doc.last_painting_pos {
+                self.sx = px;
+                self.sy = py;
+            }
+        }
         self.lx = ev.x;
         self.ly = ev.y;
         self.ex = ev.x;
@@ -341,6 +349,12 @@ impl LineMode {
         self.brushwork.commit(ctx, false);
         // `record_last_stroke` 里除了"记住上一笔以便 Shift 改线"以外还有：
         // 把光标位置记到末点、恢复 slow_tracking、重置笔刷。
+        // `linemode.py:525-530`：直线/序列记终点，椭圆记起点。
+        ctx.doc.last_painting_pos = if self.kind == LineKind::Ellipse {
+            Some((self.sx, self.sy))
+        } else {
+            Some((x, y))
+        };
         self.ex = x;
         self.ey = y;
         *ctx.brush_state = BrushState::default();
@@ -777,6 +791,36 @@ mod tests {
         let (ex, ey) = (mode.ex, mode.ey);
         let got = ey.atan2(ex).to_degrees();
         assert!((got - 15.0).abs() < 0.5, "Ctrl 应把 10° 吸到 15°，实得 {got}");
+    }
+
+    /// SequenceMode（Connected Lines）的起点接**上一笔终点**
+    /// （`linemode.py:447-451` + `:525-530`）。
+    #[test]
+    fn sequence_mode_starts_at_previous_endpoint() {
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = BrushState::default();
+        let (mut ctx, mut mode) = ctx_and_mode(&mut doc, &brush, &mut state);
+        mode.kind = LineKind::Sequence;
+
+        let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
+        assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
+        InteractionMode::motion(&mut mode, &mut ctx, &PointerEvent::motion(110.0, 40.0, 16.0));
+        InteractionMode::button_release(
+            &mut mode,
+            &mut ctx,
+            &PointerEvent::button(110.0, 40.0, 32.0, 1),
+        );
+        assert_eq!(
+            ctx.doc.last_painting_pos,
+            Some((110.0, 40.0)),
+            "收笔应记住终点"
+        );
+
+        // 第二笔按在远处，但起点必须接上一笔终点
+        let press = PointerEvent::button(300.0, 200.0, 0.0, 1);
+        assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
+        assert_eq!((mode.sx, mode.sy), (110.0, 40.0), "第二笔应从上一笔终点起");
     }
 
     /// 组上不能画线。

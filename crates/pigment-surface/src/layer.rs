@@ -1201,13 +1201,28 @@ impl LayerStack {
     /// `group.py:424-432` 的 PUSH/POP（组的隔离缓冲/直通决定），透明源规则见
     /// `tiledsurface.py:440-457`。
     pub fn composite_tile(&self, tx: i32, ty: i32, dst: &mut [u16]) -> bool {
+        self.composite_tile_with_background(tx, ty, dst, true)
+    }
+
+    /// 同 [`Self::composite_tile`]，但可显式排除背景层。
+    ///
+    /// 导出 PNG 时源码传 `render_background = not alpha`（`document.py:1677`）：
+    /// `alpha=True` 的导出**不画背景**（保留透明），`alpha=False` 才画。
+    /// 旧实现两者都从背景 tile 起，导致带 alpha 的 PNG 变成不透明纸色。
+    pub fn composite_tile_with_background(
+        &self,
+        tx: i32,
+        ty: i32,
+        dst: &mut [u16],
+        include_background: bool,
+    ) -> bool {
         debug_assert_eq!(dst.len(), TILE_CHANNELS);
 
         // 初始 dst：背景可见 → 不透明背景 tile（dst_has_alpha=false）；
         // 否则全透明（dst_has_alpha=true）。照 `_get_render_background`。
         let mut dst_has_alpha = true;
         let mut has_content = false;
-        if self.background_visible {
+        if include_background && self.background_visible {
             let bg = self.background_tile();
             dst.copy_from_slice(bg.as_flattened().as_flattened());
             dst_has_alpha = false;
@@ -1274,7 +1289,9 @@ impl LayerStack {
                 let tx = px.div_euclid(ts);
                 if (tx, row_ty) != last {
                     last = (tx, row_ty);
-                    last_composed = self.composite_tile(tx, row_ty, &mut scratch);
+                    // `render_background = not alpha`（`document.py:1677`）
+                    last_composed =
+                        self.composite_tile_with_background(tx, row_ty, &mut scratch, !with_alpha);
                 }
                 let composed = last_composed;
                 let in_x = px.rem_euclid(ts) as usize;
@@ -1530,9 +1547,12 @@ mod tests {
         let mut buf = vec![0u8; (w * w * 4) as usize];
         st.render_rect_rgba8((0, 0, w, w), true, &mut buf);
         assert_eq!(&buf[0..4], &[255, 0, 0, 255]);
-        // 越出内容区一格：应仍是背景白
+        // 越出内容区一格：alpha=true 不画背景（`render_background=not alpha`）
+        // → 全透明；alpha=false 才落背景白。
         let mut buf2 = vec![0u8; 4];
         st.render_rect_rgba8((TILE_SIZE as i32 * 5, 0, 1, 1), true, &mut buf2);
+        assert_eq!(&buf2, &[0, 0, 0, 0]);
+        st.render_rect_rgba8((TILE_SIZE as i32 * 5, 0, 1, 1), false, &mut buf2);
         assert_eq!(&buf2, &[255, 255, 255, 255]);
     }
 

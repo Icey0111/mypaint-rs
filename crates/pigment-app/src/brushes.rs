@@ -105,20 +105,20 @@ fn grid_geometry(width: f32, count: usize) -> (usize, usize) {
     (tiles_w, tiles_h)
 }
 
-/// 命中测试 —— `PixbufList.index`（`gui/pixbuflist.py:308`）。
+/// 命中测试 —— `PixbufList.index`（`gui/pixbuflist.py:301-311`）。
 ///
-/// 坐标为**内容坐标**（相对网格左上角）。超出右边界时夹到最后一列，
-/// 与 MyPaint 一致（点空白区域落在最近的格子上）。
-fn index_at(x: f32, y: f32, tiles_w: usize, count: usize) -> usize {
-    if count == 0 || tiles_w == 0 {
+/// 坐标为**内容坐标**（相对网格左上角）。只把列/行夹到非负与最后一列；
+/// **不**把结果夹到 `count-1`：源码返回原始格子下标，调用方再用
+/// `i < len(itemlist)` 拒绝点空白处（`pixbuflist.py:322-325`）。
+fn index_at(x: f32, y: f32, tiles_w: usize) -> usize {
+    if tiles_w == 0 {
         return 0;
     }
     let c = cell();
     let mut col = (x / c).floor() as i64;
     col = col.clamp(0, tiles_w as i64 - 1);
     let row = (y / c).floor() as i64;
-    let i = (col + tiles_w as i64 * row).max(0) as usize;
-    i.min(count - 1)
+    (col + tiles_w as i64 * row).max(0) as usize
 }
 
 /// 笔刷历史长度（`brushmanager.py:_BRUSH_HISTORY_SIZE = 5`）。
@@ -556,7 +556,7 @@ impl BrushPanel {
                     .filter(|p| rect.contains(*p))
                     .map(|p| {
                         let local = p - rect.min;
-                        index_at(local.x, local.y, tiles_w, count)
+                        index_at(local.x, local.y, tiles_w)
                     });
 
                 for row in first_row..last_row {
@@ -631,7 +631,7 @@ impl BrushPanel {
                 if response.clicked() {
                     if let Some(pos) = response.interact_pointer_pos() {
                         let local = pos - rect.min;
-                        let slot = index_at(local.x, local.y, tiles_w, count);
+                        let slot = index_at(local.x, local.y, tiles_w);
                         clicked_idx = self.visible.get(slot).copied();
                     }
                 }
@@ -1141,13 +1141,14 @@ mod tests {
     #[test]
     fn index_at_clamps_to_last_column() {
         let (tw, c) = (4usize, cell());
-        assert_eq!(index_at(0.0, 0.0, tw, 10), 0);
-        assert_eq!(index_at(c * 3.5, 0.0, tw, 10), 3);
-        assert_eq!(index_at(5.0, c * 1.5, tw, 10), 4);
+        assert_eq!(index_at(0.0, 0.0, tw), 0);
+        assert_eq!(index_at(c * 3.5, 0.0, tw), 3);
+        assert_eq!(index_at(5.0, c * 1.5, tw), 4);
         // 负坐标夹到 0
-        assert_eq!(index_at(-30.0, -30.0, tw, 10), 0);
-        // 末尾越界夹到 count-1
-        assert_eq!(index_at(c * 3.5, c * 9.5, tw, 7), 6);
+        assert_eq!(index_at(-30.0, -30.0, tw), 0);
+        // 末尾空行**不**夹到最后一个有效下标：源码返回原始格子下标，
+        // 由调用方 `visible.get(slot)` 拒绝。
+        assert_eq!(index_at(c * 3.5, c * 9.5, tw), 39);
     }
 
     #[test]

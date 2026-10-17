@@ -574,6 +574,10 @@ impl FreehandMode {
             ev.barrel_rotation.unwrap_or(0.0),
             true,
         );
+        // `freehand.py:614-617`：压力非零时更新 TDW 的最后作画位置
+        if pressure != 0.0 {
+            ctx.doc.last_painting_pos = Some((ev.x, ev.y));
+        }
     }
 }
 

@@ -508,13 +508,21 @@ pub struct PngSaved {
 /// 源码的默认值是 `alpha = not self.layer_stack.background_visible`；
 /// B2-3 起文档有背景层，调用方按背景可见性显式传参。
 pub fn save_png(
-    surface: &PigmentSurface,
+    layers: &LayerStack,
     filename: impl AsRef<Path>,
     bbox: (i32, i32, i32, i32),
     alpha: bool,
 ) -> Result<PngSaved, FileError> {
-    let (x, y, w, h) = surface
-        .save_as_png(filename.as_ref(), bbox, alpha, CANVAS_BG)
+    // 源码 `_save_single_file_png` 走 `self.layer_stack.save_as_png(...)`：
+    // 导出的是**整栈合成**（含背景、可见性、混合模式），不是当前层。
+    let (x, y, mut w, mut h) = bbox;
+    if w <= 0 || h <= 0 {
+        w = 1;
+        h = 1;
+    }
+    let mut pixels = vec![0u8; (w * h * 4) as usize];
+    layers.render_rect_rgba8((x, y, w as u32, h as u32), alpha, &mut pixels);
+    pigment_surface::png::write_rgba8_png(filename.as_ref(), pixels, w as u32, h as u32)
         .map_err(FileError::Png)?;
     Ok(PngSaved { bbox: (x, y, w, h) })
 }
@@ -523,7 +531,7 @@ pub fn save_png(
 ///
 /// JPEG 无 alpha：先按 `CANVAS_BG` 合成成不透明 RGB，再以画质编码。
 pub fn save_jpg(
-    surface: &PigmentSurface,
+    layers: &LayerStack,
     filename: impl AsRef<Path>,
     bbox: (i32, i32, i32, i32),
     quality: u8,
@@ -533,7 +541,9 @@ pub fn save_jpg(
         w = 1;
         h = 1;
     }
-    let rgba = surface.render_rect_rgba8((x, y, w, h), false, CANVAS_BG);
+    // 整栈合成（`root.render_layer_as_pixbuf(root, bbox)`），无 alpha。
+    let mut rgba = vec![0u8; (w * h * 4) as usize];
+    layers.render_rect_rgba8((x, y, w as u32, h as u32), false, &mut rgba);
     let mut rgb = Vec::with_capacity((w * h * 3) as usize);
     for p in rgba.chunks_exact(4) {
         rgb.extend_from_slice(&p[..3]);
@@ -671,14 +681,16 @@ pub fn save_ora(
     let _ = std::fs::remove_file(&tmp_tile);
     zip.add_stored(&bg_tile_entry, &bytes)?;
 
-    // BackgroundLayer 的 mode = LayerBase 默认 = SpectralWGM（真实 MyPaint
-    // 文件的背景元素就是 `composite-op="mypaint:spectral-wgm"`）。
+    // BackgroundLayer.mode 在源码里是 `CombineNormal`（`data.py:1059`），
+    // `core.py:842-846` 因此写 `svg:src-over`；真实 MyPaint 文件
+    // （tests/bigimage.ora）也是这个值。
     let bg_elem: Vec<(&'static str, String)> = vec![
         ("x", "0".to_string()),
         ("y", "0".to_string()),
         ("opacity", fmt_float_py(1.0)),
         ("visibility", "visible".to_string()),
-        ("composite-op", "mypaint:spectral-wgm".to_string()),
+        // 源码属性顺序：visibility 之后才 composite-op
+        ("composite-op", "svg:src-over".to_string()),
         ("name", "background".to_string()),
         ("src", bg_full_entry),
         (ATTR_NS_BG_TILE, bg_tile_entry),
@@ -773,13 +785,14 @@ fn save_layer_elems(
                     attrs.push(("composite-op", name.to_string()));
                 }
                 attrs.push(("src", entry));
-                // strokemap：空画笔迹不写（`data.py:1679-1701`）
-                let dat = surface.strokemap_dat(lx, ly);
-                if !dat.is_empty() {
-                    let dat_name = make_refname("layer", &p, "strokemap.dat");
-                    zip.add_stored(&format!("data/{dat_name}"), &dat)?;
-                    attrs.push((ATTR_NS_STROKEMAP, format!("data/{dat_name}")));
-                }
+                // strokemap：tile 下标相对图层 PNG。源码 `data.py:1692` 传的是
+                // bbox 原点的**相反数**（`_write_strokemap(sio, self.strokes, -x, -y)`），
+                // 载入时再按图层 x/y 加回来。传 +lx/+ly 会让坐标翻倍。
+                // 空图也写 1 字节的 `}` 并挂属性（源码 `_write_strokemap` 无条件写结束符）。
+                let dat = surface.strokemap_dat(-lx, -ly);
+                let dat_name = make_refname("layer", &p, "strokemap.dat");
+                zip.add_stored(&format!("data/{dat_name}"), &dat)?;
+                attrs.push((ATTR_NS_STROKEMAP, format!("data/{dat_name}")));
                 if layer.locked {
                     attrs.push(("edit-locked", "true".to_string()));
                 }
@@ -796,25 +809,33 @@ fn save_layer_elems(
                 // `group.py:500-530`：stack 元素带组自己的 flags；
                 // 直通模式在 ORA 里没有对应 composite-op → 丢 opacity/composite-op
                 // 并写 isolation="auto"。
+                // 属性顺序照 `core.py:821-846` + `group.py:516-524`：
+                // name → opacity → selected → edit-locked → visibility →
+                // composite-op → isolation。直通只去掉 opacity/composite-op。
                 if layer.mode.is_pass_through() {
-                    attrs.push(("isolation", "auto".to_string()));
+                    // 直通模式在 ORA 里没有 composite-op，只写 isolation="auto"
                 } else {
                     attrs.push(("opacity", fmt_float_py(layer.opacity)));
-                    attrs.push((
-                        "visibility",
-                        if layer.visible { "visible" } else { "hidden" }.to_string(),
-                    ));
-                    if let Some(name) = layer.mode.ora_name() {
-                        attrs.push(("composite-op", name.to_string()));
-                    }
-                    attrs.push(("isolation", "isolate".to_string()));
-                }
-                if layer.locked {
-                    attrs.push(("edit-locked", "true".to_string()));
                 }
                 if selected {
                     attrs.push(("selected", "true".to_string()));
                 }
+                if layer.locked {
+                    attrs.push(("edit-locked", "true".to_string()));
+                }
+                attrs.push((
+                    "visibility",
+                    if layer.visible { "visible" } else { "hidden" }.to_string(),
+                ));
+                if !layer.mode.is_pass_through() {
+                    if let Some(name) = layer.mode.ora_name() {
+                        attrs.push(("composite-op", name.to_string()));
+                    }
+                }
+                attrs.push((
+                    "isolation",
+                    if layer.mode.is_pass_through() { "auto" } else { "isolate" }.to_string(),
+                ));
                 let mut children: Vec<OraElement> = Vec::new();
                 save_layer_elems(zip, &mut children, sub, filename, &p, bx, by, current_path)?;
                 out.push(OraElement {

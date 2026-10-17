@@ -157,9 +157,19 @@ impl BrushEntry {
     }
 
     /// 解析为 `hokusai::Brush`（每次调用都会重新解析，调用方自行缓存）。
+    ///
+    /// 补一条 MyPaint **应用层**的默认：`.myb` 没写 `paint_mode` 时，
+    /// MyPaint 2.x 用 `pigment_on_by_default=True` → 1.0（光谱 WGM），
+    /// 而 libmypaint/hokusai 的引擎默认是 0.0。官方 196 支里 177 支省略
+    /// 了该键（显式写出的 19 支全是 1.0），所以这是绝大多数笔刷的默认手感。
+    /// 见 `gui/compatconfig.py:36-48` + `gui/brushmanager.py:609-643`。
     pub fn load(&self) -> Result<Brush, BrushLoadError> {
         let json = self.read_json()?;
-        myb::from_str(&json).map_err(|e| BrushLoadError::Parse(e.to_string()))
+        let mut brush = myb::from_str(&json).map_err(|e| BrushLoadError::Parse(e.to_string()))?;
+        if !json_has_setting(&json, "paint_mode") {
+            brush.set(BrushSetting::Paint, hokusai::SettingValue::constant(1.0));
+        }
+        Ok(brush)
     }
 
     /// 是否来自内嵌官方包。
@@ -435,7 +445,6 @@ impl BrushLibrary {
         if !dir.is_dir() {
             return;
         }
-        let existing: HashSet<String> = self.entries.iter().map(|e| e.key.clone()).collect();
         let mut found: Vec<PathBuf> = Vec::new();
         collect_myb(dir, 0, &mut found);
         found.sort();
@@ -451,10 +460,21 @@ impl BrushLibrary {
                 .map(|s| s.replace('\\', "/"))
                 .unwrap_or_else(|| "user".to_string());
             let key = format!("{group}/{name}");
-            if existing.contains(&key) {
-                continue; // 用户目录优先，但已有同名则跳过（避免列表重复）
-            }
             let (display, notes) = read_disk_meta(&path).unwrap_or_default();
+            if let Some(existing_entry) = self.entries.iter_mut().find(|e| e.key == key) {
+                // 用户目录的 `.myb` 覆盖内嵌官方版本（`brushmanager.py:1436-1441`
+                // 先装用户、再补官方；同名只保留一份，用户那份胜出）。
+                // 旧实现直接 `continue`，导致「改官方笔刷 → Save Brush → 重启」
+                // 静默回到官方设置。
+                existing_entry.origin = Origin::File(path);
+                if !display.trim().is_empty() {
+                    existing_entry.display = display.trim().to_string();
+                }
+                if !notes.trim().is_empty() {
+                    existing_entry.notes = notes.trim().to_string();
+                }
+                continue;
+            }
             self.entries.push(BrushEntry {
                 group_display: group.clone(),
                 group,
@@ -1038,6 +1058,14 @@ fn read_disk_meta(path: &Path) -> Option<(String, String)> {
     Some((get("description"), get("notes")))
 }
 
+/// `.myb` JSON 的 `settings` 对象里是否显式出现某个键。
+fn json_has_setting(json: &str, name: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .and_then(|v| v.get("settings")?.get(name).map(|_| true))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1143,6 +1171,70 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn user_dir_myb_overrides_embedded_brush() {
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-brush-override-{}",
+            std::process::id()
+        ));
+        let group = dir.join("classic");
+        fs::create_dir_all(&group).unwrap();
+        // 最小 .myb：只改半径；其余设置由 hokusai 的默认值补齐。
+        fs::write(
+            group.join("dry_brush.myb"),
+            r#"{"version":3,"group":"classic","parent_brush_name":"","settings":{"radius_logarithmic":{"base_value":5.0}}}"#,
+        )
+        .unwrap();
+
+        let mut lib = BrushLibrary::embedded();
+        let i0 = lib.find("classic/dry_brush").expect("内嵌包应有 dry_brush");
+        assert!(matches!(lib.entries[i0].origin, Origin::Embedded(_)));
+        let n0 = lib.entries.len();
+
+        lib.scan_dir(&dir);
+        assert_eq!(lib.entries.len(), n0, "同名用户笔刷不能追加成第二份");
+        let i = lib.find("classic/dry_brush").unwrap();
+        assert!(matches!(lib.entries[i].origin, Origin::File(_)));
+        let b = lib.entries[i].load().unwrap();
+        assert!(
+            (b.get(BrushSetting::Radius).base_value - 5.0).abs() < 1e-6,
+            "应载入用户目录里的版本"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn omitted_paint_mode_defaults_to_pigment_one() {
+        // MyPaint 2.x 应用层默认 `pigment_on_by_default=True`（compatconfig.py:44-46）
+        let lib = BrushLibrary::embedded();
+        let i = lib.find("classic/dry_brush").unwrap();
+        assert!(!json_has_setting(&lib.entries[i].read_json().unwrap(), "paint_mode"));
+        let b = lib.entries[i].load().unwrap();
+        assert_eq!(
+            b.get(BrushSetting::Paint).base_value,
+            1.0,
+            "省略 paint_mode 的官方笔刷应以光谱 WGM 起手"
+        );
+
+        // 显式写 0.0 的笔刷必须保留 Normal，不能被默认覆盖
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-brush-paintmode-{}",
+            std::process::id()
+        ));
+        let group = dir.join("classic");
+        fs::create_dir_all(&group).unwrap();
+        fs::write(
+            group.join("dry_brush.myb"),
+            r#"{"version":3,"group":"classic","settings":{"paint_mode":{"base_value":0.0}}}"#,
+        )
+        .unwrap();
+        let mut lib2 = BrushLibrary::embedded();
+        lib2.scan_dir(&dir);
+        let j = lib2.find("classic/dry_brush").unwrap();
+        assert_eq!(lib2.entries[j].load().unwrap().get(BrushSetting::Paint).base_value, 0.0);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

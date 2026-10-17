@@ -338,6 +338,116 @@ fn ora_strokemap_round_trips() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// PNG/JPEG 导出的是**整栈合成**，不是当前层（`document.py:1666-1680` /
+/// `:1746-1765`）。旧实现只取 `Document::surface()`，多图层导出会丢层。
+#[test]
+fn png_export_flattens_all_layers() {
+    use pigment_engine::hokusai::TiledSurface;
+
+    let path = tmp("flatten.png");
+    let mut doc = Document::new();
+    // 底层：整块 tile 蓝色
+    {
+        let s = doc.surface_mut();
+        let t = s.tile_request_start(0, 0);
+        for row in t.iter_mut() {
+            for p in row.iter_mut() {
+                *p = [0, 0, 1 << 15, 1 << 15];
+            }
+        }
+        s.tile_request_end(0, 0);
+    }
+    // 顶层：只在 (0,0) 一点红色，其余透明
+    assert!(doc.add_layer());
+    {
+        let s = doc.surface_mut();
+        let t = s.tile_request_start(0, 0);
+        t[0][0] = [1 << 15, 0, 0, 1 << 15];
+        s.tile_request_end(0, 0);
+    }
+
+    doc.save(&path, None).unwrap();
+    let (px, w, h) = pigment_engine::surface::png::read_rgba8_png(&path).unwrap();
+    assert_eq!((w, h), (64, 64));
+    let at = |x: usize, y: usize| {
+        let i = (y * w as usize + x) * 4;
+        [px[i], px[i + 1], px[i + 2]]
+    };
+    assert_eq!(at(0, 0), [255, 0, 0], "顶层红点应保留");
+    assert_eq!(at(10, 10), [0, 0, 255], "底层蓝色不应被当前空层覆盖");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 画框启用时，ORA 画幅与图层坐标都相对**画框**（`document.py:1778` 传
+/// `get_user_bbox()`；`_save_rect_to_ora` 用 `frame_bbox` 求 x/y）。
+#[test]
+fn ora_save_uses_the_frame_when_enabled() {
+    let path = tmp("frame.ora");
+    let mut doc = Document::new();
+    paint(&mut doc, 40.0, 4.0); // 图层数据 bbox 从 (0,0) 起
+    doc.set_frame(10, 20, 100, 80);
+    doc.set_frame_enabled(true);
+
+    let SaveOutcome::Ora { bbox } = doc.save(&path, None).unwrap() else {
+        panic!("应保存为 ORA");
+    };
+    assert_eq!(bbox, (10, 20, 100, 80), "保存外接框 = 画框");
+    let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
+    let xml = String::from_utf8(z.read("stack.xml").unwrap()).unwrap();
+    assert!(xml.contains("w=\"100\"") && xml.contains("h=\"80\""), "{xml}");
+    // 图层数据 bbox 相对画框原点：x = layer_tile_x*64 − 10，y 同理
+    let (min_tx, min_ty) = doc
+        .surface()
+        .tiles()
+        .map(|(c, _)| c)
+        .fold((i32::MAX, i32::MAX), |(x, y), (tx, ty)| (x.min(tx), y.min(ty)));
+    let x = min_tx * 64 - 10;
+    let y = min_ty * 64 - 20;
+    assert!(xml.contains(&format!("x=\"{x}\"")), "图层 x 应相对画框：{xml}");
+    assert!(xml.contains(&format!("y=\"{y}\"")), "图层 y 应相对画框：{xml}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// strokemap 的 tile 下标必须相对图层 bbox（`data.py:1692` 传 `-x,-y`）。
+///
+/// 旧实现写的是绝对坐标，单 tile 画面（原点 0）看不出来；这里把笔画放在
+/// 第二行 tile，写盘后断言 `.dat` 里的 ty 是相对值，并验证载入后整体回到
+/// 画幅原点（与源码 `update_frame(0,0,w,h)` 的平移一致）。
+#[test]
+fn ora_strokemap_tiles_are_layer_relative() {
+    let path = tmp("strokemap-offset.ora");
+    let mut doc = Document::new();
+    paint(&mut doc, 150.0, 4.0); // y=150 → 绝对 tile y=2
+    let before: Vec<(i32, i32)> =
+        doc.surface().strokes()[0].tiles.keys().copied().collect();
+    assert!(before.iter().any(|&(_, ty)| ty == 2), "笔画应落在第二行 tile");
+
+    let SaveOutcome::Ora { bbox } = doc.save(&path, None).unwrap() else {
+        panic!("应保存为 ORA");
+    };
+    assert_eq!(bbox.1 % 64, 0, "画幅原点按 tile 对齐");
+
+    let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
+    let dat = z.read("data/layer-00-strokemap.dat").unwrap();
+    let b_len = u32::from_be_bytes(dat[1..5].try_into().unwrap()) as usize;
+    let s_off = 1 + 4 + b_len;
+    assert_eq!(dat[s_off], b's');
+    let tx_off = s_off + 1 + 8;
+    let stored_ty = i32::from_be_bytes(dat[tx_off + 4..tx_off + 8].try_into().unwrap());
+    assert_eq!(stored_ty, 2 - bbox.1 / 64, "落盘 ty 应是绝对 ty 减画幅原点");
+
+    let mut doc2 = Document::new();
+    doc2.load(&path).unwrap();
+    let after: Vec<(i32, i32)> =
+        doc2.surface().strokes()[0].tiles.keys().copied().collect();
+    let shifted: Vec<(i32, i32)> = before
+        .iter()
+        .map(|&(tx, ty)| (tx - bbox.0 / 64, ty - bbox.1 / 64))
+        .collect();
+    assert_eq!(after, shifted, "载入后内容整体平移到画幅原点，相对布局不变");
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn ora_has_the_expected_entries_in_order() {
     let path = tmp("entries.ora");
@@ -600,6 +710,44 @@ use pigment_surface::layer::LayerMode;
     assert!(d2.layers().layer(1).visible && !d2.layers().layer(1).locked);
     // 背景色
     assert_eq!(d2.layers().background_color(), [24, 48, 96]);
+    let _ = std::fs::remove_file(&path);
+}
+
+/// 直通组保存：只丢 opacity/composite-op，`visibility` 必须保留
+/// （`group.py:516-524` + `core.py:832-839`）。
+#[test]
+fn pass_through_group_keeps_visibility() {
+    use pigment_surface::layer::LayerMode;
+    let path = tmp("pass-through.ora");
+    let mut doc = Document::new();
+    assert!(doc.add_group());
+    let p = doc.current_path().to_vec();
+    doc.rename_layer(&p, Some("PT".to_string()));
+    doc.set_layer_mode(&p, LayerMode::PassThrough);
+    doc.set_layer_visible(&p, false);
+    doc.save(&path, None).unwrap();
+
+    let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
+    let xml = String::from_utf8(z.read("stack.xml").unwrap()).unwrap();
+    let line = xml
+        .lines()
+        .find(|l| l.contains("<stack ") && l.contains("name=\"PT\""))
+        .expect("应有直通组");
+    assert!(line.contains("visibility=\"hidden\""), "{line}");
+    assert!(line.contains("isolation=\"auto\""), "{line}");
+    assert!(!line.contains("opacity="), "直通组不写 opacity：{line}");
+    assert!(!line.contains("composite-op="), "直通组不写 composite-op：{line}");
+
+    let mut d2 = Document::new();
+    d2.load(&path).unwrap();
+    let g = d2.layers().layer_at(&p).unwrap();
+    assert!(!g.visible, "载入后仍应隐藏");
+    // 源码本身也不往返直通：缺 composite-op → `core.py:169` 回落
+    // default_mode() = SpectralWGM，读回是隔离组（见 B2 记账）。
+    assert!(matches!(
+        g.mode,
+        LayerMode::Standard(pigment_surface::combine::CombineMode::SpectralWGM)
+    ));
     let _ = std::fs::remove_file(&path);
 }
 

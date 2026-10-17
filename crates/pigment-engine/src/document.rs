@@ -133,6 +133,13 @@ pub struct Document {
     pub settings: BTreeMap<String, serde_json::Value>,
     /// 命名可见性视图（`lib/layervis.py`；设置键 `layervis`）。
     pub views: LayerViews,
+    /// 「最后作画位置」——`tdw.set_last_painting_pos`（`tileddrawwidget.py:303`）。
+    ///
+    /// 供 SequenceMode（连点成线）起点、以及 last-painting-pos 覆盖层使用；
+    /// 自由手绘在压力 > 0 时每事件更新（`freehand.py:614-617`），直线/序列
+    /// 在收笔时更新（`linemode.py:525-530`）。源码把它放在 TDW 上（并注明
+    /// FIXME 应属于 model），本移植按 FIXME 放进文档模型。
+    pub last_painting_pos: Option<(f32, f32)>,
 }
 
 impl Default for Document {
@@ -161,6 +168,7 @@ impl Document {
             yres: None,
             settings: BTreeMap::new(),
             views: LayerViews::default(),
+            last_painting_pos: None,
         }
     }
 
@@ -559,6 +567,7 @@ impl Document {
         self.settings.clear();
         self.views = LayerViews::default();
         self.symmetry = SymmetrySetup::default();
+        self.last_painting_pos = None;
     }
 
     // ---- 画框（`lib/document.py:827-878`）----
@@ -863,19 +872,21 @@ impl Document {
                     frame_active: self.frame_enabled,
                     settings_json: Some(self.settings_json()),
                 };
-                let bbox = self.data_bbox();
+                // `save_ora` 传的是 `get_user_bbox()`（`document.py:1778`）：
+                // 画框启用时就是画框本身，否则才是内容外接框。
+                let bbox = self.get_user_bbox();
                 let saved = fileio::save_ora(&self.layers, path, &opts, bbox)?;
                 SaveOutcome::Ora { bbox: saved.bbox }
             }
             Some(Format::Png) => {
                 let bbox = self.get_user_bbox();
-                let saved = fileio::save_png(self.surface(), path, bbox, alpha.unwrap_or(true))?;
+                let saved = fileio::save_png(&self.layers, path, bbox, alpha.unwrap_or(true))?;
                 SaveOutcome::Png { bbox: saved.bbox }
             }
             Some(Format::Jpg) => {
                 // `save_jpg` 恒为不透明（JPEG 无 alpha），quality=90
                 let bbox = self.get_user_bbox();
-                let saved = fileio::save_jpg(self.surface(), path, bbox, 90)?;
+                let saved = fileio::save_jpg(&self.layers, path, bbox, 90)?;
                 SaveOutcome::Jpg { bbox: saved.bbox }
             }
             _ => return Err(fileio::unsupported_message(path)),
