@@ -466,6 +466,110 @@ impl PigmentApp {
     /// 数值属于技术栈适配（egui 没有动态 tooltip 的等价物）。
     ///
     /// 未移植：`LineModeOptionsWidget` 的压力-距离曲线、填充/对称的选项页。
+    /// Inking 的 `OptionsUI`（`gui/inktool.py:1259-1380`）：节点压力/时间/倾角
+    /// 滑条 + 插点/删点/简化/剔除。源码是 GTK 的 `point_values_grid`，这里用
+    /// egui 的同一组控件。
+    fn inking_options(&mut self, ui: &mut egui::Ui) {
+        use pigment_engine::mode::ink::InkNodeEdit;
+        if !self.modes.top().ink_editing() {
+            ui.label(
+                egui::RichText::new("Draw a line, then adjust its points")
+                    .italics()
+                    .weak(),
+            );
+            return;
+        }
+        let current = self.modes.top().ink_current_node();
+        let len = self.modes.top().ink_nodes().map(|n| n.len()).unwrap_or(0);
+        let current = current.filter(|i| *i < len);
+        let mut edit = None;
+        if let Some(i) = current {
+            let node = self.modes.top().ink_nodes().unwrap()[i];
+            ui.label(format!("Point {} of {}", i + 1, len));
+            let mut pressure = node.pressure;
+            if ui
+                .add(egui::Slider::new(&mut pressure, 0.0..=1.0).text("Pressure"))
+                .changed()
+            {
+                edit = Some(InkNodeEdit::Pressure(i, pressure));
+            }
+            let mut xtilt = node.xtilt;
+            if ui
+                .add(egui::Slider::new(&mut xtilt, -1.0..=1.0).text("X tilt"))
+                .changed()
+            {
+                edit = Some(InkNodeEdit::Tilt(i, xtilt, node.ytilt));
+            }
+            let mut ytilt = node.ytilt;
+            if ui
+                .add(egui::Slider::new(&mut ytilt, -1.0..=1.0).text("Y tilt"))
+                .changed()
+            {
+                edit = Some(InkNodeEdit::Tilt(i, node.xtilt, ytilt));
+            }
+            if i > 0 {
+                let dtime = self.with_mode(|modes, _ctx| match modes.top().ink_nodes() {
+                    Some(nodes) if i < nodes.len() => {
+                        (nodes[i].time - nodes[i - 1].time).max(1.0 / 200.0)
+                    }
+                    _ => 0.005,
+                });
+                let mut dtime = dtime;
+                if ui
+                    .add(egui::Slider::new(&mut dtime, 0.005..=1.0).text("Time"))
+                    .changed()
+                {
+                    edit = Some(InkNodeEdit::Time(i, dtime));
+                }
+            } else {
+                ui.add_enabled(false, egui::Slider::new(&mut 0.0, 0.0..=1.0).text("Time"));
+            }
+        } else {
+            ui.label(egui::RichText::new("No selected point").italics().weak());
+        }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            let can_insert = current.map(|i| i + 1 < len).unwrap_or(false);
+            if ui
+                .add_enabled(can_insert, egui::Button::new("Insert Point"))
+                .clicked()
+            {
+                edit = Some(InkNodeEdit::Insert(current.unwrap()));
+            }
+            let can_delete = current.map(|i| i > 0 && i + 1 < len).unwrap_or(false);
+            if ui
+                .add_enabled(can_delete, egui::Button::new("Delete Point"))
+                .clicked()
+            {
+                edit = Some(InkNodeEdit::Delete(current.unwrap()));
+            }
+        });
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(len > 3, egui::Button::new("Simplify Points"))
+                .clicked()
+            {
+                let n = self.with_mode(|modes, ctx| modes.top_mut().simplify_nodes(ctx));
+                self.set_status(format!("简化掉 {n} 个点"), ui.input(|i| i.time));
+            }
+            if ui
+                .add_enabled(len > 2, egui::Button::new("Cull Points"))
+                .clicked()
+            {
+                let n = self.with_mode(|modes, ctx| modes.top_mut().cull_nodes(ctx));
+                self.set_status(format!("剔除 {n} 个点"), ui.input(|i| i.time));
+            }
+        });
+
+        if let Some(edit) = edit {
+            self.with_mode(|modes, ctx| {
+                modes.top_mut().ink_apply(ctx, edit);
+            });
+            ui.ctx().request_repaint();
+        }
+    }
+
     pub(crate) fn mode_options_panel_content(&mut self, ui: &mut egui::Ui) {
         let mode_name = self.modes.top().name().to_string();
         let action = self.modes.top().action_name();
@@ -483,6 +587,11 @@ impl PigmentApp {
             ui.label(egui::RichText::new(&mode_name).strong());
         });
         ui.separator();
+
+        if mode_name == "Inking" {
+            self.inking_options(ui);
+            return;
+        }
 
         let painting = matches!(
             mode_name.as_str(),

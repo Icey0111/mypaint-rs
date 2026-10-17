@@ -33,12 +33,25 @@ pub const INTERPOLATION_MAX_SLICE_TIME: f32 = 1.0 / 200.0;
 pub const INTERPOLATION_MAX_SLICE_DISTANCE: f32 = 20.0;
 /// 每段最大切片数（`MAX_INTERNODE_DISTANCE_MIDDLE * 5`）。
 pub const INTERPOLATION_MAX_SLICES: f32 = MAX_INTERNODE_DISTANCE_MIDDLE * 5.0;
+/// 节点最小时间差（`MIN_INTERNODE_TIME = 1/200`，用于调时间滑条）。
+pub const MIN_INTERNODE_TIME: f32 = 1.0 / 200.0;
 
 /// Inking 的两个阶段（`inktool.py:41` 的 `_Phase`）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum InkPhase {
     Capture,
     Adjust,
+}
+
+/// 节点编辑操作（`OptionsUI` 的四个滑条 + 插点/删点；由 GUI 面板发出）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InkNodeEdit {
+    Select(usize),
+    Pressure(usize, f32),
+    Time(usize, f32),
+    Tilt(usize, f32, f32),
+    Insert(usize),
+    Delete(usize),
 }
 
 /// 一个捕获到的控制点（`inktool.py:61` 的 `_Node`，9 个字段同源码）。
@@ -150,6 +163,8 @@ pub struct InkingMode {
     /// 正在拖动的节点及其按下时的位置。
     dragged_node: Option<usize>,
     dragged_start: (f32, f32),
+    /// 当前编辑节点（`OptionsUI.target` 的节点）。
+    current_node: Option<usize>,
     press_start: (f32, f32),
 }
 
@@ -176,6 +191,7 @@ impl InkingMode {
             target_node: None,
             dragged_node: None,
             dragged_start: (0.0, 0.0),
+            current_node: None,
             press_start: (0.0, 0.0),
         }
     }
@@ -298,6 +314,7 @@ impl InkingMode {
         }
         self.nodes.clear();
         self.phase = InkPhase::Capture;
+        self.current_node = None;
         self.target_node = None;
         self.dragged_node = None;
         self.last_node_evdata = None;
@@ -381,6 +398,93 @@ impl InkingMode {
         }
         old - self.nodes.len()
     }
+
+    /// OptionsUI 的编辑入口（四个滑条 + 插点/删点）。
+    pub fn ink_edit(&mut self, ctx: &mut ModeContext<'_>, edit: InkNodeEdit) -> bool {
+        let changed = match edit {
+            InkNodeEdit::Select(i) => {
+                if i < self.nodes.len() {
+                    self.current_node = Some(i);
+                    true
+                } else {
+                    false
+                }
+            }
+            InkNodeEdit::Pressure(i, v) => {
+                if let Some(n) = self.nodes.get_mut(i) {
+                    n.pressure = v.clamp(0.0, 1.0);
+                    true
+                } else {
+                    false
+                }
+            }
+            InkNodeEdit::Tilt(i, xt, yt) => {
+                if let Some(n) = self.nodes.get_mut(i) {
+                    n.xtilt = xt.clamp(-1.0, 1.0);
+                    n.ytilt = yt.clamp(-1.0, 1.0);
+                    true
+                } else {
+                    false
+                }
+            }
+            InkNodeEdit::Time(i, dtime) => {
+                if i == 0 || i >= self.nodes.len() {
+                    false
+                } else {
+                    let dtime = dtime.max(MIN_INTERNODE_TIME);
+                    let old = self.nodes[i].time - self.nodes[i - 1].time;
+                    for n in self.nodes.iter_mut().skip(i) {
+                        n.time += dtime - old;
+                    }
+                    true
+                }
+            }
+            InkNodeEdit::Insert(i) => {
+                if i + 1 >= self.nodes.len() {
+                    false
+                } else {
+                    let a = self.nodes[i];
+                    let b = self.nodes[i + 1];
+                    let mid = InkNode {
+                        x: (a.x + b.x) / 2.0,
+                        y: (a.y + b.y) / 2.0,
+                        pressure: (a.pressure + b.pressure) / 2.0,
+                        xtilt: (a.xtilt + b.xtilt) / 2.0,
+                        ytilt: (a.ytilt + b.ytilt) / 2.0,
+                        time: (a.time + b.time) / 2.0,
+                        viewzoom: (a.viewzoom + b.viewzoom) / 2.0,
+                        viewrotation: (a.viewrotation + b.viewrotation) / 2.0,
+                        barrel_rotation: (a.barrel_rotation + b.barrel_rotation) / 2.0,
+                    };
+                    self.nodes.insert(i + 1, mid);
+                    self.current_node = Some(i + 1);
+                    true
+                }
+            }
+            InkNodeEdit::Delete(i) => {
+                if i == 0 || i + 1 >= self.nodes.len() {
+                    false
+                } else {
+                    self.nodes.remove(i);
+                    let n = self.nodes.len();
+                    self.current_node = Some(i.min(n.saturating_sub(2)));
+                    true
+                }
+            }
+        };
+        if changed {
+            self.redraw_if_active(ctx);
+        }
+        changed
+    }
+
+    /// 节点时间差（`get_node_dtime`，下限 `MIN_INTERNODE_TIME`）。
+    pub fn node_dtime(&self, i: usize) -> f32 {
+        if i == 0 || i >= self.nodes.len() {
+            return 0.0;
+        }
+        (self.nodes[i].time - self.nodes[i - 1].time).max(MIN_INTERNODE_TIME)
+    }
 }
 
 impl InteractionMode for InkingMode {
@@ -414,6 +518,7 @@ impl InteractionMode for InkingMode {
         self.button_down = None;
         self.last_node_evdata = None;
         self.last_event_node = None;
+        self.current_node = None;
     }
 
     fn leave(&mut self, ctx: &mut ModeContext<'_>) {
@@ -434,6 +539,7 @@ impl InteractionMode for InkingMode {
             if let Some(i) = self.node_at(ev) {
                 // 拖一个控制点
                 self.target_node = Some(i);
+                self.current_node = Some(i);
                 self.dragged_node = Some(i);
                 self.dragged_start = (self.nodes[i].x, self.nodes[i].y);
                 self.press_start = (ev.x, ev.y);
@@ -523,6 +629,7 @@ impl InteractionMode for InkingMode {
         if self.nodes.len() > 1 {
             // 进入 ADJUST：曲线留在画布上等待调节（不提交）
             self.phase = InkPhase::Adjust;
+            self.current_node = Some(self.nodes.len() - 1);
             self.target_node = None;
             self.dragged_node = None;
         } else {
@@ -570,6 +677,18 @@ impl InteractionMode for InkingMode {
 
     fn ink_target_node(&self) -> Option<usize> {
         self.target_node
+    }
+
+    fn ink_current_node(&self) -> Option<usize> {
+        self.current_node
+    }
+
+    fn ink_apply(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        edit: crate::mode::ink::InkNodeEdit,
+    ) -> bool {
+        self.ink_edit(ctx, edit)
     }
 
     fn simplify_nodes(&mut self, ctx: &mut ModeContext<'_>) -> usize {
@@ -660,6 +779,16 @@ mod tests {
         assert!(mode.ink_editing(), "拖完仍在 ADJUST");
 
         let old = mode.nodes().len();
+        // OptionsUI 的滑条/插点/删点
+        assert!(mode.ink_edit(&mut ctx, InkNodeEdit::Pressure(2, 0.9)));
+        assert!((mode.nodes()[2].pressure - 0.9).abs() < 1e-6);
+        let t0 = mode.nodes()[0].time;
+        assert!(mode.ink_edit(&mut ctx, InkNodeEdit::Time(1, 0.05)));
+        assert!((mode.nodes()[1].time - t0 - 0.05).abs() < 1e-4);
+        assert!(mode.ink_edit(&mut ctx, InkNodeEdit::Insert(1)));
+        assert_eq!(mode.nodes().len(), old + 1);
+        assert!(mode.ink_edit(&mut ctx, InkNodeEdit::Delete(2)));
+        assert_eq!(mode.nodes().len(), old);
         assert!(mode.cull_nodes() <= old);
         assert!(mode.simplify_nodes() <= old);
         mode.accept(&mut ctx);
@@ -723,3 +852,5 @@ mod tests {
         );
     }
 }
+
+

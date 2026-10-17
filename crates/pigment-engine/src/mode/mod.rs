@@ -394,6 +394,16 @@ pub trait InteractionMode {
         None
     }
 
+    /// 当前在 OptionsUI 里编辑的 Inking 节点。
+    fn ink_current_node(&self) -> Option<usize> {
+        None
+    }
+
+    /// OptionsUI 的编辑操作（滑条/插点/删点）。
+    fn ink_apply(&mut self, _ctx: &mut ModeContext<'_>, _edit: crate::mode::ink::InkNodeEdit) -> bool {
+        false
+    }
+
     /// `SimplifyNodes` 动作（`document.py:2318`）；返回删掉的节点数。
     fn simplify_nodes(&mut self, _ctx: &mut ModeContext<'_>) -> usize {
         0
