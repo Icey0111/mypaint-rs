@@ -941,15 +941,23 @@ impl PigmentApp {
     /// 用当前编辑器设置新建一支笔刷（BrushEditor 的 clone 按钮）。
     pub(crate) fn new_brush_from_current(&mut self) -> bool {
         let mut brush = self.base_brush.clone();
-        let preview = crate::thumb::render(&brush);
-        match self.brushes.library.new_brush(
-            &mut brush,
-            Some((
+        // 源码 `ManagedBrush.clone_into`（`brushmanager.py:1372-1382`）把
+        // `self.preview` 原样复制给新笔刷；只有源笔刷没有预览时才实时渲染。
+        let existing = self
+            .brushes
+            .selected_entry()
+            .and_then(|e| e.preview_rgba());
+        let fallback = existing.is_none().then(|| crate::thumb::render(&brush));
+        let preview_arg = match (&existing, &fallback) {
+            (Some((w, h, px)), _) => Some((*w, *h, px.as_slice())),
+            (None, Some(px)) => Some((
                 crate::thumb::PREVIEW_W as u32,
                 crate::thumb::PREVIEW_H as u32,
-                &preview,
+                px.as_slice(),
             )),
-        ) {
+            _ => None,
+        };
+        match self.brushes.library.new_brush(&mut brush, preview_arg) {
             Ok(idx) => {
                 self.brushes.group = pigment_engine::brushlib::NEW_BRUSH_GROUP.to_string();
                 self.brushes.selected = idx;
@@ -973,16 +981,20 @@ impl PigmentApp {
             return false;
         };
         let brush = self.base_brush.clone();
-        let preview = crate::thumb::render(&brush);
-        match self.brushes.library.save_brush_entry(
-            &key,
-            &brush,
-            Some((
-                crate::thumb::PREVIEW_W as u32,
-                crate::thumb::PREVIEW_H as u32,
-                &preview,
-            )),
-        ) {
+        // 源码 `ManagedBrush.save()` 写的是 `self.preview`（原 `_prev.png`），
+        // 不是重新渲染的缩略图。没有预览时才保持磁盘现状（传 `None`）。
+        let existing = self
+            .brushes
+            .selected_entry()
+            .and_then(|e| e.preview_rgba());
+        let preview_arg = existing
+            .as_ref()
+            .map(|(w, h, px)| (*w, *h, px.as_slice()));
+        match self
+            .brushes
+            .library
+            .save_brush_entry(&key, &brush, preview_arg)
+        {
             Ok(idx) => {
                 self.brushes.refresh_after_save(idx);
                 true

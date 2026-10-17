@@ -204,6 +204,19 @@ impl BrushEntry {
         None
     }
 
+    /// 预览图解码后的 RGBA8（供保存/Clone 原样沿用原图标）。
+    ///
+    /// 源码 `ManagedBrush.save()`（`brushmanager.py:1460-1476`）写的是
+    /// `self.preview`（从 `_prev.png` 载入的原图），不是重新渲染的缩略图。
+    pub fn preview_rgba(&self) -> Option<(u32, u32, Vec<u8>)> {
+        let bytes = self.preview_png()?;
+        let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+            .ok()?
+            .to_rgba8();
+        let (w, h) = img.dimensions();
+        Some((w, h, img.into_raw()))
+    }
+
     /// MyPaint 的笔刷展示名 —— 对齐 `ManagedBrush.get_display_name()`
     /// （`gui/brushmanager.py:1349`）：**笔刷名**（而非 `.myb` 的 `description`），
     /// 下划线替换成空格。
@@ -333,6 +346,61 @@ pub fn parse_order_conf(text: &str) -> Vec<(String, Vec<String>)> {
     groups
 }
 
+/// 三方合并 `order_default.conf` / 用户 `order.conf` / 官方 `order.conf`。
+///
+/// 逐行照 `_init_ordered_groups`（`brushmanager.py:315-367`）：
+///
+/// 1. 上游新增的笔刷按官方顺序插到我们列表里（已存在则只更新插入点）；
+/// 2. 基线里有、官方已删除的笔刷从我们的列表移除；
+/// 3. 空组删除（`Favorites` 除外）。
+///
+/// 输入/输出都是 `(组展示名, keys)`，保持首次出现的组顺序。
+pub fn merge_order_groups(
+    base: &[(String, Vec<String>)],
+    our: &[(String, Vec<String>)],
+    their: &[(String, Vec<String>)],
+) -> Vec<(String, Vec<String>)> {
+    let mut order: Vec<String> = Vec::new();
+    for list in [base, our, their] {
+        for (name, _) in list {
+            if !order.contains(name) {
+                order.push(name.clone());
+            }
+        }
+    }
+    let members = |list: &[(String, Vec<String>)], name: &str| -> Vec<String> {
+        list.iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, keys)| keys.clone())
+            .unwrap_or_default()
+    };
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for name in order {
+        let base_b = members(base, &name);
+        let their_b = members(their, &name);
+        let mut our_b = members(our, &name);
+
+        // 上游新增
+        let mut insert_index = 0usize;
+        for b in &their_b {
+            if let Some(pos) = our_b.iter().position(|k| k == b) {
+                insert_index = pos + 1;
+            } else if !base_b.contains(b) {
+                let pos = insert_index.min(our_b.len());
+                our_b.insert(pos, b.clone());
+                insert_index = pos + 1;
+            }
+        }
+        // 上游删除（基线里有、官方没了）
+        our_b.retain(|b| !(base_b.contains(b) && !their_b.contains(b)));
+        // 空组删除，Favorites 保留
+        if !our_b.is_empty() || name.eq_ignore_ascii_case(FAVORITES_BRUSH_GROUP) {
+            out.push((name, our_b));
+        }
+    }
+    out
+}
+
 /// 从 `order.conf` 形式的 `(组名, key 列表)` 建组：
 /// 官方组沿用资产目录 id（`Deevad` → `deevad`），特殊/用户组用组名。
 fn groups_from_order(
@@ -425,13 +493,33 @@ impl BrushLibrary {
         for dir in &dirs {
             lib.scan_dir(dir);
         }
-        // 用户 order.conf（`<user_brush>/order.conf`）覆盖组顺序与成员
+        // 用户 order.conf（`<user_brush>/order.conf`）覆盖组顺序与成员；
+        // 上游 `order.conf` 变化时按 `order_default.conf` 做三方合并
+        // （`brushmanager.py:315-367`）。
         if let Some(dir) = dirs.first() {
             let path = dir.join("order.conf");
-            if let Ok(text) = fs::read_to_string(&path) {
-                lib.apply_order_conf(&text);
+            let base_path = dir.join("order_default.conf");
+            let our_text = fs::read_to_string(&path).ok();
+            let base_text = fs::read_to_string(&base_path).unwrap_or_default();
+            let base = parse_order_conf(&base_text);
+            let our = our_text
+                .as_deref()
+                .map(parse_order_conf)
+                .unwrap_or_default();
+            let their = parse_order_conf(OFFICIAL_ORDER_CONF);
+            lib.order_conf_path = Some(path.clone());
+            if base == their {
+                // 上游没变：用户文件就是最终顺序
+                if let Some(text) = &our_text {
+                    lib.apply_order_conf(text);
+                }
+            } else {
+                let merged = merge_order_groups(&base, &our, &their);
+                lib.apply_order_pairs(&merged);
+                // 把合并结果写回用户文件，并把新基线留作下次比较
+                let _ = lib.save_order_conf();
+                let _ = fs::write(&base_path, OFFICIAL_ORDER_CONF);
             }
-            lib.order_conf_path = Some(path);
         }
         lib
     }
@@ -533,9 +621,13 @@ impl BrushLibrary {
     /// 用户 order.conf 覆盖组顺序/成员（`_load_ordered_groups` 的简化版：
     /// 用户文件为准；未列出的旧组保留在尾部）。
     pub fn apply_order_conf(&mut self, text: &str) {
-        let parsed = parse_order_conf(text);
+        self.apply_order_pairs(&parse_order_conf(text));
+    }
+
+    /// 同 [`Self::apply_order_conf`]，但直接吃解析后的 `(组名, keys)`。
+    pub fn apply_order_pairs(&mut self, parsed: &[(String, Vec<String>)]) {
         let mut new_groups: Vec<BrushGroup> = Vec::new();
-        for (display, keys) in &parsed {
+        for (display, keys) in parsed {
             // 官方组按展示名匹配（Deevad ↔ deevad），用户组按 id/展示名匹配
             let old = self
                 .groups
@@ -1621,5 +1713,116 @@ mod tests {
         let pos = members.iter().position(|&i| i == idx).unwrap();
         assert_eq!(members[pos - 1], src_idx);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn preview_rgba_decodes_the_embedded_icon() {
+        let lib = BrushLibrary::embedded();
+        let e = &lib.entries[lib.find("classic/pencil").unwrap()];
+        let (w, h, px) = e.preview_rgba().expect("官方笔刷应有内嵌预览");
+        assert_eq!((w, h), (128, 128), "MyPaint 预览固定 128×128");
+        assert_eq!(px.len(), (w * h * 4) as usize);
+        assert!(px.chunks_exact(4).any(|p| p[3] > 0));
+    }
+
+    /// `save_brush_entry(key, ..., None)` 不能重写 `_prev.png`
+    /// （源码 `ManagedBrush.save` 只在有 `self.preview` 时写）。
+    #[test]
+    fn saving_without_preview_keeps_the_existing_icon() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-prev-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        let key = "classic/pencil";
+        let brush = lib.entries[lib.find(key).unwrap()].load().unwrap();
+
+        let one = [1u8, 2, 3, 255];
+        lib.save_brush_entry(key, &brush, Some((1, 1, &one)))
+            .unwrap();
+        let prev = dir.join("classic/pencil_prev.png");
+        let sentinel = std::fs::read(&prev).unwrap();
+        // 再保存一次、不传预览：磁盘上的旧图标必须原样保留
+        lib.save_brush_entry(key, &brush, None).unwrap();
+        assert_eq!(std::fs::read(&prev).unwrap(), sentinel);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 新建/Clone 传入的预览必须原样写盘（不是重新渲染的缩略图）。
+    #[test]
+    fn new_brush_copies_the_source_preview_pixels() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-prevcopy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        let src = &lib.entries[lib.find("classic/pencil").unwrap()];
+        let (w, h, px) = src.preview_rgba().unwrap();
+        let mut brush = src.load().unwrap();
+        lib.new_brush(&mut brush, Some((w, h, &px))).unwrap();
+
+        let out = image::open(dir.join("b000_prev.png"))
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(out.dimensions(), (w, h));
+        // 抽样：RGBA 按源码规则合成到白底
+        for (x, y) in [(0, 0), (w / 3, h / 2), (w - 1, h - 1), (10, 20)] {
+            let i = ((y * w + x) * 4) as usize;
+            let p = out.get_pixel(x, y);
+            for c in 0..3 {
+                let a = px[i + 3] as u32;
+                let want = (px[i + c] as u32 * a + 255 * (255 - a)) / 255;
+                assert!(
+                    (p[c] as i32 - want as i32).abs() <= 1,
+                    "({x},{y}) 通道 {c} 应保留原图标"
+                );
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn three_way_merge_adds_upstream_brushes_and_keeps_our_order() {
+        let pair = |s: &str, v: &[&str]| (s.to_string(), v.iter().map(|x| x.to_string()).collect());
+        let base = vec![pair("A", &["a1", "a2"]), pair("B", &["b1"])];
+        let our = vec![pair("A", &["a2", "a1"]), pair("D", &["d1"])];
+        let their = vec![
+            pair("A", &["a1", "new", "a2"]),
+            pair("C", &["c1"]),
+        ];
+        let merged = merge_order_groups(&base, &our, &their);
+        let get = |name: &str| {
+            merged
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, v)| v.clone())
+                .unwrap()
+        };
+        assert_eq!(get("A"), vec!["a2", "a1", "new"]);
+        assert_eq!(get("C"), vec!["c1"]);
+        assert_eq!(get("D"), vec!["d1"]);
+        assert!(!merged.iter().any(|(n, _)| n == "B"), "空组应被删掉");
+        // 组顺序按 base→our→their 首次出现（源码用 set，顺序本就不确定；
+        // 这里取确定性顺序）：A、B、D、C，去掉空 B 后是 A、D、C。
+        let names: Vec<&str> = merged.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, vec!["A", "D", "C"]);
+    }
+
+    #[test]
+    fn three_way_merge_removes_brushes_deleted_upstream() {
+        let pair = |s: &str, v: &[&str]| (s.to_string(), v.iter().map(|x| x.to_string()).collect());
+        let base = vec![pair("A", &["a1", "gone"])];
+        let our = vec![pair("A", &["a1", "gone", "mine"])];
+        let their = vec![pair("A", &["a1"])];
+        let merged = merge_order_groups(&base, &our, &their);
+        assert_eq!(merged[0].1, vec!["a1", "mine"]);
+    }
+
+    #[test]
+    fn three_way_merge_keeps_favorites_when_empty() {
+        let pair = |s: &str, v: &[&str]| (s.to_string(), v.iter().map(|x| x.to_string()).collect());
+        let base = vec![pair("Favorites", &["f1"])];
+        let our = vec![pair("Favorites", &["f1"])];
+        let their = vec![pair("Favorites", &[])];
+        let merged = merge_order_groups(&base, &our, &their);
+        assert_eq!(merged, vec![pair("Favorites", &[])]);
     }
 }
