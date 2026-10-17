@@ -236,6 +236,14 @@ pub struct PigmentApp {
     /// （`pigment_engine::color`，逐行对照 `lib/color.py` /
     /// `gui/colors/adjbases.py` / `gui/brushcolor.py`）。
     pub(crate) color_manager: ColorManager,
+    /// `BrushModifier._last_selected_color`：切到「固定颜色」笔刷前用户选的色。
+    ///
+    /// 只影响 `restore_color` 笔刷（官方包里 2 支）：从固定色笔刷切回普通笔刷时
+    /// 恢复它（`brushmodifier.py:108-115`）。
+    pub(crate) last_selected_color: [f32; 3],
+    /// 正在执行 `brush_selected_cb`（`brushmodifier.py:94-133`）：这期间的
+    /// 换色不回写 `last_selected_color`。
+    pub(crate) in_brush_selected: bool,
     // ---- 笔刷快捷键 ----
     /// 10 个槽位（`BrushManager.contexts`）。
     pub(crate) brushkeys: [Option<BrushKeySlot>; NUM_BRUSHKEYS],
@@ -561,6 +569,7 @@ impl PigmentApp {
 
         // 当前色/历史/调色板/色轮类型都从偏好来（`adjbases.py:121-147`）
         let color_manager = ColorManager::from_prefs(&prefs);
+        let initial_color = color::hsv_of(&color_manager.get_color());
         let brushkeys = seed_brushkeys(&brushes);
         let brush_name = brushes
             .selected_entry()
@@ -599,6 +608,8 @@ impl PigmentApp {
             eraser: false,
             paint_override: None,
             color_manager,
+            last_selected_color: initial_color,
+            in_brush_selected: false,
             brushkeys,
             live_update: false,
             status: None,
@@ -733,7 +744,16 @@ impl PigmentApp {
     }
 
     /// 从笔刷库重新载入当前选中笔刷（清空半径/光谱覆盖，恢复笔刷自带性格）。
+    ///
+    /// 颜色处理照 `BrushModifier.brush_selected_cb`（`brushmodifier.py:94-133`）：
+    /// 普通笔刷保留当前色；`restore_color` 笔刷把当前色与笔刷自带色按
+    /// `mix` 混合；从固定色笔刷切回普通笔刷时恢复 `_last_selected_color`。
     pub(crate) fn reload_selected_brush(&mut self) {
+        self.in_brush_selected = true;
+        let prev_hsv = self.color_hsv();
+        let prev_rgb = pigment_engine::color::hsv_to_rgb(color::to_f64_3(prev_hsv));
+        let mix_old = self.base_brush.get(BrushSetting::RestoreColor).base_value;
+
         match self.brushes.load_selected() {
             Ok(b) => {
                 self.base_brush = b;
@@ -746,6 +766,30 @@ impl PigmentApp {
         if let Some(e) = self.brushes.selected_entry() {
             self.brush_name = e.mypaint_name();
         }
+
+        let mix = self.base_brush.get(BrushSetting::RestoreColor).base_value;
+        let new_hsv = if mix > 0.0 {
+            let c2 = pigment_engine::color::hsv_to_rgb([
+                self.base_brush.get(BrushSetting::ColorH).base_value as f64,
+                self.base_brush.get(BrushSetting::ColorS).base_value as f64,
+                self.base_brush.get(BrushSetting::ColorV).base_value as f64,
+            ]);
+            let mix = mix as f64;
+            let c3 = [
+                (1.0 - mix) * prev_rgb[0] + mix * c2[0],
+                (1.0 - mix) * prev_rgb[1] + mix * c2[1],
+                (1.0 - mix) * prev_rgb[2] + mix * c2[2],
+            ];
+            color::to_f32_3(pigment_engine::color::rgb_to_hsv(c3))
+        } else if mix_old > 0.0 {
+            self.last_selected_color
+        } else {
+            prev_hsv
+        };
+        // 直接写管理器：这次换色是「选笔刷」的一部分，不能覆盖
+        // `_last_selected_color`（源码用 `_in_brush_selected_cb` 区分）。
+        self.color_manager.set_color(color::hsv_color(new_hsv));
+        self.in_brush_selected = false;
         self.derive_active();
     }
 
@@ -805,6 +849,9 @@ impl PigmentApp {
     /// （`gui/brushcolor.py:33-37`：颜色由应用持有，再写给笔刷的
     /// `color_h/s/v`）。
     pub(crate) fn set_color(&mut self, color: Color) {
+        if !self.in_brush_selected {
+            self.last_selected_color = color::hsv_of(&color);
+        }
         self.color_manager.set_color(color);
         self.derive_active();
     }
