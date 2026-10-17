@@ -24,11 +24,66 @@ pub fn write_rgba8_png(
     w: u32,
     h: u32,
 ) -> Result<(), String> {
-    debug_assert_eq!(pixels.len(), (w as usize) * (h as usize) * 4);
-    let img: image::RgbaImage = image::ImageBuffer::from_raw(w, h, pixels)
-        .ok_or_else(|| format!("像素缓冲尺寸不匹配：{w}×{h}"))?;
-    img.save_with_format(path, image::ImageFormat::Png)
-        .map_err(|e| format!("写 PNG 失败 {}：{e}", path.display()))
+    write_png(path, pixels, w, h, true)
+}
+
+/// 按源码 `save_as_png(alpha=...)` 写 PNG，并带 `sRGB`/`gAMA`/`cHRM`
+/// 三个辅助块（`ProgressivePNGWriter(..., save_srgb_chunks=True)`）。
+///
+/// `alpha=false` 时写 **RGB8**（丢弃 alpha 通道，与 libpng 的 RGB 写出
+/// 一致），`alpha=true` 时写 RGBA8。
+pub fn write_png(
+    path: &Path,
+    pixels: Vec<u8>,
+    w: u32,
+    h: u32,
+    alpha: bool,
+) -> Result<(), String> {
+    let expected = (w as usize) * (h as usize) * 4;
+    if pixels.len() != expected {
+        return Err(format!(
+            "像素缓冲尺寸不匹配：{w}×{h}，期望 {expected} 字节，实际 {}",
+            pixels.len()
+        ));
+    }
+    let data: Vec<u8> = if alpha {
+        pixels
+    } else {
+        // RGB8：丢掉每像素第 4 字节
+        let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
+        for p in pixels.chunks_exact(4) {
+            rgb.extend_from_slice(&p[..3]);
+        }
+        rgb
+    };
+    let mut out = Vec::new();
+    {
+        let mut enc = png::Encoder::new(&mut out, w, h);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.set_color(if alpha {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_source_srgb(png::SrgbRenderingIntent::Perceptual);
+        enc.set_source_gamma(png::ScaledFloat::from_scaled(45455));
+        enc.set_source_chromaticities(png::SourceChromaticities::new(
+            (0.3127, 0.3290),
+            (0.6400, 0.3300),
+            (0.3000, 0.6000),
+            (0.1500, 0.0600),
+        ));
+        let mut writer = enc
+            .write_header()
+            .map_err(|e| format!("写 PNG 头失败 {}：{e}", path.display()))?;
+        writer
+            .write_image_data(&data)
+            .map_err(|e| format!("写 PNG 数据失败 {}：{e}", path.display()))?;
+        writer
+            .finish()
+            .map_err(|e| format!("收尾 PNG 失败 {}：{e}", path.display()))?;
+    }
+    std::fs::write(path, out).map_err(|e| format!("写 PNG 失败 {}：{e}", path.display()))
 }
 
 /// 读取 PNG 为 RGBA8 像素，返回 `(pixels, w, h)`。
@@ -90,6 +145,49 @@ mod tests {
         write_rgba8_png(&path, vec![0u8; 4], 1, 1).unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 源码 `save_srgb_chunks=True`：sRGB + 回退 gAMA/cHRM 都应写出；
+    /// `alpha=false` 时 IHDR 的 color type 必须是 2（RGB），不是 6。
+    #[test]
+    fn writes_srgb_chunks_and_rgb_for_opaque() {
+        fn chunks(bytes: &[u8]) -> Vec<(String, Vec<u8>)> {
+            let mut out = Vec::new();
+            let mut i = 8;
+            while i + 8 <= bytes.len() {
+                let len = u32::from_be_bytes(bytes[i..i + 4].try_into().unwrap()) as usize;
+                let ty = String::from_utf8_lossy(&bytes[i + 4..i + 8]).into_owned();
+                let data = bytes[i + 8..i + 8 + len].to_vec();
+                out.push((ty, data));
+                i += 12 + len;
+            }
+            out
+        }
+        let path = tmp("srgb.png");
+        let px = vec![255, 0, 0, 255, 0, 255, 0, 255];
+        write_png(&path, px, 2, 1, false).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let cs = chunks(&bytes);
+        let names: Vec<&str> = cs.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"sRGB"), "缺 sRGB 块: {names:?}");
+        assert!(names.contains(&"gAMA"), "缺 gAMA 块: {names:?}");
+        assert!(names.contains(&"cHRM"), "缺 cHRM 块: {names:?}");
+        let ihdr = &cs.iter().find(|(n, _)| n == "IHDR").unwrap().1;
+        assert_eq!(ihdr[9], 2, "alpha=false 应写 RGB (color type 2)");
+        // 解码回来仍是 RGB，且像素值不变
+        let img = image::open(&path).unwrap().to_rgb8();
+        assert_eq!(img.dimensions(), (2, 1));
+        assert_eq!(&img.into_raw()[..3], &[255, 0, 0]);
+        let _ = std::fs::remove_file(&path);
+
+        // alpha=true 仍是 RGBA
+        let path = tmp("srgb-rgba.png");
+        write_png(&path, vec![1, 2, 3, 4], 1, 1, true).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let cs = chunks(&bytes);
+        let ihdr = &cs.iter().find(|(n, _)| n == "IHDR").unwrap().1;
+        assert_eq!(ihdr[9], 6, "alpha=true 应写 RGBA (color type 6)");
         let _ = std::fs::remove_file(&path);
     }
 

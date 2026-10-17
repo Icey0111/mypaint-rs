@@ -11,6 +11,9 @@ license = "MIT OR Apache-2.0"
 hokusai = "=0.3.0"
 # PNG 编解码 —— 照搬 lib/surface.py:220 的 save_as_png（tile-blittable 层）
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 直接控制 PNG 辅助块（sRGB/gAMA/cHRM），对齐 lib/surface.py:275 的
+# ProgressivePNGWriter(alpha, save_srgb_chunks=True)
+png = "0.18"
 # strokemap 的 "v2" 格式用 zlib 压缩 tile 位图（lib/strokemap.py）
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 

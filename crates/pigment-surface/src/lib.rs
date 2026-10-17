@@ -443,7 +443,7 @@ impl PigmentSurface {
             w = 1;
             h = 1;
         }
-        png::write_rgba8_png(filename.as_ref(), self.render_rect_rgba8(rect, alpha, bg), w as u32, h as u32)?;
+        png::write_png(filename.as_ref(), self.render_rect_rgba8(rect, alpha, bg), w as u32, h as u32, alpha)?;
         Ok((x, y, w, h))
     }
 
@@ -793,3 +793,4 @@ mod tests {
         assert_eq!(s.tile_count(), 0);
     }
 }
+

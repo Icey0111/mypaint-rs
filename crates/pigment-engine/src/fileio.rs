@@ -544,7 +544,7 @@ pub fn save_png(
     }
     let mut pixels = vec![0u8; (w * h * 4) as usize];
     layers.render_rect_rgba8((x, y, w as u32, h as u32), alpha, &mut pixels);
-    pigment_surface::png::write_rgba8_png(filename.as_ref(), pixels, w as u32, h as u32)
+    pigment_surface::png::write_png(filename.as_ref(), pixels, w as u32, h as u32, alpha)
         .map_err(FileError::Png)?;
     Ok(PngSaved { bbox: (x, y, w, h) })
 }
@@ -699,7 +699,7 @@ pub fn save_ora(
         }
     }
     let tmp_bg = temp_sibling(filename.as_ref(), "background.png");
-    pigment_surface::png::write_rgba8_png(&tmp_bg, bg_full, fw as u32, fh as u32)
+    pigment_surface::png::write_png(&tmp_bg, bg_full, fw as u32, fh as u32, false)
         .map_err(FileError::Png)?;
     let bytes = std::fs::read(&tmp_bg)?;
     let _ = std::fs::remove_file(&tmp_bg);
@@ -760,7 +760,7 @@ pub fn save_ora(
     let mut merged = vec![0u8; fw * fh * 4];
     layers.render_rect_rgba8((bx, by, fw as u32, fh as u32), false, &mut merged);
     let tmp_merged = temp_sibling(filename.as_ref(), "merged.png");
-    pigment_surface::png::write_rgba8_png(&tmp_merged, merged, fw as u32, fh as u32)
+    pigment_surface::png::write_png(&tmp_merged, merged, fw as u32, fh as u32, false)
         .map_err(FileError::Png)?;
     let bytes = std::fs::read(&tmp_merged)?;
     let _ = std::fs::remove_file(&tmp_merged);
@@ -1969,4 +1969,5 @@ fn test_layer_attrs(
         assert_eq!((w, h), (216, 188));
     }
 }
+
 
