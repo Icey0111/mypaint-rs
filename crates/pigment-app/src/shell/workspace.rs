@@ -991,6 +991,24 @@ impl PigmentApp {
             crate::shell::overlays::OverlayStyle::from_prefs(&self.prefs),
         );
 
+        // ---- Inking ADJUST 节点（`inktool.py:1074-1116`）----
+        if self.modes.top().ink_editing() {
+            if let Some(nodes) = self.modes.top().ink_nodes() {
+                let painter = ui.painter().with_clip_rect(rect);
+                let target = self.modes.top().ink_target_node();
+                for (i, n) in nodes.iter().enumerate() {
+                    let s = self.view.world_to_screen(n.x, n.y);
+                    let p = egui::pos2(rect.min.x + s[0], rect.min.y + s[1]);
+                    let color = if target == Some(i) {
+                        egui::Color32::from_rgb(0xF1, 0xC4, 0x0F)
+                    } else {
+                        egui::Color32::from_rgb(0xEC, 0xF0, 0xF1)
+                    };
+                    painter.circle_filled(p, 4.0, color);
+                }
+            }
+        }
+
         // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----
         if let Some(pos) = response.hover_pos() {
             let r = self

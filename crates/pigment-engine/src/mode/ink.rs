@@ -34,6 +34,13 @@ pub const INTERPOLATION_MAX_SLICE_DISTANCE: f32 = 20.0;
 /// 每段最大切片数（`MAX_INTERNODE_DISTANCE_MIDDLE * 5`）。
 pub const INTERPOLATION_MAX_SLICES: f32 = MAX_INTERNODE_DISTANCE_MIDDLE * 5.0;
 
+/// Inking 的两个阶段（`inktool.py:41` 的 `_Phase`）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum InkPhase {
+    Capture,
+    Adjust,
+}
+
 /// 一个捕获到的控制点（`inktool.py:61` 的 `_Node`，9 个字段同源码）。
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct InkNode {
@@ -137,6 +144,13 @@ pub struct InkingMode {
     last_node_evdata: Option<(f32, f32, f32)>,
     last_event_node: Option<InkNode>,
     start: (f32, f32),
+    phase: InkPhase,
+    /// 命中/预亮的节点（ADJUST）。
+    target_node: Option<usize>,
+    /// 正在拖动的节点及其按下时的位置。
+    dragged_node: Option<usize>,
+    dragged_start: (f32, f32),
+    press_start: (f32, f32),
 }
 
 impl Default for InkingMode {
@@ -158,6 +172,11 @@ impl InkingMode {
             last_node_evdata: None,
             last_event_node: None,
             start: (0.0, 0.0),
+            phase: InkPhase::Capture,
+            target_node: None,
+            dragged_node: None,
+            dragged_start: (0.0, 0.0),
+            press_start: (0.0, 0.0),
         }
     }
 
@@ -269,6 +288,99 @@ impl InkingMode {
         }
         *t_abs = last_t_abs;
     }
+    /// 结束当前 ADJUST：提交（accept）或回滚（reject），回到 CAPTURE。
+    /// `_start_new_capture_phase`（`inktool.py:257-272`）。
+    pub fn start_new_capture_phase(&mut self, ctx: &mut ModeContext<'_>, rollback: bool) {
+        if rollback {
+            self.brushwork.rollback(ctx);
+        } else {
+            self.brushwork.commit(ctx, true);
+        }
+        self.nodes.clear();
+        self.phase = InkPhase::Capture;
+        self.target_node = None;
+        self.dragged_node = None;
+        self.last_node_evdata = None;
+        self.last_event_node = None;
+    }
+
+    /// 接受当前曲线（源码画布上的 OK 按钮）。
+    pub fn accept(&mut self, ctx: &mut ModeContext<'_>) {
+        self.start_new_capture_phase(ctx, false);
+    }
+
+    /// 放弃当前曲线（源码画布上的垃圾桶按钮 / Escape）。
+    pub fn reject(&mut self, ctx: &mut ModeContext<'_>) {
+        self.start_new_capture_phase(ctx, true);
+    }
+
+    /// 命中测试：最近的一个节点（`_update_zone_and_target` 的 16 display px）。
+    fn node_at(&self, ev: &PointerEvent) -> Option<usize> {
+        let hit = 4.0 + 12.0; // DRAGGABLE_POINT_HANDLE_SIZE + 12
+        let zoom = ev.viewzoom.max(1e-6);
+        self.nodes
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, n)| ((n.x - ev.x).hypot(n.y - ev.y)) * zoom <= hit)
+            .map(|(i, _)| i)
+    }
+
+    fn redraw_if_active(&mut self, ctx: &mut ModeContext<'_>) {
+        if self.nodes.len() >= 2 {
+            self.redraw_curve(ctx);
+        }
+    }
+
+    /// `_simplify_nodes(8)`：Reumann-Witkam。
+    pub fn simplify_nodes(&mut self) -> usize {
+        let old = self.nodes.len();
+        let mut i = 0;
+        while i + 2 < self.nodes.len() {
+            let vsx = self.nodes[i + 1].x - self.nodes[i].x;
+            let vsy = self.nodes[i + 1].y - self.nodes[i].y;
+            let ss = (vsx * vsx + vsy * vsy).sqrt();
+            if ss == 0.0 {
+                i += 1;
+                continue;
+            }
+            let (nsx, nsy) = (vsx / ss, vsy / ss);
+            while i + 2 < self.nodes.len() {
+                let vex = self.nodes[i + 2].x - self.nodes[i].x;
+                let vey = self.nodes[i + 2].y - self.nodes[i].y;
+                let es = (vex * vex + vey * vey).sqrt();
+                if es == 0.0 {
+                    break;
+                }
+                let px = nsx * es;
+                let py = nsy * es;
+                let dp = (px * (vex / es) + py * (vey / es)) / es;
+                let hx = vex * dp - px;
+                let hy = vey * dp - py;
+                if (hx * hx + hy * hy).sqrt() < 8.0 {
+                    self.nodes.remove(i + 1);
+                } else {
+                    break;
+                }
+            }
+            i += 1;
+        }
+        old - self.nodes.len()
+    }
+
+    /// `_cull_nodes`：保留隔一个节点 + 最后一个。
+    pub fn cull_nodes(&mut self) -> usize {
+        if self.nodes.is_empty() {
+            return 0;
+        }
+        let old = self.nodes.len();
+        let last = *self.nodes.last().unwrap();
+        self.nodes = self.nodes.iter().step_by(2).copied().collect();
+        if self.nodes.last() != Some(&last) {
+            self.nodes.push(last);
+        }
+        old - self.nodes.len()
+    }
 }
 
 impl InteractionMode for InkingMode {
@@ -318,9 +430,25 @@ impl InteractionMode for InkingMode {
         if ev.button != 1 || !ctx.current_is_paintable() {
             return false;
         }
+        if self.phase == InkPhase::Adjust {
+            if let Some(i) = self.node_at(ev) {
+                // 拖一个控制点
+                self.target_node = Some(i);
+                self.dragged_node = Some(i);
+                self.dragged_start = (self.nodes[i].x, self.nodes[i].y);
+                self.press_start = (ev.x, ev.y);
+                self.dragging = true;
+                self.button_down = Some(ev.button);
+                return true;
+            }
+            // 空白处按下：提交当前曲线，开始新一笔（源码 FALLTHRU）
+            self.start_new_capture_phase(ctx, false);
+        }
         self.nodes.clear();
         self.last_node_evdata = None;
         self.last_event_node = None;
+        self.phase = InkPhase::Capture;
+        self.target_node = None;
         self.dragging = true;
         self.button_down = Some(ev.button);
         self.last_good_pressure = 0.0;
@@ -336,6 +464,15 @@ impl InteractionMode for InkingMode {
 
     fn motion(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent) -> bool {
         if !self.dragging {
+            return false;
+        }
+        if self.phase == InkPhase::Adjust {
+            if let Some(i) = self.dragged_node {
+                self.nodes[i].x = self.dragged_start.0 + (ev.x - self.press_start.0);
+                self.nodes[i].y = self.dragged_start.1 + (ev.y - self.press_start.1);
+                self.redraw_if_active(ctx);
+                return true;
+            }
             return false;
         }
         let node = self.event_node(ev);
@@ -372,24 +509,48 @@ impl InteractionMode for InkingMode {
         }
         self.dragging = false;
         self.button_down = None;
+        if self.phase == InkPhase::Adjust {
+            self.dragged_node = None;
+            self.target_node = None;
+            return true;
+        }
         if let Some(last) = self.last_event_node {
             if self.nodes.last().copied() != Some(last) {
                 self.nodes.push(last);
             }
         }
         self.redraw_curve(ctx);
-        self.brushwork.commit(ctx, true);
+        if self.nodes.len() > 1 {
+            // 进入 ADJUST：曲线留在画布上等待调节（不提交）
+            self.phase = InkPhase::Adjust;
+            self.target_node = None;
+            self.dragged_node = None;
+        } else {
+            self.nodes.clear();
+            self.brushwork.rollback(ctx);
+        }
         true
     }
 
     fn key_press(&mut self, ctx: &mut ModeContext<'_>, key: Key) -> bool {
-        if key == Key::Escape && (self.dragging || !self.nodes.is_empty()) {
-            self.brushwork.rollback(ctx);
-            self.nodes.clear();
-            self.dragging = false;
-            self.button_down = None;
-            self.last_node_evdata = None;
-            self.last_event_node = None;
+        if key == Key::Escape {
+            if self.phase == InkPhase::Adjust {
+                self.reject(ctx);
+                return true;
+            }
+            if self.dragging || !self.nodes.is_empty() {
+                self.brushwork.rollback(ctx);
+                self.nodes.clear();
+                self.dragging = false;
+                self.button_down = None;
+                self.last_node_evdata = None;
+                self.last_event_node = None;
+                return true;
+            }
+        }
+        if key == Key::Enter && self.phase == InkPhase::Adjust {
+            // 画布上的 OK 按钮未移植；Enter 作为键盘等价物提交（记账）
+            self.accept(ctx);
             return true;
         }
         false
@@ -397,6 +558,34 @@ impl InteractionMode for InkingMode {
 
     fn process_pending(&mut self, _ctx: &mut ModeContext<'_>) -> bool {
         false
+    }
+
+    fn ink_nodes(&self) -> Option<&[InkNode]> {
+        Some(&self.nodes)
+    }
+
+    fn ink_editing(&self) -> bool {
+        self.phase == InkPhase::Adjust
+    }
+
+    fn ink_target_node(&self) -> Option<usize> {
+        self.target_node
+    }
+
+    fn simplify_nodes(&mut self, ctx: &mut ModeContext<'_>) -> usize {
+        let n = InkingMode::simplify_nodes(self);
+        if n > 0 {
+            self.redraw_if_active(ctx);
+        }
+        n
+    }
+
+    fn cull_nodes(&mut self, ctx: &mut ModeContext<'_>) -> usize {
+        let n = InkingMode::cull_nodes(self);
+        if n > 0 {
+            self.redraw_if_active(ctx);
+        }
+        n
     }
 }
 
@@ -429,6 +618,53 @@ mod tests {
         assert_eq!(segs[0][2].x, 1.0);
         assert_eq!(segs[1][2].x, 2.0, "末段 p1 是最后一点");
         assert_eq!(segs[1][3].x, 2.0, "末段重复最后一点");
+    }
+
+    #[test]
+    fn adjust_phase_drags_nodes_and_accepts() {
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut picked = None;
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: Some(&mut picked),
+        };
+        let mut mode = InkingMode::new();
+        let press = PointerEvent::button(0.0, 0.0, 0.0, 1);
+        assert!(mode.button_press(&mut ctx, &press));
+        for i in 1..=10 {
+            let ev = PointerEvent::motion(i as f32 * 40.0, 0.0, i as f64 * 40.0);
+            mode.motion(&mut ctx, &ev);
+        }
+        mode.button_release(&mut ctx, &PointerEvent::button(400.0, 0.0, 440.0, 1));
+        assert!(mode.ink_editing(), "多节点收笔后进入 ADJUST");
+        assert!(mode.nodes().len() > 2);
+
+        // 拖第 2 个节点（按在节点上）
+        let node = mode.nodes()[2];
+        assert!(mode.button_press(&mut ctx, &PointerEvent::button(node.x, node.y, 500.0, 1)));
+        assert_eq!(mode.ink_target_node(), Some(2));
+        mode.motion(&mut ctx, &PointerEvent::motion(node.x + 20.0, node.y + 10.0, 516.0));
+        mode.button_release(&mut ctx, &PointerEvent::button(node.x + 20.0, node.y + 10.0, 532.0, 1));
+        assert!((mode.nodes()[2].x - (node.x + 20.0)).abs() < 1e-3);
+        assert!((mode.nodes()[2].y - (node.y + 10.0)).abs() < 1e-3);
+        assert!(mode.ink_editing(), "拖完仍在 ADJUST");
+
+        let old = mode.nodes().len();
+        assert!(mode.cull_nodes() <= old);
+        assert!(mode.simplify_nodes() <= old);
+        mode.accept(&mut ctx);
+        assert!(mode.nodes().is_empty());
+        assert!(!mode.ink_editing());
     }
 
     #[test]
@@ -469,10 +705,12 @@ mod tests {
         let release = PointerEvent::button(400.0, 0.0, 440.0, 1);
         assert!(mode.button_release(&mut ctx, &release));
         assert!(mode.nodes().len() > 2, "应采到多个控制点");
+        assert!(mode.ink_editing(), "收笔进入 ADJUST，等待接受/调节");
+        mode.accept(&mut ctx);
         assert_eq!(
             ctx.doc.command_stack.undo_len(),
             before + 1,
-            "一次 Inking 只入栈一条 Brushwork"
+            "接受后一次 Inking 只入栈一条 Brushwork"
         );
         assert!(
             ctx.doc

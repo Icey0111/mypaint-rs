@@ -2034,6 +2034,8 @@ impl PigmentApp {
             | "FloodFillMode" => true,
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
             | "FlipEllipseMode" | "FlipFloodFillMode" => true,
+            // Inking 的节点编辑动作（`document.py:2318-2328`）只在 ADJUST 阶段可用
+            "SimplifyNodes" | "CullNodes" => self.modes.top().ink_editing(),
             // ---- 取色（B3-4：`gui/colorpicker.py` 的四个单选动作 + 四个 Flip）----
             "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC" | "ColorPickModeY" => true,
             "FlipColorPickMode" | "FlipColorPickModeH" | "FlipColorPickModeC"
@@ -2376,6 +2378,17 @@ impl PigmentApp {
             | "FlipEllipseMode" | "FlipFloodFillMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
+                ctx.request_repaint();
+            }
+            // Inking 节点编辑（`simplify_nodes_cb` / `cull_nodes_cb`）
+            "SimplifyNodes" => {
+                let n = self.with_mode(|modes, ctx| modes.top_mut().simplify_nodes(ctx));
+                self.set_status(format!("简化掉 {n} 个点"), now);
+                ctx.request_repaint();
+            }
+            "CullNodes" => {
+                let n = self.with_mode(|modes, ctx| modes.top_mut().cull_nodes(ctx));
+                self.set_status(format!("剔除 {n} 个点"), now);
                 ctx.request_repaint();
             }
             // ---- 取色（B3-4）----

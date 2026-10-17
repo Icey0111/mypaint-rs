@@ -379,6 +379,31 @@ pub trait InteractionMode {
         false
     }
 
+    /// Inking ADJUST 阶段的控制点（覆盖层绘制用；其它模式返回 `None`）。
+    fn ink_nodes(&self) -> Option<&[crate::mode::ink::InkNode]> {
+        None
+    }
+
+    /// 是否处于 Inking ADJUST 阶段（覆盖层只在此时显示节点）。
+    fn ink_editing(&self) -> bool {
+        false
+    }
+
+    /// 预亮（鼠标悬停）的 Inking 节点。
+    fn ink_target_node(&self) -> Option<usize> {
+        None
+    }
+
+    /// `SimplifyNodes` 动作（`document.py:2318`）；返回删掉的节点数。
+    fn simplify_nodes(&mut self, _ctx: &mut ModeContext<'_>) -> usize {
+        0
+    }
+
+    /// `CullNodes` 动作（`document.py:2324`）。
+    fn cull_nodes(&mut self, _ctx: &mut ModeContext<'_>) -> usize {
+        0
+    }
+
     /// 拖拽开始（`drag_start_cb`）。
     fn drag_start(&mut self, _ctx: &mut ModeContext<'_>) {}
     /// 拖拽更新（`drag_update_cb`，参数是**本帧位移**）。
