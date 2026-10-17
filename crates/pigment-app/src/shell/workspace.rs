@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use eframe::egui;
 
 use pigment_engine::hokusai::tile::TILE_SIZE;
-use pigment_engine::hokusai::BrushSetting;
+use pigment_engine::hokusai::{Brush, BrushSetting};
 use pigment_surface::LayerStack;
 
 use crate::app::PigmentApp;
@@ -31,6 +31,29 @@ use crate::view::View;
 /// 极端缩小时可见范围可达数万 tile，夹到视口中心附近的上限内
 /// （空区域由面板白底兜底，不影响观感；后续再上 atlas/mip 方案）。
 const MAX_VISIBLE_TILES_PER_AXIS: i32 = 96;
+
+/// 一行 `label + Slider`，返回是否改动；范围来自 `brushsettings.json`。
+fn brush_setting_slider(
+    ui: &mut egui::Ui,
+    brush: &mut Brush,
+    label: &str,
+    setting: BrushSetting,
+    range: std::ops::RangeInclusive<f32>,
+) -> bool {
+    let mut value = brush.get(setting).base_value;
+    let resp = ui
+        .horizontal(|ui| {
+            ui.label(label);
+            ui.add(egui::Slider::new(&mut value, range).show_value(true))
+        })
+        .inner;
+    if resp.changed() {
+        brush.get_mut(setting).base_value = value;
+        true
+    } else {
+        false
+    }
+}
 
 /// 一帧的画布同步结果：显存增量 + 可见 tile 列表 + 世界→裁剪空间矩阵。
 ///
@@ -399,6 +422,150 @@ impl PigmentApp {
         ui.label(
             egui::RichText::new("每笔结束后记录；同一支笔只保留最新设置").weak().small(),
         );
+    }
+
+    /// 「工具选项」面板 —— `ModeOptionsTool`（`gui/optionspanel.py:29`）+
+    /// `PaintingModeOptionsWidgetBase`（`gui/mode.py:588`）+
+    /// `FreehandOptionsWidget`（`gui/freehand.py:630`）。
+    ///
+    /// 顶部是当前模式名/图标；绘画类模式显示五个公共笔刷设置（Size / Opaque /
+    /// Sharp / Gain / Pigment），自由手绘再追加三个（Smooth / Pressure / Twist）。
+    ///
+    /// 范围取 `_libmypaint_ref/brushsettings.json` 的 `minimum`/`maximum`；
+    /// 源码的 `InputSlider` 不显示数值（`set_draw_value(False)`），这里显示
+    /// 数值属于技术栈适配（egui 没有动态 tooltip 的等价物）。
+    ///
+    /// 未移植：`LineModeOptionsWidget` 的压力-距离曲线、填充/对称的选项页。
+    pub(crate) fn mode_options_panel_content(&mut self, ui: &mut egui::Ui) {
+        let mode_name = self.modes.top().name().to_string();
+        let action = self.modes.top().action_name();
+        let icon_name = action
+            .and_then(crate::shell::actions::by_id)
+            .and_then(|a| a.icon_name);
+        ui.horizontal(|ui| {
+            if let Some(name) = icon_name {
+                if let Some(tex) =
+                    crate::shell::toolbars::icon_texture(ui.ctx(), &mut self.icon_cache, name)
+                {
+                    ui.add(egui::Image::new(&tex).max_size(egui::vec2(16.0, 16.0)));
+                }
+            }
+            ui.label(egui::RichText::new(&mode_name).strong());
+        });
+        ui.separator();
+
+        let painting = matches!(
+            mode_name.as_str(),
+            "Freehand Drawing" | "Lines and Curves" | "Connected Lines" | "Ellipses and Circles"
+        );
+        if !painting {
+            ui.label(egui::RichText::new("No options available").italics().weak());
+            return;
+        }
+
+        // ---- 公共设置（mode.py:591-601）----
+        let mut changed = false;
+        changed |= brush_setting_slider(
+            ui,
+            &mut self.base_brush,
+            "Size:",
+            BrushSetting::Radius,
+            -2.0..=6.0,
+        );
+        changed |= brush_setting_slider(
+            ui,
+            &mut self.base_brush,
+            "Opaque:",
+            BrushSetting::Opaque,
+            0.0..=2.0,
+        );
+        changed |= brush_setting_slider(
+            ui,
+            &mut self.base_brush,
+            "Sharp:",
+            BrushSetting::Hardness,
+            0.0..=1.0,
+        );
+        changed |= brush_setting_slider(
+            ui,
+            &mut self.base_brush,
+            "Gain:",
+            BrushSetting::PressureGainLog,
+            -1.8..=1.8,
+        );
+        changed |= brush_setting_slider(
+            ui,
+            &mut self.base_brush,
+            "Pigment:",
+            BrushSetting::Paint,
+            0.0..=1.0,
+        );
+
+        // ---- 自由手绘专用（freehand.py:633-695）----
+        if mode_name == "Freehand Drawing" {
+            changed |= brush_setting_slider(
+                ui,
+                &mut self.base_brush,
+                "Smooth:",
+                BrushSetting::SlowTracking,
+                0.0..=10.0,
+            );
+            ui.horizontal(|ui| {
+                ui.label("Pressure:");
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.mode_prefs.fakepressure, 0.0..=1.0)
+                            .show_value(true),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Twist:");
+                if ui
+                    .add(
+                        egui::Slider::new(&mut self.mode_prefs.fakerotation, 0.0..=1.0)
+                            .show_value(true),
+                    )
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.label(
+                egui::RichText::new(
+                    "鼠标没有压感/桶旋转：Pressure 与 Twist 是模拟值（不进 settings.json）。",
+                )
+                .weak()
+                .small(),
+            );
+        }
+
+        if changed {
+            self.derive_active();
+            // 让下一帧的笔迹生效（无需重建模式栈：mode_inputs 每事件都读缓存）
+        }
+
+        ui.separator();
+        if ui.button("Reset").clicked() {
+            // `reset_button_clicked_cb`（mode.py:647-656）：只重置本页暴露的设置。
+            if let Ok(parent) = self.brushes.load_selected() {
+                for s in [
+                    BrushSetting::Radius,
+                    BrushSetting::Opaque,
+                    BrushSetting::Hardness,
+                    BrushSetting::PressureGainLog,
+                    BrushSetting::Paint,
+                    BrushSetting::SlowTracking,
+                ] {
+                    let v = parent.get(s).base_value;
+                    self.base_brush.get_mut(s).base_value = v;
+                }
+                self.derive_active();
+            }
+        }
     }
 
     /// 预览面板 —— `PreviewTool`（`gui/previewwindow.py:183`）。

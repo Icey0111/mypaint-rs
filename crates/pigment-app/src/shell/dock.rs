@@ -498,6 +498,7 @@ impl PigmentApp {
                             pick = self.brushes.show(ui);
                         }
                         PanelId::BrushEditor => self.brush_editor_content(ui),
+                        PanelId::ModeOptionsTool => self.mode_options_panel_content(ui),
                         PanelId::HistoryPanel => self.history_panel_content(ui),
                         PanelId::LayersTool => self.layers_panel_content(ui),
                         PanelId::ComponentSlidersTool => self.color_panel_content(ui),
