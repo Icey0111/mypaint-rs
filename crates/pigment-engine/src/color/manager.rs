@@ -23,8 +23,10 @@
 //!   （B6），所以 [`ColorManager::new`] 只按 `_DEFAULT_HIST` 播种，当前色取历史
 //!   末项（照 `adjbases.py:129-131` 的 `col_hex = hist_hex[-1]` 那支）。
 //!   键名常量照抄下来，等偏好系统到位直接接。
-//! - **调色板**：`_palette` / `Palette` 属 B4-4，`set_color()` 里的
-//!   `self._palette.match_color(color)`（`:219`）与 `_palette_changed_cb` 没有对应物。
+//! - **调色板的偏好存取**：`_palette` 本身已由 B4-4a 接上（[`ColorManager::palette`]，
+//!   启动时按 `adjbases.py:139-147` 载入默认 `.gpl`），但
+//!   `prefs["colors.palette"]` 的读写（`adjbases.py:139-141`/`:354-357`）
+//!   随偏好系统一起归 B6。
 //! - **adjuster 通知**：`color_updated` / `color_history_updated`
 //!   （`lib/observable.py` 的 `@event`）是给 GUI 控件用的；egui 是立即模式，
 //!   控件每帧读管理器即可（`pigment-app` 的 `shell/` 就是这么做的）。
@@ -34,6 +36,7 @@
 
 use super::adjust::{ColorAction, CONTEXT_RESTORES_COLOR_DEFAULT};
 use super::model::{colors_match, Color, HsvColor, RgbColor, UIColor};
+use super::palette::Palette;
 
 /// 颜色历史长度 —— `adjbases.py:79` 的 `_HIST_LEN = 5`。
 pub const HIST_LEN: usize = 5;
@@ -74,6 +77,13 @@ pub struct ColorManager {
     /// 恢复笔刷槽位时是否连颜色一起还原（源码偏好
     /// `misc.context_restores_color`，`gui/userconfig.py:93` 默认 True）。
     context_restores_color: bool,
+    /// 当前工作调色板（源码 `_palette`，`adjbases.py:111`）。
+    ///
+    /// 源码在 `__init__` 里从偏好读、读不到就载入
+    /// `<datapath>/palettes/MyPaint_Default.gpl`（`adjbases.py:139-147`）。
+    /// 偏好系统属 B6，这里只走"载入默认调色板"那一支
+    /// （[`Palette::mypaint_default`]，内容内嵌自同一个文件）。
+    palette: Palette,
 }
 
 impl Default for ColorManager {
@@ -83,9 +93,10 @@ impl Default for ColorManager {
 }
 
 impl ColorManager {
-    /// 按源码的启动路径初始化：历史 = `_DEFAULT_HIST`，当前色 = 历史末项。
+    /// 按源码的启动路径初始化：历史 = `_DEFAULT_HIST`，当前色 = 历史末项，
+    /// 调色板 = 默认 `.gpl`。
     ///
-    /// 对应 `adjbases.py:121-131`（只是没有偏好字典可读，见模块文档）。
+    /// 对应 `adjbases.py:121-147`（只是没有偏好字典可读，见模块文档）。
     pub fn new() -> Self {
         let hist = hist_from_hex(&DEFAULT_HIST_HEX);
         // hist_hex[-1]
@@ -94,6 +105,8 @@ impl ColorManager {
             color,
             hist,
             context_restores_color: CONTEXT_RESTORES_COLOR_DEFAULT,
+            // `adjbases.py:139-147`：没有偏好就加载默认调色板文件
+            palette: Palette::mypaint_default(),
         }
     }
 
@@ -101,6 +114,9 @@ impl ColorManager {
 
     /// `set_color()`（`adjbases.py:204-220`）：颜色**没变就不动**（`:213-214`
     /// 的 `if color == self._color: return`），否则存一份拷贝。
+    ///
+    /// 换色之后紧接着 `self._palette.match_color(color)`（`:219`）——
+    /// 这是"调色板上高亮当前色"的唯一驱动：调色板页不自己算命中。
     ///
     /// 返回是否真的变了 —— 应用层要据此决定要不要重推笔刷
     /// （`BrushColorManager.set_color` 的语义，`brushcolor.py:33-37`）。
@@ -111,6 +127,9 @@ impl ColorManager {
             return false;
         }
         self.color = color.copied();
+        // `adjbases.py:219`：`self._palette.match_color(color)`
+        let c = self.color.copied();
+        self.palette.match_color(&c, false, None);
         true
     }
 
@@ -123,6 +142,22 @@ impl ColorManager {
     /// （`brushcolor.py:37` 的 `brush.set_color_hsv(color.get_hsv())`）。
     pub fn get_hsv(&self) -> [f64; 3] {
         self.color.get_hsv()
+    }
+
+    // ---- 调色板（`adjbases.py:347-357`）----
+
+    /// 当前工作调色板 —— `ColorManager.palette` 属性（`adjbases.py:349-352`）。
+    ///
+    /// 源码把它挂在管理器上（而不是各 adjuster 自己持一份），所以调色板页与
+    /// `PaletteNext`/`PalettePrev`/`PaletteAddCurrentColor` 三个动作看到的是
+    /// **同一个**调色板。
+    pub fn palette(&self) -> &Palette {
+        &self.palette
+    }
+
+    /// 可变引用（调色板页的编辑操作要用）。
+    pub fn palette_mut(&mut self) -> &mut Palette {
+        &mut self.palette
     }
 
     // ---- 颜色历史（`adjbases.py:235-281`）----

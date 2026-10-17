@@ -43,9 +43,31 @@
 //!
 //! - `lib/color.py:222-262` `new_from_pixbuf_average()`：吃 `GdkPixbuf`，
 //!   Rust 侧没有对应物（背景色的平均色需要时由调用方自己算）。
+//! B4-4a 追加（`color/palette.rs`，调色板的模型层）：
+//!
+//! | 源码 | 这里 |
+//! |---|---|
+//! | `lib/palette.py:36-859` `Palette` | [`Palette`] / [`Swatch`] |
+//! | `lib/palette.py:865-897` `_outwards_from()` / `_color_distance()` | [`outwards_from`] / [`color_distance`] |
+//! | `lib/palette.py:831-859` 偏好的简单字典 | [`SimplePaletteDict`] |
+//! | `gui/colors/adjbases.py:139-147` 默认调色板（读 `.gpl`） | [`Palette::mypaint_default`] + [`DEFAULT_PALETTE_GPL`] |
+//! | `gui/colors/adjbases.py:219` `set_color()` 里的 `match_color` | [`ColorManager::set_color`] / [`ColorManager::palette`] |
+//!
+//! ## 门槛
+//!
+//! `crates/pigment-engine/tests/color_vectors.rs` 拿
+//! `tests/fixtures/color_vectors.txt` 逐点比对，fixture 由
+//! `crates/pigment-engine/tests/tools/gen-color-vectors.py` **直接跑真
+//! `lib/color.py`** 生成（浮点用 `repr()`，Rust 侧 `assert_eq!` 逐位）。
+//! 测试数：23795 条向量。
+//!
+//! ## 没移植的（记账，见交付说明）
+//!
+//! - `lib/color.py:222-262` `new_from_pixbuf_average()`：吃 `GdkPixbuf`，
+//!   Rust 侧没有对应物（背景色的平均色需要时由调用方自己算）。
 //! - `lib/color.py:919-930` 的 doctest 运行器：Python 专属。
-//! - `gui/colors/` 的控件（色环/色轮/色立方/滑条/调色板视图）、`palette`、
-//!   `colorpreview`、`accent`/`uimisc`：B4-3 / B4-4 范围。
+//! - `gui/colors/` 的色环/色轮/色立方（`hcywheel`/`hsvwheel`/`hsvsquare`/
+//!   `hsvcube`）、`colorpreview`、`accent`/`uimisc`：B4-3 / B4-4b 范围。
 //! - 颜色工具的拖动/滑条几何与 GTK 装配（`gui/colors/adjbases.py` 的
 //!   `ColorAdjusterWidget`、`sliders.py` 的 Gtk.Grid 页面、`colortools.py`）：
 //!   模型层已在 [`ColorChanger`] / [`ComponentSlider`] 里，控件层属 B4-3。
@@ -53,6 +75,7 @@
 mod adjust;
 mod manager;
 mod model;
+mod palette;
 mod space;
 mod tools;
 
@@ -68,6 +91,11 @@ pub use manager::{
 pub use model::{
     colors_match, Color, HcyColor, HsvColor, RgbColor, UIColor, YcbcrColor, CONTRASTING_K,
     HEX_DEFAULT_RGB,
+};
+pub use palette::{
+    color_distance, outwards_from, Palette, PaletteLoadError, SimplePaletteDict, Swatch,
+    DATAPATH_PALETTES_SUBDIR, DEFAULT_PALETTE_FILE, DEFAULT_PALETTE_GPL, EMPTY_SLOT_NAME,
+    EMPTY_SLOT_RGB, MATCH_APPROX_DISTANCE, PREFS_PALETTE_DICT_KEY,
 };
 pub use space::{
     hcy_to_rgb, hsv_to_rgb, rgb_to_hcy, rgb_to_hsv, rgb_to_ycbcr_bt601, ycbcr_to_rgb_bt601,

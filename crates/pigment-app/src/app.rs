@@ -207,6 +207,14 @@ pub struct PigmentApp {
     /// 工作区停靠状态（左/右/浮动组）。默认布局 = 左 BrushGroupTool、
     /// 右 BrushEditor（差异记账见 shell/dock.rs 模块文档）。
     pub(crate) dock: crate::shell::dock::DockState,
+    // ---- 颜色器页签（B4-3 / B4-4a）----
+    /// 颜色面板当前页 —— [`crate::shell::color_panel::COLOR_PAGES`] 的下标。
+    ///
+    /// 源码里六个颜色器是六个独立停靠工具，各自有 `tool_widget_added` 状态；
+    /// 本项目把它们合成一个面板 + 一条页签条（见 `shell/color_panel.rs` 的模块
+    /// 文档），所以"当前是哪一页"需要应用自己记住。默认是分量滑条页
+    /// （B4-3 先落地的那一页）。
+    pub(crate) color_page: usize,
     // ---- 工具条（S4）----
     /// 图标纹理缓存（`shell::toolbars::IconCache`）。
     pub(crate) icon_cache: crate::shell::toolbars::IconCache,
@@ -425,6 +433,8 @@ impl PigmentApp {
                 }],
                 ..Default::default()
             },
+            // 默认打开分量滑条页（B4-3 先落地的那一页）
+            color_page: crate::shell::color_panel::PAGE_COMPONENT_SLIDERS,
         };
         app.derive_active();
         app
@@ -503,6 +513,41 @@ impl PigmentApp {
 
     pub(crate) fn set_status(&mut self, msg: String, now: f64) {
         self.status = Some((msg, now + STATUS_TTL));
+    }
+
+    // ---- 调色板动作的两个数据侧（B4-4a，`gui/drawwindow.py:657-684`）----
+
+    /// `PaletteNext` / `PalettePrev` 的数据部分：
+    /// `newcolor = mgr.palette.move_match_position(direction, mgr.get_color())`，
+    /// 只有真的产生新颜色时才 `mgr.set_color(newcolor)`
+    /// （`drawwindow.py:659-672`）。
+    ///
+    /// 返回是否换了当前色。
+    pub(crate) fn palette_step(&mut self, direction: i32) -> bool {
+        let current = self.color_manager.get_color();
+        let new = self
+            .color_manager
+            .palette_mut()
+            .move_match_position(direction, &current);
+        match new {
+            Some(color) => {
+                // `set_color()` 会顺手让调色板重新命中（`adjbases.py:219`）
+                self.set_color(Color::Rgb(color));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `PaletteAddCurrentColor` 的数据部分（`drawwindow.py:677-684`）：
+    /// `mgr.palette.append(mgr.get_color(), name=None, unique=True, match=True)`。
+    ///
+    /// 返回追加后的调色板长度。
+    pub(crate) fn palette_add_current_color(&mut self) -> usize {
+        let color = self.color_manager.get_color();
+        let palette = self.color_manager.palette_mut();
+        palette.append(Some(&color), None, true, true);
+        palette.len()
     }
 
     /// `Ctrl+N` → `DocNew`：新建空白文档（`gui/filehandling.py:1088` 的
@@ -1097,6 +1142,14 @@ impl PigmentApp {
             "ComponentSlidersTool" => self
                 .dock
                 .is_added(crate::shell::dock::PanelId::ComponentSlidersTool),
+            // 调色板工具（B4-4a）：`PaletteTool` 是 `GtkToggleAction`
+            // （resources.xml:1400-1406），active 同样是"工具已添加"；
+            // 本项目两个工具共用一个面板，所以还要看当前是不是调色板页
+            "PaletteTool" => {
+                self.dock
+                    .is_added(crate::shell::dock::PanelId::ComponentSlidersTool)
+                    && self.color_page == crate::shell::color_panel::PAGE_PALETTE
+            }
             _ => false,
         }
     }
@@ -1133,6 +1186,11 @@ impl PigmentApp {
             // 源码弹一个九种颜色器的菜单 —— 本项目只实现了其中一页，动作直接
             // reveal 该面板并记账（见 B4-3 交付说明）。
             "ComponentSlidersTool" | "ColorAdjusters" => true,
+            // ---- 调色板（B4-4a）----
+            // 工具开关 + 三个动作（resources.xml:1034-1053 的 `PaletteNext` /
+            // `PalettePrev` / `PaletteAddCurrentColor`，:1400-1406 的
+            // `PaletteTool`）。源码里它们都没有 `set_sensitive(False)` 的地方。
+            "PaletteTool" | "PaletteNext" | "PalettePrev" | "PaletteAddCurrentColor" => true,
             // ---- 图层（B2-5/B2-6；动态 sensitivity 照源码 enable 语义）----
             "NewPaintingLayerAbove" | "NewLayerGroupAbove" | "DuplicateLayer" | "RemoveLayer" => {
                 true
@@ -1240,6 +1298,14 @@ impl PigmentApp {
             "ComponentSlidersTool" => Some(
                 self.dock
                     .is_added(crate::shell::dock::PanelId::ComponentSlidersTool),
+            ),
+            // `PaletteTool`（resources.xml:1400-1406）的 active 在源码里是
+            // "调色板工具已添加"；两个工具共用一个面板，这里再加上"当前是
+            // 调色板页"（见 `shell/color_panel.rs` 的模块文档）。
+            "PaletteTool" => Some(
+                self.dock
+                    .is_added(crate::shell::dock::PanelId::ComponentSlidersTool)
+                    && self.color_page == crate::shell::color_panel::PAGE_PALETTE,
             ),
             _ => None,
         }
@@ -1511,7 +1577,42 @@ impl PigmentApp {
             // 动作 active 就 add、取消就 remove —— 与 `Toggle*Tool` 同一套语义。
             "ComponentSlidersTool" => {
                 self.dock
-                    .toggle(crate::shell::dock::PanelId::ComponentSlidersTool)
+                    .toggle(crate::shell::dock::PanelId::ComponentSlidersTool);
+                self.color_page = crate::shell::color_panel::PAGE_COMPONENT_SLIDERS;
+            }
+            // `PaletteTool`（resources.xml:1400-1406）在源码里也是独立工具，
+            // 与 Sliders 面板同一套 toggle 语义。本项目共用面板：已经停在
+            // 调色板页就收起面板，否则 reveal 并切到调色板页。
+            "PaletteTool" => {
+                let panel = crate::shell::dock::PanelId::ComponentSlidersTool;
+                let on_palette = self.color_page == crate::shell::color_panel::PAGE_PALETTE;
+                if self.dock.is_added(panel) && on_palette {
+                    self.dock.toggle(panel);
+                } else {
+                    self.dock.reveal(panel);
+                    self.color_page = crate::shell::color_panel::PAGE_PALETTE;
+                }
+            }
+            // `PaletteNext` / `PalettePrev`（`drawwindow.py:659-675`）：
+            // 取当前色 → `move_match_position(±1, 当前色)` → 有颜色就 `set_color`；
+            // 最后 reveal 调色板工具（"Show the palette panel if hidden"）。
+            "PaletteNext" | "PalettePrev" => {
+                let direction = if id == "PaletteNext" { 1 } else { -1 };
+                self.palette_step(direction);
+                self.dock
+                    .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
+                self.color_page = crate::shell::color_panel::PAGE_PALETTE;
+                ctx.request_repaint();
+            }
+            // `PaletteAddCurrentColor`（`drawwindow.py:677-684`）：
+            // `mgr.palette.append(color, name=None, unique=True, match=True)`，
+            // 然后 reveal 调色板工具。
+            "PaletteAddCurrentColor" => {
+                self.palette_add_current_color();
+                self.dock
+                    .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
+                self.color_page = crate::shell::color_panel::PAGE_PALETTE;
+                ctx.request_repaint();
             }
             // `ColorAdjusters`（resources.xml:198-204）在源码里是弹菜单的工厂动作
             // （`gui/colortools.py:207-235` 的 `ColorAdjustersToolItem`）。egui 的

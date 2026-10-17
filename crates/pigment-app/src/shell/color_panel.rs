@@ -33,11 +33,13 @@
 //!
 //! 源码里六个页面是六个独立的停靠工具，出现在 `_new_color_adjusters_menu()`
 //! 的菜单里（`gui/colortools.py:183-194`）；工作区允许把它们放进同一个
-//! `Gtk.Notebook`，于是看起来像"页签"（`gui/toolstack.py`）。本块只移植了
-//! Component Sliders 一个工具，面板里用一条**页签条**（[`COLOR_PAGES`]）把
-//! 其余五页列出来并**禁用**，悬停给出页面标题与描述（文案取各页面类的
-//! `get_page_title()` / `get_page_description()`）。这替代"注册五个空面板"，
-//! 记账见交付说明。
+//! `Gtk.Notebook`，于是看起来像"页签"（`gui/toolstack.py`）。
+//!
+//! B4-3 只移植了 Component Sliders 一个工具，面板里用一条**页签条**
+//! （[`COLOR_PAGES`]）把其余五页列出来并**禁用**；B4-4a 把 Palette 页
+//! （`gui/colors/paletteview.py`，见 [`super::palette_panel`]）接上，于是六个
+//! 页签里有两个可用、可切换（状态在 [`PigmentApp::color_page`]）。这仍然
+//! 替代"注册六个独立面板"，记账见交付说明。
 //!
 //! ## 没接的（逐条记账，见交付说明）
 //!
@@ -152,7 +154,7 @@ pub(crate) static COLOR_PAGES: [ColorPageDef; 6] = [
         action: "PaletteTool",
         title: "Palette",
         description: "Set the color from a loadable, editable palette.",
-        ported: false,
+        ported: true,
     },
     // gui/colors/hsvsquare.py:54-59
     ColorPageDef {
@@ -712,6 +714,16 @@ pub(crate) fn paint_slider(
 }
 
 // ---------------------------------------------------------------------------
+// 页面索引（[`COLOR_PAGES`] 的下标）
+// ---------------------------------------------------------------------------
+
+/// 分量滑条页在 [`COLOR_PAGES`] 里的下标（`sliders.py:111-120`）。
+pub(crate) const PAGE_COMPONENT_SLIDERS: usize = 5;
+
+/// 调色板页在 [`COLOR_PAGES`] 里的下标（`paletteview.py:74-83`）。
+pub(crate) const PAGE_PALETTE: usize = 2;
+
+// ---------------------------------------------------------------------------
 // 面板
 // ---------------------------------------------------------------------------
 
@@ -722,7 +734,18 @@ impl PigmentApp {
         self.color_page_tabs(ui);
         // GTK notebook 的页与标签之间有边框，这里用一条分隔线表达
         ui.separator();
-        // ---- 页面体：`grid.set_border_width(6)`（sliders.py:36）----
+        // ---- 页面体 ----
+        match self.color_page {
+            // 调色板页（B4-4a）：`get_page_widget()` 返回的就是 PaletteView 自己，
+            // 页面没有额外留白（`paletteview.py:84-88`）
+            PAGE_PALETTE => self.color_palette_page(ui),
+            // 其余（当前只有分量滑条）都按 `grid.set_border_width(6)` 留白
+            _ => self.color_sliders_page(ui),
+        }
+    }
+
+    /// 分量滑条页的页面体（B4-3）：`grid.set_border_width(6)`（`sliders.py:36`）。
+    fn color_sliders_page(&mut self, ui: &mut egui::Ui) {
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(PAGE_BORDER_WIDTH as i8))
             .show(ui, |ui| {
@@ -734,25 +757,30 @@ impl PigmentApp {
             });
     }
 
-    /// 页签条 —— 六个颜色器页面（[`COLOR_PAGES`]），只有 Sliders 页可用。
+    /// 页签条 —— 六个颜色器页面（[`COLOR_PAGES`]），已移植的两页可切换。
     ///
     /// 未移植的页签画成禁用按钮并带悬停说明：GTK 里它们各自是独立的
     /// 停靠工具（`gui/colortools.py:74-101`），本块没有注册成面板。
     fn color_page_tabs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            for page in COLOR_PAGES.iter() {
+            for (index, page) in COLOR_PAGES.iter().enumerate() {
                 if page.ported {
-                    // 当前页（本块只有它）
-                    let resp = ui.selectable_label(true, page.title);
-                    let _ = resp.on_hover_text(format!("{}\n{}", page.title, page.description));
+                    // 当前页：`selectable_label` 的选中态 = 笔记本的活动页
+                    let selected = self.color_page == index;
+                    let resp = ui.selectable_label(selected, page.title);
+                    let resp =
+                        resp.on_hover_text(format!("{}\n{}", page.title, page.description));
+                    if resp.clicked() {
+                        self.color_page = index;
+                    }
                 } else {
                     // 禁用态：egui 的 `on_hover_text` 对 disabled 控件不弹
                     // （`Response::hovered()` 只在 enabled 时置位），要用
                     // `on_disabled_hover_text`。
                     let resp = ui.add_enabled(false, egui::Button::new(page.title).small());
                     let _ = resp.on_disabled_hover_text(format!(
-                        "{}\n{}\n未移植：本块只实现 Component Sliders 页（见交付记账）",
-                        page.title, page.description
+                        "{}\n{}\n未移植：{} 页留给后续块（见交付记账）",
+                        page.title, page.description, page.title
                     ));
                 }
             }
@@ -1001,7 +1029,11 @@ mod tests {
             .filter(|p| p.ported)
             .map(|p| p.title)
             .collect();
-        assert_eq!(ported, ["Component Sliders"], "本块只实现 Sliders 页");
+        assert_eq!(
+            ported,
+            ["Palette", "Component Sliders"],
+            "B4-4a 起 Palette 页也可用"
+        );
         // 每个页面都有描述（页签 tooltip 的第二行）
         assert!(COLOR_PAGES.iter().all(|p| !p.description.is_empty()));
         // 页面对应的动作都在 B2 的动作表里（resources.xml 生成）

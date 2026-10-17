@@ -98,16 +98,29 @@ impl PigmentApp {
                         false,
                         "未移植：颜色详情对话框（属 B4 颜色器）",
                     );
-                    // ---- 3 收藏当前色（写进调色板，属 B4 颜色器）----
-                    // 源码里它还受 `_init_stategroups` 控制：当前色已在调色板里时置灰。
-                    self.footer_icon_slot(
+                    // ---- 3 收藏当前色（写进调色板）----
+                    // glade 把它接到 `palette_add_current_color_cb`
+                    // （`gui/mypaint.glade:128`），与动作 `PaletteAddCurrentColor`
+                    // 是**同一个**回调（`drawwindow.py:677-684`）。B4-4a 起可用。
+                    // 源码里它还受 `_init_stategroups` 控制：当前色已在调色板里时
+                    // 置灰（那套状态组未移植，记账）。
+                    let bookmark = self.footer_icon_slot(
                         ui,
                         SymbolicIcon::BookmarkNew,
                         h,
                         TIP_COLOR_BOOKMARK,
-                        false,
-                        "未移植：调色板（属 B4 颜色器）",
+                        true,
+                        "",
                     );
+                    if bookmark.clicked() {
+                        let now = ui.input(|i| i.time);
+                        // 与动作走同一条数据路径（`PaletteAddCurrentColor`）
+                        let len = self.palette_add_current_color();
+                        self.dock
+                            .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
+                        self.color_page = crate::shell::color_panel::PAGE_PALETTE;
+                        self.set_status(format!("当前色已加入调色板（共 {len} 色）"), now);
+                    }
                     // ---- 4 separator（padding 4）----
                     footer_separator(ui, h);
                     // ---- 5 缩放 / 旋转标签 ----
