@@ -33,6 +33,7 @@ pub(crate) mod footer;
 pub(crate) mod menubar;
 pub(crate) mod overlays;
 pub(crate) mod palette_panel;
+pub(crate) mod prefs_window;
 pub(crate) mod scratch_panel;
 pub(crate) mod toolbars;
 pub(crate) mod topbar;

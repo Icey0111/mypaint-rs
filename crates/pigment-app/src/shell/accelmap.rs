@@ -51,8 +51,15 @@
 //! 过滤框（`:83-89`，"Filter"）、按键捕获对话框（`:352-568`：
 //! 标题 `Edit Key for '{action}'`、`Action:`/`Path:`/`Key:` 三行、提示
 //! `Press keys to update this assignment`、`Delete`/`Cancel`/`OK` 三个按钮、
-//! `Return`/`Escape`/`BackSpace` 三个快捷键）。**页面外壳**（偏好对话框的
-//! "Keys" 页签、GTK 的树视图列渲染/排序/搜索栏）属 B6-3，见记账清单。
+//! `Return`/`Escape`/`BackSpace` 三个快捷键）。
+//!
+//! **页面外壳由 B6-3 提供**：源码把 `AccelMapEditor` 嵌在偏好对话框的 "Keys"
+//! 页签里（`gui/preferenceswindow.glade:439-450`），所以本模块不再自带窗口 ——
+//! [`PigmentApp::keys_editor_page`] 是页面体，由
+//! [`crate::shell::prefs_window`] 的 Keys 页调用；捕获对话框
+//! （[`PigmentApp::key_capture_modal`]）也由偏好窗口每帧末尾画。
+//! "Disable fallback key bindings" 复选框（glade `:451-466`）属于外壳，随外壳
+//! 一起搬过去了（`prefs_window::CONTROLS` 的 `keyboard.disable_fallbacks` 那一行）。
 //!
 //! # 与源码的差异（记账，都往保守方向）
 //!
@@ -80,9 +87,10 @@
 //!   全局加速键对象，改成"每次按键现查 `AccelMap`"（结果等价，查询是 O(行数)）。
 //! - **输入法 / 按键路由**：`keyboard.py:97` 的 `propagate_key_event`（输入框
 //!   优先）与 `:214-221` 的 Escape 紧急释放都没有移植（前者靠
-//!   `egui::Context::text_edit_focused()` 早退，后者属模式栈）。编辑器窗口
-//!   打开时**不**挡全局快捷键（只有捕获对话框挡，见 `PigmentApp::handle_keys`
-//!   的早退）—— GTK 那边是模态对话框，这里不伪造。
+//!   `egui::Context::text_edit_focused()` 早退，后者属模式栈）。偏好窗口
+//!   （含 Keys 页）打开时**不**挡全局快捷键（只有捕获对话框挡，见
+//!   `PigmentApp::handle_keys` 的早退）—— GTK 那边同样不是模态
+//!   （`windowing.py:32-33`），这里不伪造。
 //! - **带 Super/Meta/Hyper 的绑定**读不进来（egui 无对应修饰位），
 //!   `pigment_engine::accelmap` 会把它们记进"跳过行"。
 //! - **GTK 的 `Gtk.TreeView` 的 `_SHOW_ACCEL_PATH` 列**：源码只在捕获对话框里
@@ -101,8 +109,6 @@ use crate::shell::actions::{self, Bound, Mods, NUM_CONTEXT_SLOTS};
 
 // ---- 与源码逐字相同的界面文本 ----
 
-/// 编辑器窗口/页签标题 —— `gui/preferenceswindow.glade:489` 的 `Keys`。
-pub(crate) const TITLE: &str = "Keys";
 /// 过滤框占位文字 —— `accelmap.py:85` 的 `C_("placeholder for keymap filtering", "Filter")`。
 const FILTER_PLACEHOLDER: &str = "Filter";
 /// 第一列标题 —— `accelmap.py:115`。
@@ -132,11 +138,9 @@ const BUTTON_OK: &str = "OK";
 /// egui 的按钮必须有可见内容，否则点不到）。
 const EMPTY_ACCEL: &str = "—";
 
-/// "禁用兜底键位"复选框的标签与提示 —— `gui/preferenceswindow.glade:453,457`
-/// （同一个 "Keys" 页签里，`:451-466`）。
-const FALLBACKS_LABEL: &str = "Disable fallback key bindings";
-const FALLBACKS_TIP: &str = "The fallback key bindings are static built-in bindings that are \
-                             only used if their key combinations are not bound to anything else.";
+// "禁用兜底键位"复选框的标签与提示搬到了偏好窗口的 "Keys" 页
+// （`gui/preferenceswindow.glade:453,457`；见 [`crate::shell::prefs_window`]）——
+// 源码里那个复选框就在 `AccelMapEditor` 下面（`:451-466`），而对话框外壳属 B6-3。
 
 // ---- 默认表 ----
 
@@ -581,10 +585,12 @@ impl AccelMap {
 }
 
 /// 编辑器的界面状态（egui 立即模式：控件没有对象，只能由应用持有）。
+///
+/// 编辑器本身**没有**自己的窗口：源码把 `AccelMapEditor` 放在偏好对话框的
+/// "Keys" 页签里（`gui/preferenceswindow.glade:439-450`），所以 B6-3 起它由
+/// [`crate::shell::prefs_window`] 的 Keys 页调用 [`PigmentApp::keys_editor_page`] 直接画。
 #[derive(Default)]
 pub(crate) struct KeyEditorState {
-    /// 窗口是否打开（入口是 `PreferencesWindow` 动作，见 [`PigmentApp::keybindings_window`]）
-    pub(crate) open: bool,
     /// 过滤框内容（`accelmap.py:83-89`）
     pub(crate) filter: String,
     /// 正在捕获新键的动作（`None` = 没在捕获）
@@ -696,32 +702,16 @@ impl PigmentApp {
         }
     }
 
-    /// "Keys" 窗口（[`crate::shell::accelmap::TITLE`]）。
+    /// "Keys" 页签的页面体 —— `gui/preferenceswindow.glade:439` 的 `AccelMapEditor`。
     ///
-    /// 入口是 `PreferencesWindow` 动作（`resources.xml:1330-1335` 的
-    /// "Edit Preferences"）：源码把 accelmap 编辑器放在偏好对话框的 "Keys"
-    /// 页签里（`gui/preferenceswindow.glade:439` 的 `AccelMapEditor`），
-    /// 偏好对话框整体属 B6-3，这里先只给这一页。
-    pub(crate) fn keybindings_window(&mut self, ctx: &egui::Context) {
-        if self.key_editor.open {
-            let mut open = true;
-            egui::Window::new(TITLE)
-                .open(&mut open)
-                .resizable(true)
-                .default_width(780.0)
-                .default_height(500.0)
-                .show(ctx, |ui| self.keybindings_ui(ui));
-            if !open {
-                self.key_editor.open = false;
-                self.key_editor.capture = None;
-            }
-        }
-        if self.key_editor.capture.is_some() {
-            self.capture_modal(ctx);
-        }
-    }
-
-    fn keybindings_ui(&mut self, ui: &mut egui::Ui) {
+    /// 源码把它放在偏好对话框的 "Keys" 页签里（不是独立窗口），所以 B6-3 起
+    /// 由 [`crate::shell::prefs_window`] 的 Keys 页直接调用本函数；页签标题
+    /// `Keys`（glade `:489`）在偏好窗口那张表里。
+    ///
+    /// B6-2 时期这里还画过 "Disable fallback key bindings" 复选框
+    /// （glade `:451-466`）；它讲的偏好键属于对话框外壳，已随外壳一起搬到
+    /// `prefs_window::CONTROLS`（`keyboard.disable_fallbacks`）。
+    pub(crate) fn keys_editor_page(&mut self, ui: &mut egui::Ui) {
         // 过滤框（`accelmap.py:83-89`）
         ui.horizontal(|ui| {
             ui.add(
@@ -740,21 +730,6 @@ impl PigmentApp {
                 .small(),
             );
         });
-        // "Keys" 页签里的复选框（`preferenceswindow.glade:451-466`）——
-        // 偏好键 `keyboard.disable_fallbacks`（`keyboard.py:159-160`）
-        let mut no_fallbacks = self
-            .prefs
-            .bool_or(pigment_engine::prefs::KEY_DISABLE_FALLBACKS, false);
-        if ui
-            .checkbox(&mut no_fallbacks, FALLBACKS_LABEL)
-            .on_hover_text(FALLBACKS_TIP)
-            .changed()
-        {
-            self.prefs.set_bool(
-                pigment_engine::prefs::KEY_DISABLE_FALLBACKS,
-                no_fallbacks,
-            );
-        }
         ui.separator();
 
         // 两列表格（`accelmap.py:110-143`）
@@ -885,7 +860,10 @@ impl PigmentApp {
     ///
     /// 用 `egui::Modal`（遮罩 + 挡住背后输入）对应 GTK 的 `set_modal(True)`
     /// （`accelmap.py:361`）。
-    fn capture_modal(&mut self, ctx: &egui::Context) {
+    ///
+    /// 调用点：偏好窗口每帧末尾（[`crate::shell::prefs_window`]）——
+    /// 源码里它是编辑器弹出来的模态对话框，窗口藏起来它也就没了。
+    pub(crate) fn key_capture_modal(&mut self, ctx: &egui::Context) {
         if self.key_editor.capture.is_none() {
             return;
         }
