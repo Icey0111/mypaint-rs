@@ -339,6 +339,8 @@ pub(crate) struct ButtonEditorState {
     status: Option<String>,
     /// 是否已从偏好载入（窗口每次打开时重置，源码 `update_ui` 同样重读）。
     loaded: bool,
+    /// Add 之后把新行滚到可见区域（源码 `treeview.set_cursor_on_cell`）。
+    scroll_to_selected: bool,
 }
 
 impl ButtonEditorState {
@@ -519,8 +521,14 @@ impl PigmentApp {
                         }
                     });
                     ui.separator();
+                    if self.button_editor.scroll_to_selected
+                        && self.button_editor.selected == Some(i)
+                    {
+                        ui.scroll_to_cursor(Some(egui::Align::Center));
+                    }
                 }
             });
+        self.button_editor.scroll_to_selected = false;
 
         if let Some(i) = select {
             self.button_editor.selected = Some(i);
@@ -529,6 +537,7 @@ impl PigmentApp {
             let action = "FreehandMode".to_string();
             self.button_editor.rows.push(Row { key: None, action });
             self.button_editor.selected = Some(self.button_editor.rows.len() - 1);
+            self.button_editor.scroll_to_selected = true;
             self.button_editor.status =
                 Some("新绑定：先选动作，再点「（未设置）」按鼠标键".to_string());
         }
