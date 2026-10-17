@@ -481,18 +481,25 @@ impl PigmentApp {
         });
         // ---- 当前页内容 ----
         if let Some(panel) = group.panels.get(active) {
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| match panel {
-                    PanelId::BrushGroups => {
-                        pick = self.brushes.show(ui);
-                    }
-                    PanelId::BrushEditor => self.brush_editor_content(ui),
-                    PanelId::HistoryPanel => self.history_panel_content(ui),
-                    PanelId::LayersTool => self.layers_panel_content(ui),
-                    PanelId::ComponentSlidersTool => self.color_panel_content(ui),
-                    other => placeholder_panel(ui, *other),
-                });
+            if *panel == PanelId::ScratchpadTool {
+                // 暂存区是**一块画布**：不能塞进 ScrollArea（滚轮/拖拽要留给
+                // 画布），源码这个面板也没有滚动容器（`scratchwindow.py:59-62`
+                // 是 EventBox + TDW）。
+                self.scratchpad_panel_content(ui);
+            } else {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| match panel {
+                        PanelId::BrushGroups => {
+                            pick = self.brushes.show(ui);
+                        }
+                        PanelId::BrushEditor => self.brush_editor_content(ui),
+                        PanelId::HistoryPanel => self.history_panel_content(ui),
+                        PanelId::LayersTool => self.layers_panel_content(ui),
+                        PanelId::ComponentSlidersTool => self.color_panel_content(ui),
+                        other => placeholder_panel(ui, *other),
+                    });
+            }
         }
         pick
     }
@@ -541,7 +548,7 @@ fn placeholder_panel(ui: &mut egui::Ui, panel: PanelId) {
             PanelId::LayersTool => "图层栈与 22 种混合模式属 B2（图层与混合模式）。",
             PanelId::ModeOptionsTool => "工具模式选项属 B3（工具模式）。",
             PanelId::PreviewTool => "整图预览依赖图层栈合成，属 B2。",
-            PanelId::ScratchpadTool => "暂存区属 B5。",
+            // ScratchpadTool 已在 B5 实现，走 `scratchpad_panel_content`
             _ => "待移植。",
         };
         ui.label(egui::RichText::new(format!("此面板尚未移植。{note}")).small());
@@ -627,8 +634,42 @@ mod tests {
     }
 
     #[test]
-    fn remove_prunes_empty_groups() {
+    fn scratchpad_panel_is_a_normal_dock_panel() {
+        // B5：暂存区面板从占位变成真画布，但**停靠语义不变** ——
+        // `ToggleScratchpadTool`（Shift+K）走 `toggle_dockpanel_cb`
+        // （drawwindow.py:352-367），`RevealScratchpadTool`（Ctrl+K）走
+        // `reveal_dockpanel_cb`（只加不删）。
         let mut d = DockState::default();
+        assert!(!d.is_added(PanelId::ScratchpadTool));
+        // 面板元数据 = `scratchwindow.py:34-38`
+        assert_eq!(PanelId::ScratchpadTool.title(), "Scratchpad");
+        assert_eq!(
+            PanelId::ScratchpadTool.description(),
+            "Paint sketches and try things out"
+        );
+        // reveal：加进来
+        d.reveal(PanelId::ScratchpadTool);
+        assert!(d.is_added(PanelId::ScratchpadTool));
+        // 再 reveal 不重复添加（`reveal_tool_widget` 的幂等性）
+        d.reveal(PanelId::ScratchpadTool);
+        let n = d
+            .groups(Side::Right)
+            .iter()
+            .flat_map(|g| g.panels.iter())
+            .filter(|p| **p == PanelId::ScratchpadTool)
+            .count();
+        assert_eq!(n, 1, "重复 reveal 不能加出两份");
+        // toggle：已在 → 移除（面板关掉，`scratchwindow.py:57-58` 的存盘钩子
+        // 由 `save_scratchpad_on_close` 按这个状态变化触发）
+        d.toggle(PanelId::ScratchpadTool);
+        assert!(!d.is_added(PanelId::ScratchpadTool));
+        // toggle：不在 → 加回来
+        d.toggle(PanelId::ScratchpadTool);
+        assert!(d.is_added(PanelId::ScratchpadTool));
+    }
+
+    #[test]
+    fn remove_prunes_empty_groups() {        let mut d = DockState::default();
         d.right = vec![
             Group { panels: vec![PanelId::LayersTool], active: 0 },
             Group { panels: vec![PanelId::PreviewTool], active: 0 },

@@ -16,14 +16,135 @@
 //! 面板靠动作按需 reveal；本项目此前一直默认显示笔刷面板与编辑器，
 //! 保留该初始状态：左 = BrushGroupTool，右 = BrushEditor。
 
+use std::sync::{Arc, Mutex};
+
 use eframe::egui;
 
 use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::BrushSetting;
+use pigment_surface::LayerStack;
 
 use crate::app::PigmentApp;
-use crate::gpu::TileUpload;
+use crate::gpu::{TileRenderer, TileUpload};
 use crate::view::View;
+
+/// 极端缩小时可见范围可达数万 tile，夹到视口中心附近的上限内
+/// （空区域由面板白底兜底，不影响观感；后续再上 atlas/mip 方案）。
+const MAX_VISIBLE_TILES_PER_AXIS: i32 = 96;
+
+/// 一帧的画布同步结果：显存增量 + 可见 tile 列表 + 世界→裁剪空间矩阵。
+///
+/// 被主画布（[`PigmentApp::canvas`]）与暂存区画布
+/// （[`crate::shell::scratch_panel::PigmentApp::scratchpad_canvas`]）共用：
+/// 两者唯一的区别是"用哪一份 `LayerStack` / `View` / 渲染器"。
+pub(crate) struct CanvasTiles {
+    /// 本帧需要上传的脏 tile。
+    pub(crate) uploads: Vec<TileUpload>,
+    /// 本帧需要从显存剔除的 tile（撤销后已不在画布上）。
+    pub(crate) evict: Vec<(i32, i32)>,
+    /// 画布矩形覆盖的可见 tile 坐标（可能含尚未有内容的空 tile）。
+    pub(crate) visible: Vec<(i32, i32)>,
+    /// 世界像素 → 全窗口裁剪空间矩阵（窗口物理像素域）。
+    pub(crate) view_matrix: [[f32; 4]; 4],
+}
+
+/// 比对 CPU 合成版本号与显存水位线，算出本帧要上传/剔除的 tile。
+///
+/// 自愈式同步（判据是状态而非事件流水）的全部逻辑都在这里，主画布与暂存区
+/// 走同一条路径 —— 见 [`crate::gpu`] 的模块文档。
+pub(crate) fn prepare_canvas(
+    ctx: &egui::Context,
+    renderer: &Arc<Mutex<TileRenderer>>,
+    layers: &LayerStack,
+    view: &View,
+    rect: egui::Rect,
+    force_resync: bool,
+) -> CanvasTiles {
+    let ppp = ctx.pixels_per_point();
+    // ---- 可见 tile 列表（物理像素域）----
+    let vp_w = rect.width() * ppp;
+    let vp_h = rect.height() * ppp;
+    let view_phys = View {
+        zoom: view.zoom * ppp,
+        offset: [view.offset[0] * ppp, view.offset[1] * ppp],
+    };
+    let (mut tx0, mut ty0, mut tx1, mut ty1) =
+        view_phys.visible_tile_range(vp_w, vp_h, TILE_SIZE as i32);
+    if tx1 - tx0 + 1 > MAX_VISIBLE_TILES_PER_AXIS {
+        let c = (tx0 + tx1) / 2;
+        tx0 = c - MAX_VISIBLE_TILES_PER_AXIS / 2;
+        tx1 = tx0 + MAX_VISIBLE_TILES_PER_AXIS - 1;
+    }
+    if ty1 - ty0 + 1 > MAX_VISIBLE_TILES_PER_AXIS {
+        let c = (ty0 + ty1) / 2;
+        ty0 = c - MAX_VISIBLE_TILES_PER_AXIS / 2;
+        ty1 = ty0 + MAX_VISIBLE_TILES_PER_AXIS - 1;
+    }
+    let mut visible =
+        Vec::with_capacity(((tx1 - tx0 + 1).max(0) * (ty1 - ty0 + 1).max(0)) as usize);
+    for ty in ty0..=ty1 {
+        for tx in tx0..=tx1 {
+            visible.push((tx, ty));
+        }
+    }
+
+    // ---- 自愈式增量同步：比对 CPU revision 与显存已上传 revision ----
+    // 判据是状态而非事件流水，所以本帧的决定可被安全丢弃后重算，不会丢上传。
+    let mut uploads: Vec<TileUpload> = Vec::new();
+    let evict: Vec<(i32, i32)> = {
+        let mut renderer = renderer.lock().unwrap();
+        if force_resync {
+            renderer.invalidate_all();
+        }
+        // B2-3：上传的是**图层栈的合成结果**（含背景与各层混合模式）。
+        // 水位线用全局合成版本号：任何影响合成的变化（作画/结构/属性/
+        // 背景）都会抬高它。粒度粗于逐 tile revision，但正确性不变；
+        // 逐 tile 哈希记账为后续优化。
+        let composite_rev = layers.composite_revision();
+        let plan = crate::gpu::plan_uploads(
+            |c| renderer.uploaded_rev(c),
+            &visible,
+            crate::gpu::MAX_UPLOADS_PER_FRAME,
+            |c| layers.has_paint_at(c.0, c.1),
+            composite_rev,
+        );
+        for coord in plan {
+            let Some(pixels) = layers.composite_tile_rgba8(coord.0, coord.1) else {
+                continue;
+            };
+            uploads.push(TileUpload {
+                coord,
+                revision: composite_rev,
+                pixels,
+            });
+        }
+        // 撤销会把画布退回较早状态：那时"多出来"的 tile 已从 CPU 消失，
+        // 但显存里还留着旧内容，必须剔除，否则画面残留撤销不掉的笔迹。
+        crate::gpu::plan_evictions(
+            |c| renderer.uploaded_rev(c).is_some(),
+            &visible,
+            |c| layers.has_paint_at(c.0, c.1),
+        )
+    };
+
+    // ---- 视图矩阵：world px → 全窗口裁剪空间 ----
+    // 用全窗口 `content_rect` 作参考系，所以要把本面板的原点 `rect.min` 加回去；
+    // 画布从"占满窗口"变成"工作区中央"（乃至侧栏里的一块）之后，这一步不能省。
+    let win = ctx.content_rect();
+    let view_window = View {
+        zoom: view_phys.zoom,
+        offset: [
+            (view.offset[0] + rect.min.x) * ppp,
+            (view.offset[1] + rect.min.y) * ppp,
+        ],
+    };
+    CanvasTiles {
+        uploads,
+        evict,
+        visible,
+        view_matrix: view_window.clip_matrix(win.width() * ppp, win.height() * ppp),
+    }
+}
 
 impl PigmentApp {
     /// 工作区：左右停靠侧栏 + 中央画布 + 浮动面板窗口。
@@ -266,7 +387,6 @@ impl PigmentApp {
     /// `rect`，所以压边之后**偏移量必须跟着面板原点走** —— 见下面
     /// `view_window.offset` 里那个 `rect.min`。
     pub(crate) fn canvas(&mut self, ui: &mut egui::Ui) {
-        let ppp = ui.ctx().pixels_per_point();
         let (rect, response) =
             ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
         // 记下画布矩形：键盘缩放要用它算锚点（`handle_keys` 在画布之前跑，
@@ -375,102 +495,27 @@ impl PigmentApp {
             }
         }
 
-        // ---- 可见 tile 列表（物理像素域）----
-        let vp_w = rect.width() * ppp;
-        let vp_h = rect.height() * ppp;
-        let view_phys = View {
-            zoom: self.view.zoom * ppp,
-            offset: [self.view.offset[0] * ppp, self.view.offset[1] * ppp],
-        };
-        let (mut tx0, mut ty0, mut tx1, mut ty1) =
-            view_phys.visible_tile_range(vp_w, vp_h, TILE_SIZE as i32);
-        // 保护：极端缩小时可见范围可达数万 tile，夹到视口中心附近的上限内
-        // （空区域由面板白底兜底，不影响观感；后续再上 atlas/mip 方案）
-        const MAX_SPAN: i32 = 96;
-        if tx1 - tx0 + 1 > MAX_SPAN {
-            let c = (tx0 + tx1) / 2;
-            tx0 = c - MAX_SPAN / 2;
-            tx1 = tx0 + MAX_SPAN - 1;
-        }
-        if ty1 - ty0 + 1 > MAX_SPAN {
-            let c = (ty0 + ty1) / 2;
-            ty0 = c - MAX_SPAN / 2;
-            ty1 = ty0 + MAX_SPAN - 1;
-        }
-        let mut visible =
-            Vec::with_capacity(((tx1 - tx0 + 1).max(0) * (ty1 - ty0 + 1).max(0)) as usize);
-        for ty in ty0..=ty1 {
-            for tx in tx0..=tx1 {
-                visible.push((tx, ty));
-            }
-        }
-
-        // ---- 自愈式增量同步：比对 CPU revision 与显存已上传 revision ----
-        // 判据是状态而非事件流水，所以本帧的决定可被安全丢弃后重算，不会丢上传。
-        let mut uploads: Vec<TileUpload> = Vec::new();
-        let evict: Vec<(i32, i32)> = {
-            let mut renderer = self.renderer.lock().unwrap();
-            if self.force_resync {
-                renderer.invalidate_all();
-                self.force_resync = false;
-            }
-            // B2-3：上传的是**图层栈的合成结果**（含背景与各层混合模式）。
-            // 水位线用全局合成版本号：任何影响合成的变化（作画/结构/属性/
-            // 背景）都会抬高它。粒度粗于逐 tile revision，但正确性不变；
-            // 逐 tile 哈希记账为后续优化。
-            let composite_rev = self.doc.layers().composite_revision();
-            let plan = crate::gpu::plan_uploads(
-                |c| renderer.uploaded_rev(c),
-                &visible,
-                crate::gpu::MAX_UPLOADS_PER_FRAME,
-                |c| self.doc.layers().has_paint_at(c.0, c.1),
-                composite_rev,
-            );
-            for coord in plan {
-                let Some(pixels) = self.doc.layers().composite_tile_rgba8(coord.0, coord.1) else {
-                    continue;
-                };
-                uploads.push(TileUpload {
-                    coord,
-                    revision: composite_rev,
-                    pixels,
-                });
-            }
-            // 撤销会把画布退回较早状态：那时"多出来"的 tile 已从 CPU 消失，
-            // 但显存里还留着旧内容，必须剔除，否则画面残留撤销不掉的笔迹。
-            // 撤销后 CPU 侧已无笔迹的 tile 要从显存剔除
-            crate::gpu::plan_evictions(
-                |c| renderer.uploaded_rev(c).is_some(),
-                &visible,
-                |c| self.doc.layers().has_paint_at(c.0, c.1),
-            )
-        };
-        self.pending_uploads = uploads.len();
-
-        // ---- 视图矩阵：world px → 全窗口裁剪空间 ----
-        // 用全窗口 `content_rect` 作参考系，所以要把本面板的原点 `rect.min` 加回去；
-        // 画布从"占满窗口"变成"工作区中央"之后，这一步不能省。
-        let win = ui.ctx().content_rect();
-        let win_w = win.width() * ppp;
-        let win_h = win.height() * ppp;
-        let view_window = View {
-            zoom: view_phys.zoom,
-            offset: [
-                (self.view.offset[0] + rect.min.x) * ppp,
-                (self.view.offset[1] + rect.min.y) * ppp,
-            ],
-        };
-        let view_matrix = view_window.clip_matrix(win_w, win_h);
+        // ---- 同步显存并绘制合成结果（与暂存区画布共用 prepare_canvas）----
+        let tiles = prepare_canvas(
+            ui.ctx(),
+            &self.renderer,
+            self.doc.layers(),
+            &self.view,
+            rect,
+            self.force_resync,
+        );
+        self.force_resync = false;
+        self.pending_uploads = tiles.uploads.len();
 
         ui.painter()
             .add(eframe::egui_wgpu::Callback::new_paint_callback(
                 rect,
                 crate::gpu::CanvasPaint {
                     renderer: std::sync::Arc::clone(&self.renderer),
-                    view_matrix,
-                    uploads,
-                    evict,
-                    visible,
+                    view_matrix: tiles.view_matrix,
+                    uploads: tiles.uploads,
+                    evict: tiles.evict,
+                    visible: tiles.visible,
                 },
             ));
 

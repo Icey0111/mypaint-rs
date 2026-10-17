@@ -27,6 +27,9 @@
 //! - `Ctrl+N/O/S`、`Ctrl+Shift+S/E` 文档 I/O；`Ctrl+Q` 退出
 //! - `F11` 全屏、`F12` 重置视图、`F10` 适配视图、`Tab` 全屏自动隐藏
 //!   （后三个依赖尚未移植的能力，动作命中但**不消费**，见 `run_action`）
+//! - 暂存区（B5）：`Shift+K` 开关面板（`ToggleScratchpadTool`，`resources.xml:1467-1474`）、
+//!   `Ctrl+K` 只显示不收起（`RevealScratchpadTool`，`:1475-1483`）；
+//!   八个 `Scratch*` 菜单动作（`:1087-1155`）都没有加速键，与源码一致
 //! - **应用本地扩展键**（源码里没有，用空闲键位）：`x` 光谱混色开关、
 //!   `Ctrl+,` / `Ctrl+.` 上一支 / 下一支笔刷、`Ctrl+F1` 重传显存、
 //!   `Ctrl+F2` 导出 CPU 画布（诊断）。理由逐条写在 `actions::APP_KEYS` 里。
@@ -46,6 +49,11 @@
 //! 本应用每笔新建一份 [`BrushState`]（相当于一次干净的笔画开局），
 //! 这一点与 MyPaint 的"一支持久笔刷 + `new_stroke` 复位"有个已知差异，
 //! 见《MyPaint源码逐项比对报告.md》第九节。
+//!
+//! 暂存区（B5）是**第二份文档**：`scratch: Scratchpad` 有自己的 `Document`、
+//! 自己的 `ModeStack`、自己的 `View` 与自己的显存缓存，但**共享**这一份
+//! `brush`/`color_manager` —— 语义与源码的 `app.scratchpad_doc`
+//! （`gui/application.py:361-369`）一致，细节见 [`crate::scratch`] 的模块文档。
 
 use std::sync::{Arc, Mutex};
 
@@ -60,6 +68,7 @@ use crate::brushes::BrushPanel;
 use crate::color;
 use crate::editor::BrushEditor;
 use crate::gpu::TileRenderer;
+use crate::scratch::{mode_call, ModeInputs};
 use crate::shell::actions;
 use crate::view::View;
 
@@ -132,6 +141,24 @@ pub(crate) fn color_swatch(
 pub struct PigmentApp {
     /// 文档模型（画布表面 + 撤销栈），对应 MyPaint 的 `app.doc.model`。
     pub(crate) doc: Document,
+    // ---- 暂存区（B5）----
+    /// 暂存区：**第二份文档** + 独立模式栈 + 独立视图。
+    ///
+    /// 对应 `gui/application.py:361-369` 的 `self.scratchpad_doc`：源码给它单独建
+    /// 一个 `lib.document.Document`（`painting_only=True`）和一个独立的
+    /// `TiledDrawWidget`，控制器 `gui.document.Document` 自带一条 `ModeStack`
+    /// （`gui/document.py:87`）。笔刷与颜色仍是**同一个**（`application.py:350,362`）。
+    pub(crate) scratch: crate::scratch::Scratchpad,
+    /// 暂存区专用的 GPU tile 渲染器。
+    ///
+    /// 渲染器本身不绑文档，但它带一份显存 tile 缓存 —— 两个画布共用一份会互相
+    /// 覆盖对方的 tile，所以各一个实例（见 `shell/scratch_panel.rs` 的模块文档）。
+    pub(crate) scratch_renderer: Arc<Mutex<TileRenderer>>,
+    /// 上一帧暂存区面板是否还在停靠系统里。
+    ///
+    /// 面板从"在"变成"不在"时要存盘 —— `scratchwindow.py:57-58` 把
+    /// `destroy-event` / `delete-event` 接到 `_save_cb`（`:64-67`）。
+    pub(crate) scratch_was_added: bool,
     // ---- 笔刷 ----
     pub(crate) brushes: BrushPanel,
     pub(crate) editor: BrushEditor,
@@ -298,6 +325,11 @@ impl Default for ModePrefs {
         Open,
         /// `Export`（导出 PNG，不动 current_file）
         Export,
+        /// `load_scratchpad_cb`（打开暂存页，`drawwindow.py:613-631`）——
+        /// 目标文档是**暂存区**，不是主文档。
+        ScratchpadOpen,
+        /// `save_as_scratchpad_cb`（导出暂存页，`drawwindow.py:631-632`）
+        ScratchpadSaveAs,
     }
 
     pub(crate) struct FilePrompt {
@@ -330,6 +362,10 @@ impl Default for ModePrefs {
                 FileAction::SaveAs => "另存为（Save As）",
                 FileAction::Open => "打开（Open）",
                 FileAction::Export => "导出 PNG（Export）",
+                // `open_scratchpad_dialog`（filehandling.py:1140-1143）
+                FileAction::ScratchpadOpen => "打开暂存页（Open Scratchpad…）",
+                // `save_scratchpad_as_dialog`（filehandling.py:1256-1266）
+                FileAction::ScratchpadSaveAs => "暂存页另存为（Export Scratchpad As…）",
             }
         }
     }
@@ -352,6 +388,8 @@ fn abspath(p: &str) -> std::path::PathBuf {
 fn with_default_extension(action: FileAction, p: &str) -> String {
     let ext = match action {
         FileAction::Export => "png",
+        // 暂存页/文档的默认格式都是 `.ora`（`saving.default_format`
+        // 的出厂值 openraster，`userconfig.py:89`）
         _ => "ora",
     };
     let path = std::path::Path::new(p);
@@ -373,6 +411,31 @@ fn default_document_path(action: FileAction) -> String {
         .unwrap_or_else(|_| format!("untitled.{ext}"))
 }
 
+/// 模式调用的共享输入（笔刷 / 笔刷名 / 假输入 / 当前色）。
+///
+/// 主画布（[`PigmentApp::with_mode`]）与暂存区
+/// （[`PigmentApp::with_scratch_mode`]）都从这里取，保证两块画布看到的是
+/// **同一支笔、同一个颜色** —— 源码里两者传的就是同一个 `self.brush`
+/// （`application.py:350,362`）和同一个 `brush_color_manager`（`:399`）。
+///
+/// 做成自由函数而不是 `&self` 方法：`&self` 会把整个 `PigmentApp` 借住，
+/// 而调用点同时要 `&mut self.doc` —— 只能按字段借（笔刷只读、文档可变）。
+fn mode_inputs<'a>(
+    brush: &'a Brush,
+    brush_name: &'a str,
+    prefs: ModePrefs,
+    color: [f32; 3],
+) -> ModeInputs<'a> {
+    ModeInputs {
+        brush,
+        brush_name,
+        fakepressure: prefs.fakepressure,
+        fakerotation: prefs.fakerotation,
+        hide_cursor_while_painting: prefs.hide_cursor_while_painting,
+        color,
+    }
+}
+
 
 impl PigmentApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -381,6 +444,8 @@ impl PigmentApp {
             .as_ref()
             .expect("pigment 需要 wgpu renderer（NativeOptions.renderer = Wgpu）");
         let renderer = TileRenderer::new(&rs.device, rs.target_format);
+        // 暂存区是第二块画布 → 第二份显存缓存（见字段文档）
+        let scratch_renderer = TileRenderer::new(&rs.device, rs.target_format);
 
         let brushes = BrushPanel::new();
         let base_brush = brushes.load_selected().unwrap_or_else(|e| {
@@ -396,6 +461,17 @@ impl PigmentApp {
             .unwrap_or_else(|| "Unknown Brush".to_string());
         let mut app = Self {
             doc: Document::new(),
+            scratch: {
+                // 源码在启动时建好数据子目录（`application.py:228-236`），
+                // 保存前还会再兜底建一次（`filehandling.py:1363-1366`）。
+                let dir = pigment_engine::scratchpad::default_dir();
+                if let Err(e) = pigment_engine::scratchpad::ensure_dir(&dir) {
+                    eprintln!("暂存区目录建不出来（{}）：{e}", dir.display());
+                }
+                crate::scratch::Scratchpad::new(dir)
+            },
+            scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),
+            scratch_was_added: false,
             brushes,
             editor: BrushEditor::new(),
             base_brush,
@@ -450,6 +526,10 @@ impl PigmentApp {
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
         };
         app.derive_active();
+        // 启动时载回上次的暂存页（`application.py:474-486`）。
+        // 偏好 `scratchpad.last_opened_scratchpad` 属 B6，所以这里按它的默认值
+        // （`autosave.ora`，`application.py:393-397`）找。
+        app.scratch.open_at_startup();
         app
     }
 
@@ -660,7 +740,7 @@ impl PigmentApp {
             return;
         }
         let action = prompt.action;
-        let candidate = if action == FileAction::Open {
+        let candidate = if matches!(action, FileAction::Open | FileAction::ScratchpadOpen) {
             raw.to_string()
         } else {
             with_default_extension(action, raw)
@@ -690,6 +770,41 @@ impl PigmentApp {
                     }
                 }
                 self.save_to_path(&path, false, now);
+            }
+            // ---- 暂存区（作用在第二份文档上，主文档一概不动）----
+            FileAction::ScratchpadOpen => {
+                if !path.is_file() {
+                    self.file_prompt = Some(FilePrompt {
+                        error: Some(format!("文件不存在：{}", path.display())),
+                        ..prompt
+                    });
+                    return;
+                }
+                match self.scratch.open(&path) {
+                    Ok(()) => self.set_status(
+                        format!("已打开暂存页：{}", self.scratch.path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("打开暂存页失败：{e}"), now),
+                }
+            }
+            FileAction::ScratchpadSaveAs => {
+                if let Some(dir) = path.parent() {
+                    if !dir.is_dir() {
+                        self.file_prompt = Some(FilePrompt {
+                            error: Some(format!("目录不存在：{}", dir.display())),
+                            ..prompt
+                        });
+                        return;
+                    }
+                }
+                match self.scratch.save_as(&path) {
+                    Ok(()) => self.set_status(
+                        format!("暂存页已另存为：{}", self.scratch.path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("暂存页保存失败：{e}"), now),
+                }
             }
         }
     }
@@ -727,6 +842,8 @@ impl PigmentApp {
                 FileAction::Open => "要打开的文件路径（.ora / .png）：",
                 FileAction::Export => "导出 PNG 的路径：",
                 FileAction::SaveAs => "保存路径（.ora / .png；不带后缀时按 .ora 处理）：",
+                FileAction::ScratchpadOpen => "要打开到暂存区的文件路径（.ora / .png）：",
+                FileAction::ScratchpadSaveAs => "暂存页另存的路径（不带后缀时按 .ora 处理）：",
             });
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut prompt.path)
@@ -950,7 +1067,8 @@ impl PigmentApp {
 
     /// 构造模式上下文（等价 Python 里模式通过 `self.doc` 拿到的一切）。
     ///
-    /// 字段级拆分借用：`doc` 可变、笔刷只读、笔刷状态可变，三者互不重叠。
+    /// 借用拆分、取色出口的处理都在 [`crate::scratch::mode_call`] 里 ——
+    /// 主画布与暂存区（[`PigmentApp::with_scratch_mode`]）共用同一份实现。
     pub(crate) fn with_mode<R>(
         &mut self,
         f: impl FnOnce(
@@ -959,41 +1077,124 @@ impl PigmentApp {
         ) -> R,
     ) -> R {
         // 取色模式要读"当前画笔颜色"（`colorpicker.py:83`）—— 在借用拆开之前取好
-        let brush_color = self.color_hsv();
-        let PigmentApp {
-            modes,
-            doc,
-            brush,
-            brush_name,
-            stroke_state,
-            mode_prefs,
-            ..
-        } = self;
-        // 取色出口（B3-4）：取色模式把新颜色（HSV）写进这个槽，本函数返回前
-        // 落到管理器 —— 等价于 `BrushColorManager.set_color()`
-        // （`gui/brushcolor.py:33-37`）。其它模式不碰它。
-        let mut picked: Option<[f32; 3]> = None;
-        let r = {
-            let mut ctx = pigment_engine::mode::ModeContext {
-                doc,
-                brush,
-                brush_name,
-                brush_state: stroke_state,
-                fakepressure: mode_prefs.fakepressure,
-                fakerotation: mode_prefs.fakerotation,
-                hide_cursor_while_painting: mode_prefs.hide_cursor_while_painting,
-                status: None,
-                color: brush_color,
-                picked_color: Some(&mut picked),
-            };
-            f(modes, &mut ctx)
-        };
+        let color = self.color_hsv();
+        let (r, picked) = mode_call(
+            &mut self.doc,
+            &mut self.modes,
+            &mut self.stroke_state,
+            mode_inputs(&self.brush, &self.brush_name, self.mode_prefs, color),
+            f,
+        );
         if let Some(hsv) = picked {
             // `picked_color` 是 HSV（笔刷 `color_h/s/v` 同一通道），
             // `set_color_hsv` 会顺手 `derive_active()` 推给笔刷
             self.set_color_hsv(hsv);
         }
         r
+    }
+
+    /// 在**暂存区**的 (文档, 模式栈, 笔刷状态) 上跑一段模式逻辑。
+    ///
+    /// 与 [`PigmentApp::with_mode`] 的唯一区别是换了那一份 `Document` /
+    /// `ModeStack` —— 对应源码里暂存区有自己的 `Document` 控制器与
+    /// `ModeStack`（`gui/document.py:87`），但笔刷/颜色是同一份
+    /// （`gui/application.py:350,362`）。
+    pub(crate) fn with_scratch_mode<R>(
+        &mut self,
+        f: impl FnOnce(
+            &mut pigment_engine::mode::ModeStack,
+            &mut pigment_engine::mode::ModeContext<'_>,
+        ) -> R,
+    ) -> R {
+        let color = self.color_hsv();
+        let (r, picked) = self
+            .scratch
+            .dispatch(mode_inputs(&self.brush, &self.brush_name, self.mode_prefs, color), f);
+        if let Some(hsv) = picked {
+            self.set_color_hsv(hsv);
+        }
+        r
+    }
+
+    // ---- 暂存区的指针事件（`shell/scratch_panel.rs` 调用）----
+    /// 在暂存区上按下（`gui/mode.py` 的 `button_press_cb`）。
+    pub(crate) fn scratch_mode_press(
+        &mut self,
+        ev: pigment_engine::mode::PointerEvent,
+    ) -> bool {
+        let mut handled = false;
+        self.with_scratch_mode(|modes, ctx| {
+            handled = modes.top_mut().button_press(ctx, &ev);
+        });
+        self.scratch_process_pending();
+        handled
+    }
+
+    /// 在暂存区上移动。
+    pub(crate) fn scratch_mode_motion(
+        &mut self,
+        ev: pigment_engine::mode::PointerEvent,
+    ) -> bool {
+        let mut handled = false;
+        self.with_scratch_mode(|modes, ctx| {
+            handled = modes.top_mut().motion(ctx, &ev);
+        });
+        self.scratch_process_pending();
+        handled
+    }
+
+    /// 在暂存区上松开。
+    pub(crate) fn scratch_mode_release(
+        &mut self,
+        ev: pigment_engine::mode::PointerEvent,
+    ) -> bool {
+        let mut handled = false;
+        self.with_scratch_mode(|modes, ctx| {
+            handled = modes.top_mut().button_release(ctx, &ev);
+        });
+        self.scratch_process_pending();
+        handled
+    }
+
+    /// 处理暂存区模式排队的输入（每帧一次，`GLib.idle_add` 的等价物）。
+    pub(crate) fn scratch_process_pending(&mut self) {
+        self.with_scratch_mode(|modes, ctx| modes.process_pending(ctx));
+    }
+
+    /// 把暂存区在途的作画落账（撤销/重做、存盘前）。
+    pub(crate) fn flush_scratch_stroke(&mut self) {
+        self.with_scratch_mode(|modes, ctx| modes.checkpoint(ctx));
+    }
+
+    /// 暂存区面板被关掉时存盘 —— `gui/scratchwindow.py:57-58` + `:64-67`：
+    ///
+    /// ```python
+    /// self.connect("destroy-event", self._save_cb)
+    /// self.connect("delete-event", self._save_cb)
+    /// ...
+    /// def _save_cb(self, action):
+    ///     self.app.filehandler.save_scratchpad(self.app.scratchpad_filename)
+    /// ```
+    ///
+    /// 源码是"面板销毁/关闭"两个信号；egui 这边对应"面板从停靠系统里没了"，
+    /// 所以每帧末比对一次"上一帧在不在"。存盘本身仍走 `save_scratchpad`
+    /// 的判据（没画过就不写盘，`filehandling.py:1019-1023`）。
+    pub(crate) fn save_scratchpad_on_close(&mut self, now: f64) {
+        let added = self
+            .dock
+            .is_added(crate::shell::dock::PanelId::ScratchpadTool);
+        if self.scratch_was_added && !added {
+            self.flush_scratch_stroke();
+            match self.scratch.save() {
+                Ok(true) => self.set_status(
+                    format!("暂存区已保存：{}", self.scratch.path.display()),
+                    now,
+                ),
+                Ok(false) => {}
+                Err(e) => self.set_status(format!("暂存区保存失败：{e}"), now),
+            }
+        }
+        self.scratch_was_added = added;
     }
 
     // ---- 撤销 / 重做 ----
@@ -1192,6 +1393,16 @@ impl PigmentApp {
             // ---- 停靠面板（S6）----
             "ToggleModeOptionsTool" | "ToggleLayersTool" | "ToggleScratchpadTool"
             | "TogglePreviewTool" | "ToggleHistoryPanel" | "BrushGroups" => true,
+            // `RevealScratchpadTool`（resources.xml:1475-1483，`Ctrl+K`）——
+            // `reveal_dockpanel_cb`（drawwindow.py:340-353），恒可用
+            "RevealScratchpadTool" => true,
+            // ---- 暂存区（B5）----
+            // `resources.xml:1094-1154` 的八个菜单动作。源码里它们都没有
+            // `set_sensitive(False)` 的地方（`drawwindow.py:591-655`），
+            // 所以恒可用；`ScratchRevert` 在源码里也只是"文件不在就什么都不做"。
+            "ScratchNew" | "ScratchLoad" | "ScratchSaveNow" | "ScratchSaveAs"
+            | "ScratchRevert" | "ScratchSaveAsDefault" | "ScratchClearDefault"
+            | "ScratchCopyBackground" => true,
             // ---- 颜色器（B4-3）----
             // `ComponentSlidersTool` 是 `GtkToggleAction`（resources.xml:1433），
             // 打开的就是本块移植的分量滑条面板；`ColorAdjusters` 是 toolbar2 的
@@ -1585,6 +1796,11 @@ impl PigmentApp {
             "ToggleModeOptionsTool" => self.dock.toggle(crate::shell::dock::PanelId::ModeOptionsTool),
             "ToggleLayersTool" => self.dock.toggle(crate::shell::dock::PanelId::LayersTool),
             "ToggleScratchpadTool" => self.dock.toggle(crate::shell::dock::PanelId::ScratchpadTool),
+            // `RevealScratchpadTool`（resources.xml:1475-1483）的
+            // `reveal_dockpanel_cb`：不在就加、在就切到它（不收起）
+            "RevealScratchpadTool" => self
+                .dock
+                .reveal(crate::shell::dock::PanelId::ScratchpadTool),
             "TogglePreviewTool" => self.dock.toggle(crate::shell::dock::PanelId::PreviewTool),
             "ToggleHistoryPanel" => self.dock.toggle(crate::shell::dock::PanelId::HistoryPanel),
             "BrushGroups" => self.dock.toggle(crate::shell::dock::PanelId::BrushGroups),
@@ -1656,6 +1872,106 @@ impl PigmentApp {
                 self.dock
                     .reveal(crate::shell::dock::PanelId::ComponentSlidersTool);
                 self.set_status("颜色器：六页全部已移植（B4-4c）".to_string(), now);
+            }
+            // ---- 暂存区（B5）：`gui/drawwindow.py:591-655` 的八个回调 ----
+            //
+            // 全部作用在**第二份文档**上（`app.scratchpad_doc`），主文档的
+            // 撤销栈/文件名一概不动。
+            "ScratchNew" => {
+                // `new_scratchpad_cb`（drawwindow.py:600-611）
+                self.flush_scratch_stroke();
+                let bg = self.doc.layers().background_color();
+                match self.scratch.new_page(bg) {
+                    Ok(from_default) => {
+                        let msg = if from_default {
+                            "暂存区：已载入默认暂存页".to_string()
+                        } else {
+                            "暂存区：新建空白页（已复制主文档背景色）".to_string()
+                        };
+                        self.set_status(msg, now);
+                    }
+                    Err(e) => self.set_status(format!("暂存区新建失败：{e}"), now),
+                }
+                ctx.request_repaint();
+            }
+            "ScratchLoad" => {
+                // `load_scratchpad_cb`（drawwindow.py:613-631）：先把当前页存盘，
+                // 再开文件对话框（这里是应用内嵌的路径弹层）
+                self.flush_scratch_stroke();
+                if let Err(e) = self.scratch.save() {
+                    self.set_status(format!("暂存区保存失败：{e}"), now);
+                }
+                self.file_prompt = Some(FilePrompt::new(
+                    FileAction::ScratchpadOpen,
+                    Some(&self.scratch.path),
+                ));
+            }
+            "ScratchSaveNow" => {
+                // `save_current_scratchpad_cb`（drawwindow.py:642-643）
+                self.flush_scratch_stroke();
+                match self.scratch.save() {
+                    Ok(wrote) => {
+                        let msg = if wrote {
+                            format!("暂存区已保存：{}", self.scratch.path.display())
+                        } else {
+                            "暂存区没有改动，无需保存".to_string()
+                        };
+                        self.set_status(msg, now);
+                    }
+                    Err(e) => self.set_status(format!("暂存区保存失败：{e}"), now),
+                }
+                ctx.request_repaint();
+            }
+            "ScratchSaveAs" => {
+                // `save_as_scratchpad_cb`（drawwindow.py:631-632）
+                self.flush_scratch_stroke();
+                self.file_prompt = Some(FilePrompt::new(
+                    FileAction::ScratchpadSaveAs,
+                    Some(&self.scratch.path),
+                ));
+            }
+            "ScratchRevert" => {
+                // `revert_current_scratchpad_cb`（drawwindow.py:634-640）
+                match self.scratch.revert() {
+                    Ok(true) => self.set_status(
+                        format!("暂存区已回退：{}", self.scratch.path.display()),
+                        now,
+                    ),
+                    Ok(false) => self.set_status(
+                        format!("暂存区还没存过盘：{}", self.scratch.path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("暂存区回退失败：{e}"), now),
+                }
+                ctx.request_repaint();
+            }
+            "ScratchSaveAsDefault" => {
+                // `save_scratchpad_as_default_cb`（drawwindow.py:591-595）
+                match self.scratch.save_as_default() {
+                    Ok(_) => self.set_status(
+                        format!("已存为默认暂存页：{}", self.scratch.path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("默认暂存页保存失败：{e}"), now),
+                }
+            }
+            "ScratchClearDefault" => {
+                // `clear_default_scratchpad_cb`（drawwindow.py:597-598）
+                let removed = self.scratch.clear_default();
+                let msg = if removed {
+                    "已删除默认暂存页（下一次「新建」会是空白页）"
+                } else {
+                    "没有默认暂存页可删"
+                };
+                self.set_status(msg.to_string(), now);
+            }
+            "ScratchCopyBackground" => {
+                // `scratchpad_copy_background_cb`（drawwindow.py:645-648）
+                // 差异记账：源码复制背景**图层**，本项目只有背景色
+                let bg = self.doc.layers().background_color();
+                self.scratch.copy_background(bg);
+                self.set_status("已把主文档的背景色复制到暂存区".to_string(), now);
+                ctx.request_repaint();
             }
             // ---- 窗口 ----
             "Fullscreen" => {
@@ -1782,9 +2098,12 @@ impl eframe::App for PigmentApp {
         // ── 工作区 ── `MyPaintWorkspace`：侧栏 + 中央画布
         self.workspace(ui);
 
+        // 暂存区面板关掉时存盘（`scratchwindow.py:57-58` 的 destroy/delete-event）
+        let now = ui.input(|i| i.time);
+        self.save_scratchpad_on_close(now);
+
         // 文件路径弹层放最后画（浮在最上层）。它打开时输入框会拿到键盘焦点，
         // 于是 `handle_keys` 的 `text_edit_focused()` 早退会顺带挡住所有快捷键。
-        let now = ui.input(|i| i.time);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();
