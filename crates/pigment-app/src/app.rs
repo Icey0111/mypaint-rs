@@ -191,6 +191,8 @@ pub struct PigmentApp {
     /// `windowing.Dialog`（当前页签 / 是否可见 / 状态文字）。
     pub(crate) prefs_window: crate::shell::prefs_window::PrefsWindowState,
     // ---- 预览面板 ----
+    /// 当前视图重命名对话框的文本（`ask_for_name` 的 egui 技术栈适配）。
+    pub(crate) layer_view_rename: Option<String>,
     /// 预览面板的纹理/拖动状态（`gui/previewwindow.py`）。
     pub(crate) preview: PreviewState,
     // ---- 暂存区（B5）----
@@ -583,6 +585,7 @@ impl PigmentApp {
             accel_map: crate::shell::accelmap::AccelMap::with_default_path(),
             key_editor: Default::default(),
             prefs_window: Default::default(),
+            layer_view_rename: None,
             preview: Default::default(),
             scratch,
             scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),

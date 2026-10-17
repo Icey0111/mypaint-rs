@@ -38,6 +38,7 @@ use crate::command::{
     DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
+use crate::layer_views::LayerViews;
 
 /// 把 `fileio` 载入的层树转成 `pigment_surface` 的图层树（`_layers` 序不变）。
 fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
@@ -130,6 +131,8 @@ pub struct Document {
     /// 文档级设置字典（`:452` 的 `settings`）：随 `.ora` 往返，可放任意
     /// JSON 值。MyPaint 用它给扩展留位（默认空）。
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// 命名可见性视图（`lib/layervis.py`；设置键 `layervis`）。
+    pub views: LayerViews,
 }
 
 impl Default for Document {
@@ -157,6 +160,7 @@ impl Document {
             xres: None,
             yres: None,
             settings: BTreeMap::new(),
+            views: LayerViews::default(),
         }
     }
 
@@ -224,6 +228,7 @@ impl Document {
         let Document {
             command_stack,
             layers,
+            views,
             unsaved_painting_time,
             ..
         } = self;
@@ -231,6 +236,7 @@ impl Document {
             command_stack,
             DocContext {
                 layers,
+                views,
                 unsaved_painting_time,
             },
         )
@@ -276,7 +282,9 @@ impl Document {
     pub fn remove_layer(&mut self) -> bool {
         let (stack, mut ctx) = self.split();
         let cmd = crate::command::RemoveLayer::new(&mut ctx);
-        stack.do_command(Box::new(cmd), &mut ctx)
+        let ok = stack.do_command(Box::new(cmd), &mut ctx);
+        self.sync_layer_views();
+        ok
     }
 
     /// 切换当前层（`SelectLayer`，自动撤销类）。
@@ -315,7 +323,9 @@ impl Document {
         let Some(cmd) = crate::command::RestackLayer::new(&mut ctx, src_path, targ_path) else {
             return false;
         };
-        stack.do_command(Box::new(cmd), &mut ctx)
+        let ok = stack.do_command(Box::new(cmd), &mut ctx);
+        self.sync_layer_views();
+        ok
     }
 
     /// 合并当前层到下一个兄弟（`MergeLayerDown`；不可合并时静默不做——
@@ -325,14 +335,64 @@ impl Document {
         let Some(cmd) = crate::command::MergeLayerDown::new(&mut ctx) else {
             return false;
         };
-        stack.do_command(Box::new(cmd), &mut ctx)
+        let ok = stack.do_command(Box::new(cmd), &mut ctx);
+        self.sync_layer_views();
+        ok
     }
 
     /// 原位复制当前层（`lib/document.py:1009` 的 `DuplicateLayer`）。
     pub fn duplicate_layer(&mut self) -> bool {
         let (stack, mut ctx) = self.split();
         let cmd = crate::command::DuplicateLayer::new(&mut ctx);
-        stack.do_command(Box::new(cmd), &mut ctx)
+        let ok = stack.do_command(Box::new(cmd), &mut ctx);
+        self.sync_layer_views();
+        ok
+    }
+
+    /// 命名视图的名字表（`layer_view_manager.view_names`）。
+    pub fn layer_view_names(&self) -> Vec<String> {
+        self.views.names()
+    }
+
+    /// 当前视图名；`None` = 源码的「No active view」。
+    pub fn current_layer_view_name(&self) -> Option<&str> {
+        self.views.current_name()
+    }
+
+    /// 当前视图是否锁定（锁定时禁止切换层可见性，`gui/layers.py:566`）。
+    pub fn current_layer_view_locked(&self) -> bool {
+        self.views.current_locked()
+    }
+
+    /// 新建视图并激活（`AddLayerView`）。
+    pub fn add_layer_view(&mut self, name: Option<&str>) -> bool {
+        self.do_command(Box::new(crate::command::AddLayerView::new(
+            name.map(str::to_string),
+        )))
+    }
+
+    /// 删除当前视图（`RemoveActiveLayerView`）。
+    pub fn remove_active_layer_view(&mut self) -> bool {
+        self.do_command(Box::new(crate::command::RemoveActiveLayerView::new()))
+    }
+
+    /// 重命名当前视图（`RenameActiveLayerView`）。
+    pub fn rename_active_layer_view(&mut self, name: &str) -> bool {
+        self.do_command(Box::new(crate::command::RenameActiveLayerView::new(name)))
+    }
+
+    /// 激活/取消激活视图（`ActivateLayerView`）；`None` = 回到未命名视图。
+    pub fn activate_layer_view(&mut self, name: Option<&str>) -> bool {
+        self.do_command(Box::new(crate::command::ActivateLayerView::new(
+            name.map(str::to_string),
+        )))
+    }
+
+    /// 设置当前视图的锁定位（`SetActiveLayerViewLocked`）。
+    pub fn set_active_layer_view_locked(&mut self, locked: bool) -> bool {
+        self.do_command(Box::new(crate::command::SetActiveLayerViewLocked::new(
+            locked,
+        )))
     }
 
     /// 设置图层可见性（`SetLayerVisibility`）。
@@ -406,35 +466,50 @@ impl Document {
     /// 不该占用用户的一次撤销）。
     pub fn undo(&mut self) -> Option<String> {
         self.sync_pending_changes();
-        let (stack, mut ctx) = self.split();
-        loop {
-            let outcome = stack.undo(&mut ctx)?;
-            if !outcome.automatic_undo {
-                return Some(outcome.display_name);
+        let result = (|| {
+            let (stack, mut ctx) = self.split();
+            loop {
+                let outcome = stack.undo(&mut ctx)?;
+                if !outcome.automatic_undo {
+                    return Some(outcome.display_name);
+                }
             }
-        }
+        })();
+        self.sync_layer_views();
+        result
     }
 
     /// 重做最近一次撤销（`lib/document.py:1166`）。
     pub fn redo(&mut self) -> Option<String> {
         self.sync_pending_changes();
-        let (stack, mut ctx) = self.split();
-        loop {
-            let outcome = stack.redo(&mut ctx)?;
-            if !outcome.applied {
-                // 命令被取消：栈没动，继续重做也没有意义
-                return None;
+        let result = (|| {
+            let (stack, mut ctx) = self.split();
+            loop {
+                let outcome = stack.redo(&mut ctx)?;
+                if !outcome.applied {
+                    // 命令被取消：栈没动，继续重做也没有意义
+                    return None;
+                }
+                if !outcome.automatic_undo {
+                    return Some(outcome.display_name);
+                }
             }
-            if !outcome.automatic_undo {
-                return Some(outcome.display_name);
-            }
-        }
+        })();
+        self.sync_layer_views();
+        result
     }
 
     /// 执行一条命令并入栈（`lib/document.py:1174`）。
     pub fn do_command(&mut self, command: Box<dyn Command>) -> bool {
         let (stack, mut ctx) = self.split();
-        stack.do_command(command, &mut ctx)
+        let applied = stack.do_command(command, &mut ctx);
+        self.sync_layer_views();
+        applied
+    }
+
+    /// 命令之后把外部可见性改动记回当前命名视图（`layervis.py:399-412`）。
+    fn sync_layer_views(&mut self) {
+        self.views.sync(&self.layers);
     }
 
     /// 执行一段已收尾的作画（`lib/command.py:Brushwork` 的常规入口）。
@@ -446,7 +521,9 @@ impl Document {
     /// Live Update 用。
     pub fn update_last_command(&mut self, update: &CommandUpdate<'_>) -> Option<String> {
         let (stack, mut ctx) = self.split();
-        stack.update_last_command(&mut ctx, update)
+        let result = stack.update_last_command(&mut ctx, update);
+        self.sync_layer_views();
+        result
     }
 
     /// 最近一次命令（`lib/document.py:1184`）。
@@ -480,6 +557,7 @@ impl Document {
         self.xres = None;
         self.yres = None;
         self.settings.clear();
+        self.views = LayerViews::default();
         self.symmetry = SymmetrySetup::default();
     }
 
@@ -855,16 +933,19 @@ impl Document {
     ///
     /// 空字典对应源码的 `"{}"`（默认文档就是这一档）。
     pub fn settings_json(&self) -> String {
-        if self.settings.is_empty() {
-            return "{}".to_string();
-        }
-        let obj = serde_json::Value::Object(
-            self.settings
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect(),
+        // 命名视图总是随设置写盘（`LayerViewManager._doc_settings_sync_pending_changes_cb`，
+        // `layervis.py:214-251`）；键名与结构逐字照源码。
+        let mut obj: serde_json::Map<String, serde_json::Value> = self
+            .settings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        obj.insert(
+            "layervis".to_string(),
+            self.views.to_json(&self.layers),
         );
-        serde_json::to_string_pretty(&obj).unwrap_or_else(|_| "{}".to_string())
+        serde_json::to_string_pretty(&serde_json::Value::Object(obj))
+            .unwrap_or_else(|_| "{}".to_string())
     }
 
     /// 从 JSON 串恢复 `settings`（照 `:1871` 的 `_settings.update(json.loads(...))`）。
@@ -873,6 +954,10 @@ impl Document {
     pub fn set_settings_json(&mut self, json: &str) {
         if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(json) {
             self.settings = map.into_iter().collect();
+            // `_doc_settings_modified_cb`（layervis.py:253-328）：重建视图并应用当前视图。
+            if let Some(value) = self.settings.get("layervis").cloned() {
+                self.views.load_json(&value, &mut self.layers);
+            }
         }
     }
 
@@ -1060,6 +1145,65 @@ mod tests {
     }
 
     // ---- B2-5：DuplicateLayer 与图层属性命令的合并 ----
+
+    // ---- 命名可见性视图（lib/layervis.py）----
+
+    #[test]
+    fn layer_views_are_undoable_and_track_visibility() {
+        let mut doc = Document::new();
+        doc.add_layer(); // 两层
+        let top = doc.layers().current_id();
+
+        assert!(doc.add_layer_view(None));
+        assert_eq!(doc.current_layer_view_name(), Some("View 1"));
+        assert_eq!(doc.layer_view_names(), vec!["View 1"]);
+
+        // 当前视图激活时关掉顶层 → 记回 View 1
+        doc.set_layer_visible(&[0], false);
+        assert!(!doc.layers().layer(0).visible);
+
+        // 再建一个视图：此时顶层隐藏
+        doc.add_layer_view(Some("Other"));
+        assert_eq!(doc.layer_view_names(), vec!["View 1", "Other"]);
+
+        // 切回 View 1：顶层保持隐藏
+        assert!(doc.activate_layer_view(Some("View 1")));
+        assert!(!doc.layers().layer(0).visible);
+        // 切到 Other 再撤销：回到 View 1
+        assert!(doc.activate_layer_view(Some("Other")));
+        let name = doc.current_layer_view_name().map(str::to_string);
+        assert_eq!(name.as_deref(), Some("Other"));
+        doc.undo();
+        assert_eq!(doc.current_layer_view_name(), Some("View 1"));
+
+        // 锁定位也走命令；锁定后 UI 会禁止改可见性
+        assert!(doc.set_active_layer_view_locked(false));
+        assert!(!doc.current_layer_view_locked());
+        doc.undo();
+        assert!(doc.current_layer_view_locked());
+
+        // 删除当前视图 → 撤销恢复
+        assert!(doc.remove_active_layer_view());
+        assert!(doc.current_layer_view_name().is_none());
+        doc.undo();
+        assert_eq!(doc.current_layer_view_name(), Some("View 1"));
+        assert_eq!(doc.layers().current_id(), top);
+    }
+
+    #[test]
+    fn layer_views_roundtrip_through_settings_json() {
+        let mut doc = Document::new();
+        doc.add_layer_view(None);
+        doc.add_layer_view(Some("Alt"));
+        let json = doc.settings_json();
+        assert!(json.contains("\"layervis\""), "设置里必须有 layervis 键");
+
+        let mut other = Document::new();
+        other.add_layer(); // 路径 (1,) 才存在
+        other.set_settings_json(&json);
+        assert_eq!(other.layer_view_names(), vec!["View 1", "Alt"]);
+        assert_eq!(other.current_layer_view_name(), Some("Alt"));
+    }
 
     #[test]
     fn duplicate_layer_lands_in_place_and_undo_restores_selection() {

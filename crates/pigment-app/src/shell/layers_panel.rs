@@ -22,7 +22,6 @@
 //! - 组的模式可以是 Pass-through（组专用，见 [`pigment_surface::layer::LayerMode`]）。
 //!
 //! 记账差异：
-//! - LayerViewUI 一行（「命名可见性视图」辅助功能）未移植；
 //! - 重命名用行内编辑（双击名称），源码是 LayerProperties 对话框；
 //! - 模式下拉不带 tooltip（egui ComboBox 无逐项提示）；
 //! - 组默认展开（MyPaint 默认折叠，靠 `activate_layertype_action` 展开）。
@@ -30,6 +29,7 @@
 use crate::app::PigmentApp;
 use crate::shell::toolbars::{icon_texture, ToolBtn};
 use eframe::egui;
+use pigment_engine::layer_views::UNSAVED_VIEW_DISPLAY_NAME;
 use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::layer::LayerMode;
 
@@ -108,6 +108,9 @@ impl PigmentApp {
         let ctx = ui.ctx().clone();
         let now = ui.input(|i| i.time);
 
+        // ---- 0. 命名可见性视图（`LayerViewUI`，gui/layervis.py）----
+        self.layer_view_row(ui, &ctx);
+
         // ---- 1. 模式 + 不透明度（layerswindow.py:199-217 的 grid 行）----
         ui.horizontal(|ui| {
             ui.add_space(2.0);
@@ -147,6 +150,145 @@ impl PigmentApp {
             }
             self.background_color_button(ui);
         });
+    }
+
+    /// 命名可见性视图行 —— `LayerViewUI`（`gui/layervis.py:33` +
+    /// `layervis.glade`）。
+    ///
+    /// 控件顺序照 glade：Add | Combo | Lock | Remove | Rename；工具提示照
+    /// `layervis.glade:15/36/57/78/99`。视图锁定后禁止切换层可见性
+    /// （`gui/layers.py:566`），所以下面的眼睛按钮也要跟着置灰。
+    fn layer_view_row(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use crate::shell::toolbars::icon_texture;
+        let names = self.doc.layer_view_names();
+        let current = self.doc.current_layer_view_name().map(str::to_string);
+        let locked = self.doc.current_layer_view_locked();
+
+        ui.horizontal(|ui| {
+            if let Some(tex) = icon_texture(
+                ui.ctx(),
+                &mut self.icon_cache,
+                "mypaint-layers-view-add-symbolic",
+            ) {
+                if ui
+                    .add(egui::Button::image(
+                        egui::Image::new(&tex).max_size(egui::vec2(16.0, 16.0)),
+                    ))
+                    .on_hover_text("Snapshot visible layers as a new view.")
+                    .clicked()
+                {
+                    self.doc.add_layer_view(None);
+                    ctx.request_repaint();
+                }
+            }
+
+            let width = (ui.available_width() - 3.0 * 26.0).max(80.0);
+            egui::ComboBox::from_id_salt("layer_view_combo")
+                .selected_text(
+                    current
+                        .clone()
+                        .unwrap_or_else(|| UNSAVED_VIEW_DISPLAY_NAME.to_string()),
+                )
+                .width(width)
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_none(), UNSAVED_VIEW_DISPLAY_NAME)
+                        .clicked()
+                    {
+                        self.doc.activate_layer_view(None);
+                        ctx.request_repaint();
+                    }
+                    for name in &names {
+                        if ui
+                            .selectable_label(current.as_deref() == Some(name.as_str()), name)
+                            .clicked()
+                        {
+                            self.doc.activate_layer_view(Some(name));
+                            ctx.request_repaint();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("The currently active view.");
+
+            let has_view = current.is_some();
+            let lock_icon = if locked {
+                "mypaint-object-locked-symbolic"
+            } else {
+                "mypaint-object-unlocked-symbolic"
+            };
+            let lock_clicked = ui
+                .add_enabled_ui(has_view, |ui| {
+                    icon_button(ui, &mut self.icon_cache, lock_icon, locked)
+                })
+                .inner
+                .on_hover_text("Lock or unlock the active view.")
+                .clicked();
+            if lock_clicked {
+                self.doc.set_active_layer_view_locked(!locked);
+                ctx.request_repaint();
+            }
+
+            let remove_clicked = ui
+                .add_enabled_ui(has_view, |ui| {
+                    icon_button(
+                        ui,
+                        &mut self.icon_cache,
+                        "mypaint-remove-symbolic",
+                        false,
+                    )
+                })
+                .inner
+                .on_hover_text("Remove the active view.")
+                .clicked();
+            if remove_clicked {
+                self.doc.remove_active_layer_view();
+                ctx.request_repaint();
+            }
+
+            let rename_clicked = ui
+                .add_enabled_ui(has_view, |ui| {
+                    icon_button(ui, &mut self.icon_cache, "mypaint-edit-symbolic", false)
+                })
+                .inner
+                .on_hover_text("Rename the active view.")
+                .clicked();
+            if rename_clicked {
+                self.layer_view_rename = current.clone();
+            }
+        });
+
+        // 重命名对话框 —— 源码是 `gui.dialogs.ask_for_name`（`layervis.py:179-198`）。
+        if let Some(mut buf) = self.layer_view_rename.take() {
+            let mut open = true;
+            let mut commit = false;
+            let mut cancel = false;
+            egui::Window::new("Rename View")
+                .collapsible(false)
+                .resizable(false)
+                .open(&mut open)
+                .show(ctx, |ui| {
+                    let resp = ui.text_edit_singleline(&mut buf);
+                    if resp.lost_focus()
+                        && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                    {
+                        commit = true;
+                    }
+                    ui.horizontal(|ui| {
+                        if ui.button("Rename").clicked() {
+                            commit = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if commit {
+                self.doc.rename_active_layer_view(&buf);
+            } else if open && !cancel {
+                self.layer_view_rename = Some(buf);
+            }
+        }
     }
 
     /// 模式下拉（`_layer_mode_combo` + `_layer_mode_combo_changed_cb`）。
@@ -288,18 +430,33 @@ impl PigmentApp {
                 } else {
                     ui.add_space(12.0);
                 }
-                // 1) 可见性眼（`_flags1_col`，`:405-414`）
-                let eye = if row.visible {
-                    "mypaint-object-visible-symbolic"
-                } else {
-                    "mypaint-object-hidden-symbolic"
-                };
-                if icon_button(ui, &mut self.icon_cache, eye, row.visible && row.branch_visible)
-                    .clicked()
-                {
-                    self.doc.set_layer_visible(&path, !row.visible);
-                    ctx.request_repaint();
-                }
+        // 1) 可见性眼（`_flags1_col`，`:405-414`）；视图锁定时不可改（`layers.py:566`）
+        let eye = if row.visible {
+            "mypaint-object-visible-symbolic"
+        } else {
+            "mypaint-object-hidden-symbolic"
+        };
+        let view_locked = self.doc.current_layer_view_locked();
+        let eye_clicked = ui
+            .add_enabled_ui(!view_locked, |ui| {
+                icon_button(
+                    ui,
+                    &mut self.icon_cache,
+                    eye,
+                    row.visible && row.branch_visible,
+                )
+            })
+            .inner
+            .on_hover_text(if view_locked {
+                "The active layer view is locked."
+            } else {
+                "Toggle layer visibility"
+            })
+            .clicked();
+        if eye_clicked {
+            self.doc.set_layer_visible(&path, !row.visible);
+            ctx.request_repaint();
+        }
                 // 2) 预览格（`_name_col` 的第一个 cell，`:421-426`）
                 self.layer_preview_cell(ui, &path, row);
                 // 3) 名称（单击选择，双击重命名）

@@ -45,6 +45,8 @@ pub const DEFAULT_UNDO_STACK_SIZE: usize = 40;
 pub struct DocContext<'a> {
     /// 图层栈。
     pub layers: &'a mut LayerStack,
+    /// 命名可见性视图（`lib/layervis.py` 的 `LayerViewManager`）。
+    pub views: &'a mut crate::layer_views::LayerViews,
     /// `Document.unsaved_painting_time`：`Brushwork` 的 redo/undo 会改写它
     /// （`lib/command.py:366`、`:374`）。
     pub unsaved_painting_time: &'a mut f64,
@@ -898,6 +900,183 @@ impl Command for BubbleLayer {
     }
 }
 
+/// `AddLayerView`（`lib/layervis.py:555-583`）：把当前可见层存成一个新视图。
+pub struct AddLayerView {
+    name: Option<String>,
+    prev_active: Option<usize>,
+    applied: bool,
+}
+
+impl AddLayerView {
+    pub fn new(name: Option<String>) -> Self {
+        Self {
+            name,
+            prev_active: None,
+            applied: false,
+        }
+    }
+}
+
+impl Command for AddLayerView {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        if !self.applied {
+            self.prev_active = ctx.views.active_index();
+        }
+        ctx.views.add_new(self.name.as_deref(), ctx.layers);
+        self.applied = true;
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        ctx.views.remove_active(self.prev_active, ctx.layers);
+        self.applied = false;
+    }
+
+    fn display_name(&self) -> String {
+        "Add Layer View".to_string()
+    }
+}
+
+/// `RemoveActiveLayerView`（`lib/layervis.py:586-608`）。
+pub struct RemoveActiveLayerView {
+    removed: Option<(usize, crate::layer_views::LayerView)>,
+}
+
+impl RemoveActiveLayerView {
+    pub fn new() -> Self {
+        Self { removed: None }
+    }
+}
+
+impl Command for RemoveActiveLayerView {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(removed) = ctx.views.remove_active(None, ctx.layers) else {
+            return false;
+        };
+        self.removed = Some(removed);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some((index, view)) = self.removed.take() {
+            ctx.views.insert_view(index, view, ctx.layers);
+        }
+    }
+
+    fn display_name(&self) -> String {
+        "Remove Layer View".to_string()
+    }
+}
+
+/// `RenameActiveLayerView`（`lib/layervis.py:611-637`）。
+pub struct RenameActiveLayerView {
+    new_name: String,
+    old_name: Option<String>,
+}
+
+impl RenameActiveLayerView {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            new_name: name.into(),
+            old_name: None,
+        }
+    }
+}
+
+impl Command for RenameActiveLayerView {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some((old, _)) = ctx.views.rename_active(&self.new_name) else {
+            return false;
+        };
+        self.old_name = Some(old);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some(old) = self.old_name.take() {
+            ctx.views.rename_active(&old);
+        }
+    }
+
+    fn display_name(&self) -> String {
+        "Rename Layer View".to_string()
+    }
+}
+
+/// `ActivateLayerView`（`lib/layervis.py:640-669`）。
+pub struct ActivateLayerView {
+    name: Option<String>,
+    prev: Option<String>,
+    applied: bool,
+}
+
+impl ActivateLayerView {
+    pub fn new(name: Option<String>) -> Self {
+        Self {
+            name,
+            prev: None,
+            applied: false,
+        }
+    }
+}
+
+impl Command for ActivateLayerView {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        if !self.applied {
+            self.prev = ctx.views.current_name().map(str::to_string);
+        }
+        let ok = ctx.views.activate_by_name(self.name.as_deref(), ctx.layers);
+        self.applied = ok;
+        ok
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        ctx.views
+            .activate_by_name(self.prev.as_deref(), ctx.layers);
+        self.applied = false;
+    }
+
+    fn display_name(&self) -> String {
+        match &self.name {
+            Some(name) => format!("Activate Layer View “{name}”"),
+            None => "Deactivate Layer View".to_string(),
+        }
+    }
+}
+
+/// `SetActiveLayerViewLocked`（`lib/layervis.py:672-700`）。
+pub struct SetActiveLayerViewLocked {
+    locked: bool,
+    old: Option<bool>,
+}
+
+impl SetActiveLayerViewLocked {
+    pub fn new(locked: bool) -> Self {
+        Self { locked, old: None }
+    }
+}
+
+impl Command for SetActiveLayerViewLocked {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        self.old = Some(ctx.views.current_locked());
+        ctx.views.set_locked(self.locked)
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some(old) = self.old.take() {
+            ctx.views.set_locked(old);
+        }
+    }
+
+    fn display_name(&self) -> String {
+        if self.locked {
+            "Lock Layer View".to_string()
+        } else {
+            "Unlock Layer View".to_string()
+        }
+    }
+}
+
 /// `RenameLayer`（`lib/command.py:1384`）。
 pub struct RenameLayer {
     id: u64,
@@ -1386,8 +1565,12 @@ mod tests {
     }
 
     fn ctx<'a>(stack: &'a mut LayerStack, time: &'a mut f64) -> DocContext<'a> {
+        // 测试辅助：多数命令不碰视图，泄漏一个空管理器即可。
+        let views: &'a mut crate::layer_views::LayerViews =
+            Box::leak(Box::new(crate::layer_views::LayerViews::default()));
         DocContext {
             layers: stack,
+            views,
             unsaved_painting_time: time,
         }
     }

@@ -11,6 +11,7 @@ pub mod color;
 pub mod command;
 pub mod document;
 pub mod fileio;
+pub mod layer_views;
 pub mod mode;
 pub mod prefs;
 pub mod scratchpad;
