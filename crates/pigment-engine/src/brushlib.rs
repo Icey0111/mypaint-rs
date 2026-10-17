@@ -828,6 +828,22 @@ impl BrushLibrary {
         Ok(idx)
     }
 
+    /// 只写 `_prev.png`（BrushIconEditor 的 Save）：仍按 MyPaint 的
+    /// `ManagedBrush.save()` 语义把当前 settings 一起写回用户目录。
+    pub fn save_brush_preview(
+        &mut self,
+        key: &str,
+        preview: (u32, u32, &[u8]),
+    ) -> io::Result<usize> {
+        let Some(idx) = self.find(key) else {
+            return Err(io::Error::other(format!("笔刷不存在: {key}")));
+        };
+        let brush = self.entries[idx].load().map_err(|e| {
+            io::Error::other(format!("重新读取笔刷失败: {e}"))
+        })?;
+        self.save_brush_entry(key, &brush, Some(preview))
+    }
+
     /// 删除笔刷（`ManagedBrush.delete_from_disk` + BrushEditor `_delete_brush`）：
     ///
     /// - 用户目录笔刷：删 `.myb`/`_prev.png`，从所有组移除，并从库中删除；

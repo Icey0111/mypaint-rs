@@ -195,6 +195,8 @@ pub struct PigmentApp {
     pub(crate) layer_view_rename: Option<String>,
     /// 预览面板的纹理/拖动状态（`gui/previewwindow.py`）。
     pub(crate) preview: PreviewState,
+    /// 笔刷图标编辑器（`gui/brushiconeditor.py`）。
+    pub(crate) icon_editor: crate::shell::icon_editor::IconEditorState,
     // ---- 暂存区（B5）----
     /// 暂存区：**第二份文档** + 独立模式栈 + 独立视图。
     ///
@@ -596,6 +598,7 @@ impl PigmentApp {
             prefs_window: Default::default(),
             layer_view_rename: None,
             preview: Default::default(),
+            icon_editor: Default::default(),
             scratch,
             scratch_renderer: Arc::new(Mutex::new(scratch_renderer)),
             scratch_was_added: false,

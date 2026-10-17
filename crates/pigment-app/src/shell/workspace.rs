@@ -211,6 +211,13 @@ impl PigmentApp {
                                     });
                                 ui.label(egui::RichText::new(&e.group_display).weak().small());
                                 if ui
+                                    .button("Edit Icon…")
+                                    .on_hover_text("编辑 128×128 笔刷预览图标")
+                                    .clicked()
+                                {
+                                    self.open_icon_editor();
+                                }
+                                if ui
                                     .button("New Brush")
                                     .on_hover_text(
                                         "把当前设置另存为新笔刷（放进 New 组，brusheditor.py:664）",
@@ -386,6 +393,7 @@ impl PigmentApp {
                             .small(),
                         );
                     });
+        self.icon_editor_window(ui.ctx());
     }
 
     /// 「最近笔刷与颜色」面板内容
