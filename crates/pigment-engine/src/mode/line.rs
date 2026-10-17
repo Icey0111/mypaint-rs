@@ -636,6 +636,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: None,
+            // 取色通道（B3-4）：直线模式不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         (ctx, LineMode::new(LineKind::Straight))
     }

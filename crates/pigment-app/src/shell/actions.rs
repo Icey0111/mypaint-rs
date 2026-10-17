@@ -1129,8 +1129,48 @@ mod tests {
         );
     }
 
-    /// `resources.xml` 内部没有重复的（修饰键, 键）组合 —— 查表因此无歧义。
+    /// 取色快捷键（B3-4）：`r` / `Ctrl+r` / `Shift+r` / `Alt+r`
+    /// （`gui/resources.xml:1896-1930` 的四个 `FlipColorPickMode*`）。
     ///
+    /// 这条把"快捷键来自资源表"钉住：`app.run_action` 只按动作名分派，
+    /// 一旦动作表生成出偏差，这里先红。
+    #[test]
+    fn color_pick_shortcuts_are_bound_like_the_source() {
+        const ALT: Mods = Mods {
+            ctrl: false,
+            alt: true,
+            shift: false,
+        };
+        assert_eq!(
+            lookup(egui::Key::R, Mods::NONE),
+            Some(Bound::Action("FlipColorPickMode"))
+        );
+        assert_eq!(
+            lookup(egui::Key::R, CTRL),
+            Some(Bound::Action("FlipColorPickModeH"))
+        );
+        assert_eq!(
+            lookup(egui::Key::R, SHIFT),
+            Some(Bound::Action("FlipColorPickModeC"))
+        );
+        assert_eq!(
+            lookup(egui::Key::R, ALT),
+            Some(Bound::Action("FlipColorPickModeY"))
+        );
+        // 四个单选动作（工具条的 Current Mode 组）：都是 RadioAction + 有图标
+        for id in [
+            "ColorPickMode",
+            "ColorPickModeH",
+            "ColorPickModeC",
+            "ColorPickModeY",
+        ] {
+            let a = by_id(id).unwrap_or_else(|| panic!("动作表里没有 {id}"));
+            assert_eq!(a.kind, Kind::Radio, "{id} 应是 GtkRadioAction");
+            assert!(a.icon_name.is_some(), "{id} 应有图标（`mode_icon_name` 要用）");
+        }
+    }
+
+    /// `resources.xml` 内部没有重复的（修饰键, 键）组合 —— 查表因此无歧义。    ///
     /// 这条是**上游变更哨兵**：若将来 MyPaint 引入冲突绑定，GTK 那边靠
     /// accelmap 的"后写的删掉先写的"来裁决，我们必须显式复现，不能靠表序。
     #[test]

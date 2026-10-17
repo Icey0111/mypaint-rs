@@ -14,7 +14,8 @@
 //! - `ModeStack`（`:1327`）→ [`ModeStack`]；
 //! - `FreehandMode`（`gui/freehand.py`）→ [`freehand::FreehandMode`]；
 //! - `LineModeBase`（`gui/linemode.py`）→ [`line::LineMode`]；
-//! - `FloodFillMode`（`gui/fill.py`）→ [`fill::FillMode`]。
+//! - `FloodFillMode`（`gui/fill.py`）→ [`fill::FillMode`]；
+//! - `ColorPickMode`（`gui/colorpicker.py`）→ [`pick::ColorPickMode`]。
 //!
 //! 记账差异：
 //! - GTK 的 `pointer_grab`/`keyboard_grab`/`grab-broken` 没有对应物：egui 的
@@ -27,6 +28,7 @@
 pub mod fill;
 pub mod freehand;
 pub mod line;
+pub mod pick;
 
 use crate::hokusai::BrushState;
 use crate::command::Brushwork;
@@ -200,6 +202,21 @@ pub struct ModeContext<'a> {
     pub hide_cursor_while_painting: bool,
     /// 状态栏消息出口（模式用它报告「已填充」之类）。
     pub status: Option<&'a mut Vec<String>>,
+    /// 当前画笔颜色 `[h, s, v]`（HSV，与应用的 `color` 同一通道）。
+    ///
+    /// 对应 `doc.app.brush_color_manager.get_color()`：取色模式在 `enter()` 里
+    /// 读它当"画笔颜色"（`gui/colorpicker.py:83`），取到无彩色时保留它的色相
+    /// （`:135-141`），HCY 变体要在它之上只改一个分量（`:177-250`）。
+    pub color: [f32; 3],
+    /// 取色出口 —— `brush_color_manager.set_color()`（`brushcolor.py:33-37`）
+    /// 的等价物。
+    ///
+    /// 模式在引擎层，够不到应用的颜色状态，所以由 GUI 传一个槽位进来：取色
+    /// 模式把新颜色（HSV `[h, s, v]`，即 `UIColor.get_hsv()` 的结果，也正是
+    /// `brush.set_color_hsv()` 吃的东西）写进它，GUI 随后读走并落地到自己的
+    /// 颜色状态。其它模式不碰这个字段，因此不需要任何改动；为 `None` 时取色
+    /// 模式只做计算、不落地（单元测试可以直接省略）。
+    pub picked_color: Option<&'a mut Option<[f32; 3]>>,
 }
 
 impl ModeContext<'_> {
@@ -220,6 +237,16 @@ impl ModeContext<'_> {
     #[inline]
     pub fn current_layer_id(&self) -> u64 {
         self.doc.layers().current_id()
+    }
+
+    /// 把取到的颜色写进出口（`BrushColorManager.set_color` 的落地端）。
+    ///
+    /// 没有出口（`picked_color == None`）时什么也不做。
+    #[inline]
+    pub fn set_picked_color(&mut self, hsv: [f32; 3]) {
+        if let Some(sink) = self.picked_color.as_deref_mut() {
+            *sink = Some(hsv);
+        }
     }
 
     /// 到一个引擎事件（`StrokeEvent`）。
@@ -282,6 +309,16 @@ pub trait InteractionMode {
 
     /// 是否支持笔刷编辑器的实时更新（`IS_LIVE_UPDATEABLE`）。
     fn is_live_updateable(&self) -> bool {
+        false
+    }
+
+    /// 是否是"一键式拖拽模式"（`OneshotDragMode`，`mode.py:1277`）。
+    ///
+    /// 源码用 `isinstance(mode, OneshotDragMode)` 判断（`mode.py:1298-1300`），
+    /// Rust 的 `&dyn InteractionMode` 没有运行时类型判断，所以改成这个默认
+    /// `false` 的钩子：只有一键式模式覆写成 `true`，`stackable_on` 的语义
+    /// 因此与源码一致（一键式模式用完回到原来那个模式）。
+    fn is_oneshot(&self) -> bool {
         false
     }
 
@@ -775,6 +812,72 @@ mod tests {
         assert_eq!(Behavior::PAINT_CONSTRAINED.bits(), 0x12);
         assert!(Behavior::ALL_PAINTING.intersects(Behavior::PAINT_LINE));
         assert!(!Behavior::NON_PAINTING.intersects(Behavior::PAINT_FREEHAND));
+    }
+
+    /// 模式栈的生命周期顺序与"栈永不为空"（`mode.py:1327-1508`）。
+    ///
+    /// 不能只靠"能编译"验收栈：`push`/`pop`/`context_push` 都会调
+    /// `leave`/`enter`，顺序错了模式就会带着脏状态继续收事件。
+    #[test]
+    fn mode_stack_lifecycle_and_never_empty() {
+        use crate::document::Document;
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut doc = Document::new();
+        let mut picked = None;
+
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: None,
+            color: [0.0, 0.0, 0.0],
+            picked_color: Some(&mut picked),
+        };
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut stack = ModeStack::new(|| {
+            Box::new(Probe {
+                name: "default",
+                log: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+                behavior: Behavior::PAINT_FREEHAND,
+            })
+        });
+        assert_eq!(stack.len(), 1, "新建的栈里就有默认模式");
+        assert!(!stack.is_empty(), "栈永远不为空（`__nonzero__`）");
+        assert_eq!(stack.names(), vec!["default"]);
+
+        // push 一个非笔刷类：旧栈顶 leave → 新 enter
+        stack.push(Box::new(Probe { name: "pan", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        assert_eq!(stack.names(), vec!["default", "pan"]);
+        // 默认模式记的是自己的日志（`leave default` 不在共享日志里）
+        assert_eq!(log.borrow().as_slice(), &["enter pan".to_string()]);
+
+        // context_push 视图类模式：`stackable_on` 只允许叠在笔刷类之上，
+        // 所以先把同样不兼容的 `pan` 弹掉
+        stack.context_push(Box::new(Probe { name: "zoom", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        assert_eq!(stack.names(), vec!["default", "zoom"]);
+        // context_push 一个笔刷类：不兼容的栈顶被逐个弹掉
+        stack.context_push(Box::new(Probe { name: "brush2", log: std::rc::Rc::clone(&log), behavior: Behavior::PAINT_FREEHAND }), &mut ctx);
+        // 笔刷类不能叠在笔刷类之上（issue #530），所以默认模式也被弹掉`r`n        assert_eq!(stack.names(), vec!["brush2"]);
+
+        // pop 到空 → 自动补默认模式并 enter
+        stack.pop(&mut ctx);
+        assert_eq!(stack.names(), vec!["default"]);
+        let tail = log.borrow().last().cloned().unwrap_or_default();
+        assert_eq!(tail, "leave brush2", "弹空后默认模式会重新 enter（记在它自己的日志里）");
+
+        // reset：清空重来 + 替补模式
+        stack.reset(Some(Box::new(Probe { name: "reset-mode", log: std::rc::Rc::clone(&log), behavior: Behavior::PAINT_LINE })), &mut ctx);
+        assert_eq!(stack.names(), vec!["reset-mode"]);
+
+        // pop_to_behaviour：一直弹到满足标志为止
+        stack.push(Box::new(Probe { name: "pan2", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        stack.pop_to_behaviour(Behavior::ALL_PAINTING, &mut ctx);
+        assert_eq!(stack.names(), vec!["reset-mode"], "视图类模式被弹掉");
     }
 
     #[test]

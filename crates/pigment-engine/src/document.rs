@@ -15,6 +15,7 @@
 //! | `:1179`/`:1184` `update_last_command`/`get_last_command` | 同名方法 |
 //! | `:1191` `get_bbox()` | [`Document::data_bbox`] |
 //! | `:1229` `get_user_bbox()` | [`Document::get_user_bbox`] |
+//! | `gui/tileddrawwidget.py:977` `pick_color()`（B3-4 取色） | [`Document::pick_color`] |
 //! | `:835` `update_frame()` / `:864` `get_frame_enabled()` / `:867` `set_frame_enabled()` | [`Document::set_frame`] 等 |
 //! | `:923` `clear()` | [`Document::clear`] |
 //! | `:1046` `unsaved_painting_time` | [`Document::unsaved_painting_time`] |
@@ -60,6 +61,9 @@ fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
         })
         .collect()
 }
+
+/// 取色取样方块的边长（`tileddrawwidget.py:977` 的 `pick_color(x, y, size=3)`）。
+pub const PICK_COLOR_SIZE: i32 = 3;
 
 /// 文档模型：一个图层栈 + 一条撤销栈 + 画幅/分辨率/设置。
 pub struct Document {
@@ -503,6 +507,65 @@ impl Document {
             }
         }
         rect
+    }
+
+    // ---- 取色（`gui/tileddrawwidget.py:977` 的 `pick_color`）----
+
+    /// 取样"屏幕上看到"的颜色：整份图层栈的合成结果（`sample merged`）。
+    ///
+    /// 逐条照 `TiledDrawWidget.pick_color`（`tileddrawwidget.py:977-1013`）：
+    ///
+    /// 1. **取样源是合成结果，不是当前层**。源码注释直说"目前没法关掉这种
+    ///    sample merged"（`:991-992`，issue #333），所以当前层是组、被锁、
+    ///    被隐藏，都不影响取到的东西；
+    /// 2. **含背景**：合成把背景层算进来（`LayerStack::composite_tile` 的先
+    ///    BLIT 背景）；背景关闭时我们的渲染管线仍然落在纸色
+    ///    `background_color` 上（CPU 预合成、无棋盘格，见模块记账）；
+    /// 3. **色彩空间是 8bpc sRGB**：`GdkPixbuf` 是 sRGB，`new_from_pixbuf_average`
+    ///    直接把 8 位 R/G/B 各自累加求平均，**不做任何线性化**
+    ///    （`lib/color.py:223-262`）；
+    /// 4. **alpha 被丢掉**：平均只累加 R/G/B，一个像素的 alpha 完全不参与
+    ///    （`lib/color.py:245-262`）—— 返回的是 RGB，不是 RGBA；
+    /// 5. **取样方块 3×3**：`size = 3`、`r = size // 2 = 1`，左上角是
+    ///    `(int(x) - r, int(y) - r)`，也就是说取的是以取样点为中心的九宫格
+    ///    平均（`:995-1007`）；
+    /// 6. `use_filter=False`（`:1006`）：取样时**不套**显示滤镜（对比度/亮度
+    ///    这类只影响屏幕观感的调整），所以我们也不套。
+    ///
+    /// 坐标是**模型坐标**：源码收到的是控件（设备）像素坐标，本引擎没有视图
+    /// 变换，换算交给调用方 —— 缩放 1:1 时两者等价，缩放不为 1 时源码取的是
+    /// "屏幕上的 3×3 像素"、我们取"画布上的 3×3 像素"，差异见模块记账。
+    ///
+    /// 返回 `[r, g, b]`（各分量 0..=1，sRGB）。坐标非有限值时返回 `None`；
+    /// 除此之外永远有值（源码此处也有值与位置无关：黑底/棋盘格兜底）。
+    pub fn pick_color(&self, x: f32, y: f32) -> Option<[f32; 3]> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let size = PICK_COLOR_SIZE;
+        let r = size / 2;
+        // 源码 `int(x)`：向零截断（GTK 给的是整数；引擎里收的是浮点）
+        let origin = (x as i32 - r, y as i32 - r);
+        let mut pixels = vec![0u8; (size * size * 4) as usize];
+        // `with_alpha = false`：输出不透明像素，与"屏幕上看到的"一致
+        self.layers.render_rect_rgba8(
+            (origin.0, origin.1, size as u32, size as u32),
+            false,
+            &mut pixels,
+        );
+        let n_pixels = (size * size) as f32;
+        let mut acc = [0f32; 3];
+        for px in pixels.chunks_exact(4) {
+            acc[0] += px[0] as f32;
+            acc[1] += px[1] as f32;
+            acc[2] += px[2] as f32;
+        }
+        // 源码先按像素数求平均、再除 255（`color.py:259-262`）
+        Some([
+            acc[0] / n_pixels / 255.0,
+            acc[1] / n_pixels / 255.0,
+            acc[2] / n_pixels / 255.0,
+        ])
     }
 
     // ---- 文档 I/O（照搬 `lib/document.py:1432` save / `:1488` load 的分派）----
@@ -971,5 +1034,82 @@ mod tests {
         doc.set_frame(0, 0, 30, 40);
         doc.set_frame_enabled(true);
         assert_eq!(doc.fill_bbox(&[(far, far)]), (0, 0, 30, 40));
+    }
+
+    // ---- B3-4：取色（`gui/tileddrawwidget.py:977` 的 `pick_color`）----
+
+    /// 用 8bpc 像素直接铺一块（绕开笔刷，颜色可精确断言）。
+    fn fill_block(doc: &mut Document, x: i32, y: i32, w: u32, h: u32, px: [u8; 4]) {
+        let mut buf = Vec::with_capacity((w * h * 4) as usize);
+        for _ in 0..(w * h) {
+            buf.extend_from_slice(&px);
+        }
+        doc.surface_mut().load_from_rgba8(&buf, x, y, w, h);
+    }
+
+    /// 取样方块是 3×3、以取样点为中心，且结果是九宫格的**算术平均**：
+    /// 左上角 `(int(x) - 1, int(y) - 1)`（`tileddrawwidget.py:995-1007`），
+    /// 平均在 8bpc sRGB 上做（`lib/color.py:245-262`）。
+    #[test]
+    fn pick_color_averages_a_centred_3x3_sample_square() {
+        let mut doc = Document::new();
+        // (0,0)-(2,2) 三列三色：x=0 红、x=1 灰、x=2 蓝
+        fill_block(&mut doc, 0, 0, 1, 3, [204, 51, 51, 255]);
+        fill_block(&mut doc, 1, 0, 1, 3, [128, 128, 128, 255]);
+        fill_block(&mut doc, 2, 0, 1, 3, [51, 51, 204, 255]);
+
+        // 取样点 (1,1) → 方块 (0,0)-(2,2)，正好盖满九宫格
+        let got = doc.pick_color(1.0, 1.0).expect("有限坐标永远有值");
+        let want_r = (204.0 + 128.0 + 51.0) / 3.0 / 255.0;
+        let want_g = (51.0 + 128.0 + 51.0) / 3.0 / 255.0;
+        let want_b = (51.0 + 128.0 + 204.0) / 3.0 / 255.0;
+        assert!((got[0] - want_r).abs() < 2.0 / 255.0, "R {} vs {want_r}", got[0]);
+        assert!((got[1] - want_g).abs() < 2.0 / 255.0, "G {} vs {want_g}", got[1]);
+        assert!((got[2] - want_b).abs() < 2.0 / 255.0, "B {} vs {want_b}", got[2]);
+
+        // 只铺了单像素时更能看出方块的位置：取样点 (0,0) → 方块 (-1,-1)-(1,1)
+        // 里只有 1 个红像素，其余 8 格是背景白
+        let mut doc = Document::new();
+        fill_block(&mut doc, 0, 0, 1, 1, [204, 51, 51, 255]);
+        let got = doc.pick_color(0.0, 0.0).expect("有限坐标永远有值");
+        let want_r = (204.0 + 8.0 * 255.0) / 9.0 / 255.0;
+        assert!((got[0] - want_r).abs() < 2.0 / 255.0, "R {} vs {want_r}", got[0]);
+    }
+
+    /// 取样源是**合成结果**（含背景、跳过隐藏层），不是当前层：
+    /// `colorpicker.py:143-145` 用的就是"屏幕上看到的"那一路。
+    #[test]
+    fn pick_color_samples_the_composite_including_the_background() {
+        let mut doc = Document::new();
+        // 空白画布 → 背景白（默认 255,255,255，且背景可见）
+        let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
+        assert!((got[0] - 1.0).abs() < 1e-6 && (got[1] - 1.0).abs() < 1e-6);
+
+        // 换背景色 → 取色跟着变（背景参与合成）
+        doc.layers_mut().set_background_color([10, 200, 30]);
+        let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
+        assert!((got[0] * 255.0 - 10.0).abs() <= 2.0, "R {}", got[0] * 255.0);
+        assert!((got[1] * 255.0 - 200.0).abs() <= 2.0, "G {}", got[1] * 255.0);
+
+        // 有内容的层盖住背景
+        fill_block(&mut doc, 0, 0, 8, 8, [204, 51, 51, 255]);
+        let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
+        assert!((got[0] * 255.0 - 204.0).abs() <= 2.0, "应取到红，R {}", got[0] * 255.0);
+
+        // 隐藏这层 → 它不再参与合成，回到背景色
+        let idx = doc.layers().current_index();
+        doc.set_layer_visible(&[idx], false);
+        let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
+        assert!((got[0] * 255.0 - 10.0).abs() <= 2.0, "隐藏后应回到背景，R {}", got[0] * 255.0);
+    }
+
+    /// 非有限坐标没有对应的像素，返回 `None`（源码此处永远有值，但那是
+    /// GTK 事件坐标保证的；本移植要挡住 NaN/Inf）。
+    #[test]
+    fn pick_color_rejects_non_finite_coordinates() {
+        let doc = Document::new();
+        assert!(doc.pick_color(f32::NAN, 0.0).is_none());
+        assert!(doc.pick_color(0.0, f32::INFINITY).is_none());
+        assert!(doc.pick_color(f32::NEG_INFINITY, 0.0).is_none());
     }
 }

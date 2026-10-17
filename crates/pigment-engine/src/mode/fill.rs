@@ -1894,6 +1894,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: None,
+            // 取色通道（B3-4）：填充模式不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         let mut mode = FillMode::new();
 
@@ -1954,6 +1957,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: None,
+            // 取色通道（B3-4）：填充模式不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         let mut mode = FillMode::new();
         let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
@@ -1984,6 +1990,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: None,
+            // 取色通道（B3-4）：填充模式不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         let mut mode = FillMode::new();
         InteractionMode::button_press(&mut mode, &mut ctx, &PointerEvent::button(2.0, 2.0, 0.0, 1));
@@ -2021,6 +2030,8 @@ mod tests {
                 fakerotation: 0.5,
                 hide_cursor_while_painting: false,
                 status: None,
+                color: [0.0, 0.0, 0.0],
+                picked_color: None,
             };
             let mut mode = FillMode::new();
             mode.options.blend_mode = FillBlendMode::Erase;

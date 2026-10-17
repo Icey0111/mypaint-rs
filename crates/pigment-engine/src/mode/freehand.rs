@@ -782,6 +782,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: Some(&mut status),
+            // 取色通道（B3-4）：自由手绘不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         let mut mode = FreehandMode::new();
         let before = ctx.doc.command_stack.undo_len();
@@ -856,6 +859,9 @@ mod tests {
             fakerotation: 0.5,
             hide_cursor_while_painting: false,
             status: Some(&mut status),
+            // 取色通道（B3-4）：自由手绘不读不写，给中性值/空出口
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
         };
         let mut mode = FreehandMode::new();
         let press = PointerEvent {

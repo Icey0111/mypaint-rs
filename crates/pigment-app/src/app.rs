@@ -14,6 +14,8 @@
 //! - 画布：左键拖拽绘制；中/右键或 Space+左键平移；滚轮以光标为中心缩放
 //! - 笔刷尺寸 `f` / `d`（`Bigger`/`Smaller`，`resources.xml:275,283`）
 //! - 橡皮 `e`、普通模式 `n`（`BlendModeEraser`/`BlendModeNormal`）
+//! - 取色 `r`；`Ctrl+r` / `Shift+r` / `Alt+r` 分别只取色相 / 彩度 / 亮度
+//!   （`FlipColorPickMode*`，`resources.xml:1896-1930`）
 //! - 缩放 `,` / `.`、平移 `←↑↓→`（`ZoomIn/Out`、`Pan{Left,Right,Up,Down}`）
 //! - 撤销 `Ctrl+Z`（老式键位 `z`）、重做 `Ctrl+Shift+Z` / `Ctrl+Y` / `y`
 //! - 笔刷槽位 `0`-`9` 恢复、`Ctrl+0`-`9` 存入
@@ -799,6 +801,56 @@ impl PigmentApp {
         self.set_status(format!("{label}: {usage}"), now);
     }
 
+    /// 切到取色模式（`ColorPickMode` 与 `H`/`C`/`Y` 三个变体）。
+    ///
+    /// 两条入口的构造参数不同，照 `document.py:2163-2201`：
+    ///
+    /// - **单选动作/菜单**（工具条、Edit→Current Mode）：用类默认值
+    ///   （`ignore_modifiers=False, temporary_activation=True`），
+    ///   **不立即取色** —— 得先在画布上按一下（`colorpicker.py:34-39`）；
+    /// - **`Flip*` 动作**（键盘）：`ignore_modifiers=True,
+    ///   temporary_activation=False`（`document.py:2169-2173`），
+    ///   `enter()` 时就在 `enter_pick`（最后一次指针事件的位置）取一次色。
+    ///
+    /// 压栈方式与 [`PigmentApp::switch_mode`] 一样用 `reset`：源码的
+    /// `context_push` 会保留下面的模式（"用完回到原来那个"），但我们还没有
+    /// 需要叠放的临时视图模式，因此按 reset 处理（既有记账）。
+    pub(crate) fn switch_pick_mode(
+        &mut self,
+        variant: pigment_engine::mode::pick::PickVariant,
+        keyboard: bool,
+        enter_pick: Option<(f32, f32)>,
+        now: f64,
+    ) {
+        use pigment_engine::mode::pick::ColorPickMode;
+        let new_mode: Box<dyn pigment_engine::mode::InteractionMode> = if keyboard {
+            Box::new(ColorPickMode::flip(variant, enter_pick))
+        } else {
+            Box::new(ColorPickMode::new(variant))
+        };
+        let label = new_mode.name().to_string();
+        let usage = new_mode.usage().to_string();
+        self.with_mode(|modes, ctx| modes.reset(Some(new_mode), ctx));
+        self.set_status(format!("{label}: {usage}"), now);
+    }
+
+    /// "最后一次指针事件的位置"，模型坐标
+    /// （`Document.get_last_event_info`，`gui/document.py:145`）。
+    ///
+    /// 键盘起手的取色模式要靠它在**不按键**的情况下立刻取一次色
+    /// （`colorpicker.py:84-90`）。指针不在画布上（或还没有指针位置）时返回
+    /// `None`，与源码"`x`/`y` 为 `None` 就不取"一致。
+    fn pointer_model_pos(&self, ctx: &egui::Context) -> Option<(f32, f32)> {
+        let rect = self.canvas_rect?;
+        let pos = ctx.input(|i| i.pointer.latest_pos())?;
+        if !rect.contains(pos) {
+            return None;
+        }
+        let local = pos - rect.min;
+        let [x, y] = self.view.screen_to_world(local.x, local.y);
+        Some((x, y))
+    }
+
     /// 当前模式的图标名（`mode.get_icon_name()`：取关联动作的 icon-name）。
     pub(crate) fn mode_icon_name(&self) -> Option<&'static str> {
         crate::shell::actions::by_id(self.modes.top().action_name()?).and_then(|a| a.icon_name)
@@ -821,19 +873,35 @@ impl PigmentApp {
             brush_name,
             stroke_state,
             mode_prefs,
+            color,
             ..
         } = self;
-        let mut ctx = pigment_engine::mode::ModeContext {
-            doc,
-            brush,
-            brush_name,
-            brush_state: stroke_state,
-            fakepressure: mode_prefs.fakepressure,
-            fakerotation: mode_prefs.fakerotation,
-            hide_cursor_while_painting: mode_prefs.hide_cursor_while_painting,
-            status: None,
+        // 取色出口（B3-4）：取色模式把新颜色（HSV）写进这个槽，本函数返回前
+        // 落到 `app.color` —— 等价于 `BrushColorManager.set_color()`
+        // （`gui/brushcolor.py:33-37`）。其它模式不碰它。
+        let mut picked: Option<[f32; 3]> = None;
+        let r = {
+            let mut ctx = pigment_engine::mode::ModeContext {
+                doc,
+                brush,
+                brush_name,
+                brush_state: stroke_state,
+                fakepressure: mode_prefs.fakepressure,
+                fakerotation: mode_prefs.fakerotation,
+                hide_cursor_while_painting: mode_prefs.hide_cursor_while_painting,
+                status: None,
+                // 取色模式要读"当前画笔颜色"（`colorpicker.py:83`）
+                color: *color,
+                picked_color: Some(&mut picked),
+            };
+            f(modes, &mut ctx)
         };
-        f(modes, &mut ctx)
+        if let Some(hsv) = picked {
+            // `color` 是 HSV（`app.color` 与笔刷的 color_h/s/v 同一通道），
+            // `set_color` 会顺手 `derive_active()` 推给笔刷
+            self.set_color(hsv);
+        }
+        r
     }
 
     // ---- 撤销 / 重做 ----
@@ -1063,6 +1131,10 @@ impl PigmentApp {
             }
             "FlipFreehandMode" | "FlipStraightMode" | "FlipSequenceMode" | "FlipEllipseMode"
             | "FlipFloodFillMode" => true,
+            // ---- 取色（B3-4：`gui/colorpicker.py` 的四个单选动作 + 四个 Flip）----
+            "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC" | "ColorPickModeY" => true,
+            "FlipColorPickMode" | "FlipColorPickModeH" | "FlipColorPickModeC"
+            | "FlipColorPickModeY" => true,
             // ---- 窗口 ----
             "Fullscreen" | "Quit" => true,
             // ---- 笔刷槽位（`ContextRestoreColor` 与 20 个动态槽位动作）----
@@ -1217,6 +1289,33 @@ impl PigmentApp {
             | "FlipFloodFillMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
+                ctx.request_repaint();
+            }
+            // ---- 取色（B3-4）----
+            // 单选动作：只压栈，不立即取色（`colorpicker.py:34-39`）
+            "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC" | "ColorPickModeY" => {
+                let variant = pigment_engine::mode::pick::PickVariant::from_action_name(id)
+                    .expect("动作表里的 ColorPickMode* 都有对应变体");
+                self.switch_pick_mode(variant, false, None, now);
+                ctx.request_repaint();
+            }
+            // `Flip*`（键盘 `r` / `Ctrl+r` / `Shift+r` / `Alt+r`）：
+            // 照 `mode_flip_action_activated_cb`（`document.py:2163-2201`）——
+            // 同一个模式已在栈顶就弹掉，否则按"键盘起手"新建并立即取一次色。
+            "FlipColorPickMode" | "FlipColorPickModeH" | "FlipColorPickModeC"
+            | "FlipColorPickModeY" => {
+                let base = id.trim_start_matches("Flip");
+                let same_on_top = self.modes.top().action_name().map(|a| a == base).unwrap_or(false);
+                if same_on_top {
+                    self.with_mode(|modes, ctx| {
+                        modes.pop(ctx);
+                    });
+                } else {
+                    let variant = pigment_engine::mode::pick::PickVariant::from_action_name(base)
+                        .expect("Flip 动作名去掉前缀就是单选动作名");
+                    let enter_pick = self.pointer_model_pos(ctx);
+                    self.switch_pick_mode(variant, true, enter_pick, now);
+                }
                 ctx.request_repaint();
             }
             "BackgroundWindow" => {
