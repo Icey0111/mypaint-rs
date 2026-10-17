@@ -26,6 +26,7 @@
 //!   由 GUI 每帧调用一次（等价于 idle 优先级回调）。
 
 pub mod fill;
+pub mod frameedit;
 pub mod freehand;
 pub mod ink;
 pub mod layermove;

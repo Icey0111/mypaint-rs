@@ -1581,6 +1581,7 @@ impl PigmentApp {
             "FreehandMode" => Box::new(FreehandMode::new()),
             "InkingMode" => Box::new(InkingMode::new()),
             "LayerMoveMode" => Box::new(pigment_engine::mode::layermove::LayerMoveMode::new()),
+            "FrameEditMode" => Box::new(pigment_engine::mode::frameedit::FrameEditMode::new()),
             "StraightMode" => Box::new(LineMode::new(LineKind::Straight)),
             "SequenceMode" => Box::new(LineMode::new(LineKind::Sequence)),
             "EllipseMode" => Box::new(LineMode::new(LineKind::Ellipse)),
@@ -2141,7 +2142,9 @@ fn layout_ink_buttons(
             // 绘画模式单选按钮保持按下态（`_modestack_changed_cb`）
             "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
             | "FloodFillMode" | "ColorPickMode" | "ColorPickModeH" | "ColorPickModeC"
-            | "ColorPickModeY" | "LayerMoveMode" => self.modes.top().action_name() == Some(id),
+            | "ColorPickModeY" | "LayerMoveMode" | "FrameEditMode" => {
+                self.modes.top().action_name() == Some(id)
+            }
             "PanViewMode" => self.view_tool == Some(ViewTool::Pan),
             "ZoomViewMode" => self.view_tool == Some(ViewTool::Zoom),
             "RotateViewMode" => self.view_tool == Some(ViewTool::Rotate),
@@ -2267,6 +2270,7 @@ fn layout_ink_buttons(
             | "FloodFillMode" | "LayerMoveMode" => true,
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
             | "FlipEllipseMode" | "FlipFloodFillMode" | "FlipLayerMoveMode" => true,
+            "FrameEditMode" | "FlipFrameEditMode" => true,
             // 视图操纵（`gui/viewmanip.py` 的三个单选 + 三个 Flip）
             "PanViewMode" | "ZoomViewMode" | "RotateViewMode" => true,
             "FlipPanViewMode" | "FlipZoomViewMode" | "FlipRotateViewMode" => true,
@@ -2607,12 +2611,13 @@ fn layout_ink_buttons(
             // `mode_flip_action_activated_cb` / 无线电动作都落到"把模式压栈"上；
             // 本移植直接重置模式栈（不保留之前的临时视图模式）。
             "FreehandMode" | "InkingMode" | "StraightMode" | "SequenceMode" | "EllipseMode"
-            | "FloodFillMode" | "LayerMoveMode" => {
+            | "FloodFillMode" | "LayerMoveMode" | "FrameEditMode" => {
                 self.switch_mode(id, now);
                 ctx.request_repaint();
             }
             "FlipFreehandMode" | "FlipInkingMode" | "FlipStraightMode" | "FlipSequenceMode"
-            | "FlipEllipseMode" | "FlipFloodFillMode" | "FlipLayerMoveMode" => {
+            | "FlipEllipseMode" | "FlipFloodFillMode" | "FlipLayerMoveMode"
+            | "FlipFrameEditMode" => {
                 let base = id.trim_start_matches("Flip");
                 self.switch_mode(base, now);
                 ctx.request_repaint();

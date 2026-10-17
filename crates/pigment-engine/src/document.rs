@@ -239,6 +239,7 @@ impl Document {
             layers,
             views,
             unsaved_painting_time,
+            frame,
             ..
         } = self;
         (
@@ -247,6 +248,7 @@ impl Document {
                 layers,
                 views,
                 unsaved_painting_time,
+                frame,
             },
         )
     }

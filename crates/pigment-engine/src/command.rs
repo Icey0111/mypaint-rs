@@ -50,6 +50,8 @@ pub struct DocContext<'a> {
     /// `Document.unsaved_painting_time`：`Brushwork` 的 redo/undo 会改写它
     /// （`lib/command.py:366`、`:374`）。
     pub unsaved_painting_time: &'a mut f64,
+    /// `Document._frame`：画框命令直接改它（`UpdateFrame`）。
+    pub frame: &'a mut (i32, i32, i32, i32),
 }
 
 impl<'a> DocContext<'a> {
@@ -1468,6 +1470,34 @@ impl Command for MoveLayer {
     }
 }
 
+/// 画框矩形更新（`lib/command.py` 的 `UpdateFrame`，由 `Document.update_frame`
+/// 在 `user_initiated=True` 时入栈）。拖拽期间只改模型，松手时提交一条。
+pub struct UpdateFrame {
+    before: (i32, i32, i32, i32),
+    after: (i32, i32, i32, i32),
+}
+
+impl UpdateFrame {
+    pub fn new(before: (i32, i32, i32, i32), after: (i32, i32, i32, i32)) -> Self {
+        Self { before, after }
+    }
+}
+
+impl Command for UpdateFrame {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        *ctx.frame = self.after;
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        *ctx.frame = self.before;
+    }
+
+    fn display_name(&self) -> String {
+        "Update Frame".to_string()
+    }
+}
+
 impl Command for MergeLayerDown {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
         let merged = match self.merged.take() {
@@ -1649,10 +1679,12 @@ mod tests {
         // 测试辅助：多数命令不碰视图，泄漏一个空管理器即可。
         let views: &'a mut crate::layer_views::LayerViews =
             Box::leak(Box::new(crate::layer_views::LayerViews::default()));
+        let frame: &'a mut (i32, i32, i32, i32) = Box::leak(Box::new((0, 0, 0, 0)));
         DocContext {
             layers: stack,
             views,
             unsaved_painting_time: time,
+            frame,
         }
     }
 
