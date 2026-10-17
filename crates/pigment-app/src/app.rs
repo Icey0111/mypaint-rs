@@ -1496,7 +1496,35 @@ impl PigmentApp {
             barrel_rotation: None,
             button,
             modifiers,
+            view_bbox: Some(self.view_bbox_model(rect)),
         }
+    }
+
+    /// 视口四角投到模型坐标后的包围盒（`fill.py:222-224` 的
+    /// `get_corners_model_coords()` + `rotated_rectangle_bbox()`）。
+    ///
+    /// 与源码一致：先 `floor` 再取 `(min_x, min_y, max_x-min_x+1, max_y-min_y+1)`，
+    /// 所以旋转视图得到的是"能装下视口的最小画布对齐矩形"。
+    pub(crate) fn view_bbox_model(&self, rect: egui::Rect) -> (i32, i32, i32, i32) {
+        let corners = [
+            egui::pos2(rect.min.x, rect.min.y),
+            egui::pos2(rect.max.x, rect.min.y),
+            egui::pos2(rect.max.x, rect.max.y),
+            egui::pos2(rect.min.x, rect.max.y),
+        ];
+        let mut min = (f32::INFINITY, f32::INFINITY);
+        let mut max = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+        for c in corners {
+            let local = c - rect.min;
+            let [x, y] = self.view.screen_to_world(local.x, local.y);
+            min = (min.0.min(x), min.1.min(y));
+            max = (max.0.max(x), max.1.max(y));
+        }
+        let x1 = min.0.floor() as i32;
+        let y1 = min.1.floor() as i32;
+        let x2 = max.0.floor() as i32;
+        let y2 = max.1.floor() as i32;
+        (x1, y1, x2 - x1 + 1, y2 - y1 + 1)
     }
 
     /// 把一个指针事件交给当前交互模式（`gui/mode.py` 的 `button_press_cb` 等）。
@@ -1592,7 +1620,7 @@ impl PigmentApp {
         use pigment_engine::mode::freehand::FreehandMode;
         use pigment_engine::mode::ink::InkingMode;
         use pigment_engine::mode::line::{LineKind, LineMode};
-        let new_mode: Box<dyn pigment_engine::mode::InteractionMode> = match action {
+        let mut new_mode: Box<dyn pigment_engine::mode::InteractionMode> = match action {
             "FreehandMode" => Box::new(FreehandMode::new()),
             "InkingMode" => Box::new(InkingMode::new()),
             "LayerMoveMode" => Box::new(pigment_engine::mode::layermove::LayerMoveMode::new()),
@@ -1607,6 +1635,9 @@ impl PigmentApp {
             "FloodFillMode" => Box::new(FillMode::new()),
             _ => return,
         };
+        if action == "FloodFillMode" {
+            new_mode.set_fill_options(self.fill_options_from_prefs());
+        }
         let label = new_mode.name().to_string();
         let usage = new_mode.usage().to_string();
         // 选绘画模式即取消未完成的视图手势（源码里是模式栈 pop/替换）
@@ -1614,6 +1645,25 @@ impl PigmentApp {
         self.view_drag_prev = None;
         self.with_mode(|modes, ctx| modes.reset(Some(new_mode), ctx));
         self.set_status(format!("{label}: {usage}"), now);
+    }
+
+    /// 从偏好构造填充选项（`gui/fill.py:433-462` 的
+    /// `FloodFillOptionsWidget`：7 个持久键 + 1 个一次性开关）。
+    ///
+    /// 源码在控件构造时 `prefs.get(key, DEFAULT)`；`make_new_layer` 是临时
+    /// 开关，不进偏好。这里在进入填充模式时读一次，之后面板改的是模式里的值。
+    fn fill_options_from_prefs(&self) -> pigment_engine::mode::fill::FillOptions {
+        use pigment_surface::combine::CombineMode;
+        let mut o = pigment_engine::mode::fill::FillOptions::default();
+        o.tolerance = self.prefs.f64_or("flood_fill.tolerance", 0.05) as f32;
+        o.opacity = self.prefs.f64_or("flood_fill.opacity", 1.0) as f32;
+        o.limit_to_view = self.prefs.bool_or("flood_fill.limit_to_view", false);
+        o.sample_merged = self.prefs.bool_or("flood_fill.sample_merged", false);
+        o.offset = self.prefs.f64_or("flood_fill.offset", 0.0) as i32;
+        o.feather = self.prefs.f64_or("flood_fill.feather", 0.0) as i32;
+        let mode = self.prefs.f64_or("flood_fill.blend_mode", 0.0) as u8;
+        o.comp_mode = CombineMode::from_index(mode).unwrap_or(CombineMode::Normal);
+        o
     }
 
     /// 进入视图操纵工具（`viewmanip.py` 的三个 Oneshot 模式；画布拖拽结束后

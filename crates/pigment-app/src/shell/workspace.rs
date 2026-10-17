@@ -474,11 +474,12 @@ impl PigmentApp {
     /// 源码的 `InputSlider` 不显示数值（`set_draw_value(False)`），这里显示
     /// 数值属于技术栈适配（egui 没有动态 tooltip 的等价物）。
     ///
-    /// 未移植：`LineModeOptionsWidget` 的压力-距离曲线、填充/对称的选项页。
+    /// 未移植：`LineModeOptionsWidget` 的压力-距离曲线、对称的选项页。
     /// 填充选项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
     ///
-    /// 已移植项：Tolerance / Opacity / 目标混合模式。其余（offset、feather、
-    /// gap closing、sample merged、limit to view、make new layer）仍记账。
+    /// 分类照源码：Source（Sample Merged / Limit to View）、Target
+    /// （New Layer (once) / Blend Mode / Opacity）、形态学（Offset / Feather）、
+    /// Gap Detection（未移植，只留说明）。
     fn fill_options_panel(&mut self, ui: &mut egui::Ui) {
         use pigment_surface::combine::CombineMode;
         let Some(mut opt) = self.modes.top().fill_options() else {
@@ -491,12 +492,22 @@ impl PigmentApp {
                 .add(egui::Slider::new(&mut opt.tolerance, 0.0..=1.0).show_value(true))
                 .changed();
         });
-        ui.horizontal(|ui| {
-            ui.label("Opacity:");
-            changed |= ui
-                .add(egui::Slider::new(&mut opt.opacity, 0.0..=1.0).show_value(true))
-                .changed();
-        });
+        ui.separator();
+        ui.label(egui::RichText::new("Source").strong());
+        changed |= ui
+            .checkbox(&mut opt.sample_merged, "Sample Merged")
+            .on_hover_text("考虑填充区域时使用所有可见层的临时合成结果")
+            .changed();
+        changed |= ui
+            .checkbox(&mut opt.limit_to_view, "Limit to View")
+            .on_hover_text("把填充限制在当前视口内；旋转视图时取能装下视口的最小画布对齐矩形")
+            .changed();
+        ui.separator();
+        ui.label(egui::RichText::new("Target").strong());
+        changed |= ui
+            .checkbox(&mut opt.make_new_layer, "New Layer (once)")
+            .on_hover_text("把这次填充的结果放到当前层上方的新层；用一次后自动复位")
+            .changed();
         egui::ComboBox::from_label("Blend Mode")
             .selected_text(opt.comp_mode.label())
             .show_ui(ui, |ui| {
@@ -510,13 +521,57 @@ impl PigmentApp {
                     }
                 }
             });
+        ui.horizontal(|ui| {
+            ui.label("Opacity:");
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.opacity, 0.0..=1.0).show_value(true))
+                .changed();
+        });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label("Offset:");
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.offset, -64..=64).show_value(true))
+                .on_hover_text("正值膨胀、负值腐蚀（像素）")
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Feather:");
+            changed |= ui
+                .add(egui::Slider::new(&mut opt.feather, 0..=64).show_value(true))
+                .on_hover_text("填充边缘的高斯模糊半径（像素）")
+                .changed();
+        });
+        ui.separator();
         ui.label(
-            egui::RichText::new("Offset / Feather / Gap Closing / Sample Merged 未移植")
+            egui::RichText::new("Gap Detection 未移植（gap closing / max gap / retract seeps）")
                 .italics()
                 .weak(),
         );
         if changed {
             self.with_mode(|modes, _ctx| modes.top_mut().set_fill_options(opt));
+            // 源码各回调只写 preferences dict，落盘由 app 关闭时统一做；
+            // 这里立即落盘，避免异常退出丢设置。
+            self.prefs
+                .set_f64("flood_fill.tolerance", opt.tolerance as f64);
+            self.prefs
+                .set_bool("flood_fill.limit_to_view", opt.limit_to_view);
+            self.prefs
+                .set_bool("flood_fill.sample_merged", opt.sample_merged);
+            self.prefs
+                .set_f64("flood_fill.offset", opt.offset as f64);
+            self.prefs
+                .set_f64("flood_fill.feather", opt.feather as f64);
+            self.prefs
+                .set_f64("flood_fill.opacity", opt.opacity as f64);
+            self.prefs.set_f64(
+                "flood_fill.blend_mode",
+                CombineMode::ALL
+                    .iter()
+                    .position(|m| *m == opt.comp_mode)
+                    .unwrap_or(0) as f64,
+            );
+            let _ = self.prefs.save();
             ui.ctx().request_repaint();
         }
     }

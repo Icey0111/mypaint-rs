@@ -812,9 +812,18 @@ impl Document {
     /// 3. 画框没启用时，把每个种子点扩进 bbox（`document.py:1080-1082`）——
     ///    否则在已有内容的边缘外点击就填不动。
     ///
-    /// 未移植 `view_bbox`（"Limit to View"，`document.py:1083-1088`）：
-    /// `mode::fill` 传的永远是 `None`。
-    pub fn fill_bbox(&self, seeds: &[(i32, i32)]) -> (i32, i32, i32, i32) {
+    /// `view_bbox` 是 "Limit to View"（`fill.py:222-224`）：调用方把视口四角
+    /// 投到模型坐标后取外接框（`helpers.rotated_rectangle_bbox`）。规则照
+    /// `document.py:1083-1088`：
+    ///
+    /// - 填充框**完全包含**视口 → 直接改成视口（把大画布上的填充限制在屏幕内）；
+    /// - 两者相交 → 取交集；
+    /// - 完全不相交 → 不限制（源码此时 `view_bbox` 没被用上）。
+    pub fn fill_bbox(
+        &self,
+        seeds: &[(i32, i32)],
+        view_bbox: Option<(i32, i32, i32, i32)>,
+    ) -> (i32, i32, i32, i32) {
         let ts = crate::hokusai::tile::TILE_SIZE as i32;
         let mut rect = if self.frame_enabled {
             self.frame
@@ -836,11 +845,18 @@ impl Document {
             let y = ts * min_y.div_euclid(ts);
             let w = ts * max_x.div_euclid(ts) - x + ts;
             let h = ts * max_y.div_euclid(ts) - y + ts;
-            return (x, y, w, h);
-        }
-        if !self.frame_enabled {
+            rect = (x, y, w, h);
+        } else if !self.frame_enabled {
+            // `document.py:1080-1082`：画框没启用时把种子扩进 bbox
             for &(x, y) in seeds {
                 expand_to_include_point(&mut rect, x, y);
+            }
+        }
+        if let Some(view) = view_bbox {
+            if rect_contains(rect, view) {
+                rect = view;
+            } else if rects_overlap(rect, view) {
+                rect = rect_intersection(rect, view);
             }
         }
         rect
@@ -1115,12 +1131,49 @@ fn expand_to_include_point(rect: &mut (i32, i32, i32, i32), x: i32, y: i32) {
     *rect = (x0, y0, w, h);
 }
 
+/// `Rect.contains`（`lib/helpers.py`）：`a` 完全包含 `b`。
+fn rect_contains(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    aw > 0
+        && ah > 0
+        && bw > 0
+        && bh > 0
+        && bx >= ax
+        && by >= ay
+        && bx + bw <= ax + aw
+        && by + bh <= ay + ah
+}
+
+/// `Rect.overlaps`（`lib/helpers.py`）：两个矩形有非空交集。
+fn rects_overlap(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    aw > 0
+        && ah > 0
+        && bw > 0
+        && bh > 0
+        && ax < bx + bw
+        && bx < ax + aw
+        && ay < by + bh
+        && by < ay + ah
+}
+
+/// `Rect.intersection`（`lib/helpers.py`）。
+fn rect_intersection(a: (i32, i32, i32, i32), b: (i32, i32, i32, i32)) -> (i32, i32, i32, i32) {
+    let x0 = a.0.max(b.0);
+    let y0 = a.1.max(b.1);
+    let x1 = (a.0 + a.2).min(b.0 + b.2);
+    let y1 = (a.1 + a.3).min(b.1 + b.3);
+    (x0, y0, x1 - x0, y1 - y0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::brushlib::default_brush;
     use crate::stroke::StrokeEvent;
-    use hokusai::{Brush, BrushSetting, BrushState};
+    use hokusai::{Brush, BrushSetting, BrushState, TiledSurface};
 
     fn test_brush(radius: f32) -> Brush {
         let mut b = default_brush();
@@ -1437,12 +1490,47 @@ mod tests {
         let ts = crate::hokusai::tile::TILE_SIZE as i32;
         assert_eq!(doc.data_bbox(), (0, 0, 0, 0));
         // 单个种子 → 一块 tile
-        assert_eq!(doc.fill_bbox(&[(10, 10)]), (0, 0, ts, ts));
+        assert_eq!(doc.fill_bbox(&[(10, 10)], None), (0, 0, ts, ts));
         // 跨 tile 的种子 → 覆盖两者的外接框
         assert_eq!(
-            doc.fill_bbox(&[(10, 10), (70, -1)]),
+            doc.fill_bbox(&[(10, 10), (70, -1)], None),
             (0, -ts, 2 * ts, 2 * ts),
             "负数种子按向下取整落在 tile -1"
+        );
+    }
+
+    /// "Limit to View"（`document.py:1083-1088`）：包含→取视口，相交→取交集，
+    /// 不相交→不限制。
+    #[test]
+    fn fill_bbox_limit_to_view_uses_contains_and_intersection() {
+        let mut doc = Document::new();
+        doc.layers_mut().set_background_visible(false);
+        // 造一块 0..64 的内容
+        {
+            let surface = doc.surface_mut();
+            let tile = surface.tile_request_start(0, 0);
+            for row in tile.iter_mut() {
+                for px in row.iter_mut() {
+                    *px = [1, 1, 1, 1];
+                }
+            }
+            surface.tile_request_end(0, 0);
+        }
+        assert_eq!(doc.fill_bbox(&[(10, 10)], None), (0, 0, 64, 64));
+        // 视口完全在 bbox 内 → 直接取视口
+        assert_eq!(
+            doc.fill_bbox(&[(10, 10)], Some((8, 8, 10, 10))),
+            (8, 8, 10, 10)
+        );
+        // 部分相交 → 交集
+        assert_eq!(
+            doc.fill_bbox(&[(10, 10)], Some((48, 48, 40, 40))),
+            (48, 48, 16, 16)
+        );
+        // 完全不相交 → 不限制
+        assert_eq!(
+            doc.fill_bbox(&[(10, 10)], Some((200, 200, 10, 10))),
+            (0, 0, 64, 64)
         );
     }
 
@@ -1454,17 +1542,17 @@ mod tests {
         let content = doc.data_bbox();
 
         // 种子在内容里 → bbox 就是内容外接框
-        assert_eq!(doc.fill_bbox(&[(10, 20)]), content);
+        assert_eq!(doc.fill_bbox(&[(10, 20)], None), content);
 
         // 种子远在内容之外 → 并进来（`document.py:1080-1082`）
         let far = content.0 + content.2 + 100;
-        let bbox = doc.fill_bbox(&[(far, content.1)]);
+        let bbox = doc.fill_bbox(&[(far, content.1)], None);
         assert!(bbox.0 + bbox.2 > far, "外接框必须包含远处种子: {bbox:?}");
 
         // 画框启用 → 只认画框，种子再远也不扩
         doc.set_frame(0, 0, 30, 40);
         doc.set_frame_enabled(true);
-        assert_eq!(doc.fill_bbox(&[(far, far)]), (0, 0, 30, 40));
+        assert_eq!(doc.fill_bbox(&[(far, far)], None), (0, 0, 30, 40));
     }
 
     // ---- B3-4：取色（`gui/tileddrawwidget.py:977` 的 `pick_color`）----

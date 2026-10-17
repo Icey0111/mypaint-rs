@@ -967,6 +967,27 @@ impl LayerStack {
         }
     }
 
+    /// 当前层是否接受填充（`get_fillable()`：`data.py:1335` 的
+    /// `not self.locked`，组恒 False，`group.py:459`）。
+    ///
+    /// 命令用它决定是否"自动新建一层再填"（`fill.py:215-216`）。
+    pub fn current_is_fillable(&self) -> bool {
+        self.layer_at(&self.current)
+            .map(|l| !l.is_group() && !l.locked)
+            .unwrap_or(false)
+    }
+
+    /// 当前位置是否允许收集种子（`fill.py:279-286` 的
+    /// `target_layer.visible and not target_layer.locked`）。
+    ///
+    /// 与 [`Self::current_is_fillable`] 的区别：组在这里是 True（组可见时
+    /// 用户可以在组上点，命令随后新建层）；锁定层两者都 False。
+    pub fn current_fill_permitted(&self) -> bool {
+        self.layer_at(&self.current)
+            .map(|l| l.visible && !l.locked)
+            .unwrap_or(false)
+    }
+
     /// 当前层（空栈时 panic：根栈恒有 ≥1 层，见 `RemoveLayer` 的补层逻辑）。
     pub fn current(&self) -> &Layer {
         self.layer_at(&self.current)
@@ -1424,6 +1445,28 @@ impl LayerStack {
             &mut pool,
         );
         has_content
+    }
+
+    /// 只合成 `path` 指向的**单个图层/组**（填充源用，
+    /// `tree.py:640-651` 的 `get_tile_accessible_layer_rendering`）。
+    ///
+    /// 背景不参与（只有根栈才有背景，而这里 `path` 恒非空）。组按它自己的
+    /// 模式/不透明度隔离合成；普通层按自己的模式/不透明度合进透明背板。
+    /// 记账：祖先组的可见性/不透明度未参与（源码 solo 渲染会带祖先 PUSH/POP）。
+    pub fn composite_layer_tile(
+        &self,
+        path: &[usize],
+        tx: i32,
+        ty: i32,
+        dst: &mut [u16],
+    ) -> bool {
+        debug_assert_eq!(dst.len(), TILE_CHANNELS);
+        dst.fill(0);
+        let Some(layer) = self.layer_at(path) else {
+            return false;
+        };
+        let mut pool: Vec<Vec<u16>> = Vec::new();
+        composite_layer(layer, tx, ty, dst, true, false, 0, &mut pool)
     }
 
     /// 合成 `(tx, ty)` 处的 tile 并编码为显示用 RGBA8（**不透明**，GPU 上传用）。

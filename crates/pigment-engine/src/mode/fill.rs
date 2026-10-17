@@ -52,26 +52,17 @@
 //! # 记账（本块未移植 / 用最保守做法的地方）
 //!
 //! - **gap closing**（`floodfill.py:606`、`fill/gap_closing_fill.cpp`、
-//!   `fill/gap_detection.cpp`）：整条"缺口检测 + 回吸"链路未移植；
+//!   `fill/gap_detection.cpp`）：整条"缺口检测 + 回吸"链路未移植（下一轮）；
 //!   [`Filler::flood`] 是它用到的整块 alpha flood，一并保留但当前无人调用。
-//! - **offset / feather**（形态学膨胀腐蚀 + 高斯模糊，`lib/morphology.py`、
-//!   `fill/morphology.cpp`、`fill/blur.cpp`）：未移植。因此 `trim_result`
-//!   分支（`floodfill.py:346`）不可达，`tile_bounds` 恒为整块，
-//!   `composite` 不需要按 bbox 裁剪已填 tile 的像素。
-//! - **sample merged / src_path**（`fill.py:249`）：未移植，采样源恒为当前层
-//!   自身（`data.py:1360` 的 src==dst 情形）。
-//! - **make_new_layer**（`fill.py:213-216`、`command.py:601-616`）：未移植。
-//!   源码在"当前层不可填"（组、锁定）时会自动新建一层再填；本移植选择
-//!   **不填**（最保守：不替用户改图层结构）。因此组/锁定层上单击无动作。
-//! - **limit to view**（`fill.py:222-224`、`document.py:1083-1088`）：未移植，
-//!   `view_bbox` 恒为 `None`。
+//! - **src_path**（`fill.py:249` 的"取样源图层"下拉）：引擎的
+//!   [`LayerSource`] 已能按路径渲染单层/组，但 GUI 还没有图层下拉框；
+//!   `sample merged` 与"当前层"两条源路径已接。
 //! - **进度/取消对话框**（`fill.py:316`、`floodfill.py:116` 的 `FillHandler`）：
-//!   我们的填充是同步的，没有线程与取消点。
+//!   我们的填充是同步的，没有线程与取消点；形态学/模糊同样同步。
 //! - **种子叠加预览**（`fill.py:361` 的 `FloodFillOverlay`，黑白虚线）与
 //!   光标族（`fill.py:61-72`）：GUI 叠加层与光标是另一块，未移植。
-//! - **选项面板**（`fill.py:433` 的 `FloodFillOptionsWidget`）：未移植，
-//!   [`FillOptions`] 只保留源码默认值；`fill_*` 偏好（`FLOOD_FILL_PREF`）
-//!   等 B6 偏好系统。
+//! - **Gap Detection 选项**（`fill.py:828-960`）：面板上只留说明，三个键
+//!   （gap_closing / gap_size / retract_seeps）未接 [`FillOptions`]。
 //! - **BlendModes 管理器**（`gui/blendmodehandler.py`，决定"橡皮/锁 alpha/
 //!   着色"三个修饰键的当前态）：未移植，[`FillOptions::blend_mode`] 由调用方
 //!   直接给（默认 Normal），[`FillArgs::blend_parameters`] 的映射逻辑则逐行
@@ -573,13 +564,104 @@ fn to_seeds(edge: &[bool; TILE_SIZE]) -> Vec<SeedRange> {
 
 /// 只读 tile 源（`floodfill.py:283` 的 "anything supporting readonly
 /// tile_request()"；缺 tile 等价源码里共享的空 tile）。
+///
+/// # 为什么返回 [`TileRef`] 而不是 `&TilePixels`
+///
+/// 普通填充的源是一张真实表面，可以零拷贝借出；`sample merged` 的源是
+/// **图层栈的合成结果**（`command.py:594-595` 的 `src_layer = layers`），
+/// 每块 tile 都是现算出来的，没有可借的存储。`TileRef` 让两种源共用同一套
+/// 扫描线代码：表面借出、合成结果持有。
 pub trait TileSource {
-    fn tile(&self, tx: i32, ty: i32) -> Option<&TilePixels>;
+    fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>>;
+}
+
+/// 一次 tile 读取的结果：借自表面，或合成出来的临时 tile。
+pub enum TileRef<'a> {
+    Borrowed(&'a TilePixels),
+    Owned(Box<TilePixels>),
+}
+
+impl std::ops::Deref for TileRef<'_> {
+    type Target = TilePixels;
+
+    fn deref(&self) -> &TilePixels {
+        match self {
+            TileRef::Borrowed(t) => t,
+            TileRef::Owned(t) => t,
+        }
+    }
 }
 
 impl TileSource for PigmentSurface {
-    fn tile(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
-        PigmentSurface::tile(self, tx, ty)
+    fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
+        PigmentSurface::tile(self, tx, ty).map(TileRef::Borrowed)
+    }
+}
+
+/// 把扁平的 fix15 RGBA 缓冲转成一块 tile（合成结果的落点）。
+fn owned_tile(flat: &[u16]) -> Box<TilePixels> {
+    let mut tile = hokusai::tile::empty_tile();
+    for y in 0..TILE_SIZE {
+        for x in 0..TILE_SIZE {
+            let o = (y * TILE_SIZE + x) * 4;
+            tile[y][x] = [flat[o], flat[o + 1], flat[o + 2], flat[o + 3]];
+        }
+    }
+    tile
+}
+
+/// `sample merged` 的源：整份图层栈的合成结果（`command.py:594-595`）。
+///
+/// 对应源码 `layers.flood_fill()`（`group.py:438-457`）：根栈本身就是
+/// "可 tile 访问的渲染"，含背景（`tree.py:640-651` 的
+/// `get_tile_accessible_layer_rendering` 对根栈走标准 spec）。
+pub struct MergedSource<'a> {
+    stack: &'a pigment_surface::layer::LayerStack,
+}
+
+impl<'a> MergedSource<'a> {
+    pub fn new(stack: &'a pigment_surface::layer::LayerStack) -> Self {
+        Self { stack }
+    }
+}
+
+impl TileSource for MergedSource<'_> {
+    fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
+        let mut flat = vec![0u16; TILE_SIZE * TILE_SIZE * 4];
+        if !self.stack.composite_tile(tx, ty, &mut flat) {
+            return None;
+        }
+        Some(TileRef::Owned(owned_tile(&flat)))
+    }
+}
+
+/// 单个图层/组作为填充源的渲染（`group.py:455` 的
+/// `get_tile_accessible_layer_rendering(self)`）。
+///
+/// 用于"当前层不可填 → 新建层再填"时源仍是原图层的情形：原图层可能是一个
+/// 组，没有自己的 surface。记账：祖先组的可见性/不透明度不参与渲染
+/// （源码 solo 渲染会带祖先的 PUSH/POP，本移植只渲染该层自身）。
+pub struct LayerSource<'a> {
+    stack: &'a pigment_surface::layer::LayerStack,
+    path: Vec<usize>,
+}
+
+impl<'a> LayerSource<'a> {
+    pub fn new(stack: &'a pigment_surface::layer::LayerStack, path: &[usize]) -> Self {
+        Self {
+            stack,
+            path: path.to_vec(),
+        }
+    }
+}
+
+impl TileSource for LayerSource<'_> {
+    fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
+        let mut flat = vec![0u16; TILE_SIZE * TILE_SIZE * 4];
+        if !self.stack.composite_layer_tile(&self.path, tx, ty, &mut flat) {
+            return None;
+        }
+        Some(TileRef::Owned(owned_tile(&flat)))
     }
 }
 
@@ -805,9 +887,9 @@ impl TileFillSkipper<'_> {
         }
         let (is_empty, tile) = match src.tile(coord.0, coord.1) {
             Some(t) => (false, t),
-            None => (true, &EMPTY_TILE),
+            None => (true, TileRef::Borrowed(&EMPTY_TILE)),
         };
-        let alpha = self.filler.tile_uniformity(is_empty, tile)?;
+        let alpha = self.filler.tile_uniformity(is_empty, &tile)?;
         // 均匀 tile 不会再进填充循环（floodfill.py:596）
         self.final_tiles.insert(coord);
         if alpha == 0 {
@@ -907,9 +989,11 @@ pub fn scanline_fill(
                     .entry(item.coord)
                     .or_insert_with(AlphaTile::new_data);
                 let dst = entry.as_data_mut();
-                let src_tile = src.tile(item.coord.0, item.coord.1).unwrap_or(&EMPTY_TILE);
+                let src_tile = src
+                    .tile(item.coord.0, item.coord.1)
+                    .unwrap_or(TileRef::Borrowed(&EMPTY_TILE));
                 skipper.filler.fill(
-                    src_tile,
+                    &src_tile,
                     dst,
                     item.seeds.as_seeds(item.from_dir),
                     tiles_bbox.tile_bounds(item.coord),
@@ -945,9 +1029,7 @@ pub struct FillBlendParams {
 /// 一次填充的全部参数（`floodfill.py:198-275` 的 `FloodFillArguments`）。
 ///
 /// 与源码的差异（都是"这块功能未移植"造成的）：
-/// - 没有 `offset` / `feather`（形态学与模糊未移植，恒为 0）；
 /// - 没有 `gap_closing_options`（缺口检测未移植，恒为 `None`）；
-/// - `framed` 不单独存：bbox 已经按画框算好（[`crate::Document::fill_bbox`]）；
 /// - `mode` + `lock_alpha` 不直接存，由 [`FillArgs::blend_parameters`] 从
 ///   [`FillArgs::comp_mode`] + [`FillArgs::blend_mode`] 现算（与源码每次
 ///   `fill()` 现算一致）。
@@ -961,6 +1043,14 @@ pub struct FillArgs {
     pub color: [f64; 3],
     /// 容差 0..1（`fill.py:234`）。
     pub tolerance: f32,
+    /// 填充后膨胀/腐蚀的半径（`fill.py:235` 的 `opts.offset`，正膨胀负腐蚀）。
+    pub offset: i32,
+    /// 填充后高斯模糊的半径（`fill.py:236` 的 `opts.feather`）。
+    pub feather: i32,
+    /// 画框是否启用（`command.py:582` 的 `fill_args.framed = doc.get_frame_enabled()`）。
+    ///
+    /// 只影响"膨胀/模糊之后是否按 bbox 裁剪结果"（`floodfill.py:346`）。
+    pub framed: bool,
     /// 目标合成模式（`fill.py:228` 的 `opts.blend_mode`，默认
     /// `DEFAULT_BLEND_MODE = 0` = CombineNormal）。
     pub comp_mode: CombineMode,
@@ -1026,7 +1116,8 @@ impl FillArgs {
 /// `src` 是采样源（只读），`dst` 是目标表面（可写）。返回实际合成过的 tile 数
 /// （源码没有这个返回值，这里只为测试/状态方便；内容不受影响）。
 ///
-/// 与源码的差异：`handler`（进度/取消）与 `morphology`/`blur` 两步未移植。
+/// 编排与源码一致：扫描线 → 膨胀/腐蚀 → 高斯模糊 → 合成。`handler`
+/// （进度/取消）未移植，填充是同步的。
 pub fn flood_fill(src: &impl TileSource, args: &FillArgs, dst: &mut PigmentSurface) -> usize {
     let (_, _, width, height) = args.bbox;
     if width <= 0 || height <= 0 || args.no_op() {
@@ -1034,13 +1125,25 @@ pub fn flood_fill(src: &impl TileSource, args: &FillArgs, dst: &mut PigmentSurfa
     }
     let tiles_bbox = TileBoundingBox::new(args.bbox);
 
+    // `floodfill.py:318-321` 的安全夹紧
+    let offset = args.offset.clamp(-(TILE_SIZE as i32), TILE_SIZE as i32);
+    let feather = args.feather.clamp(0, TILE_SIZE as i32);
+
     // 目标色取自取样点（floodfill.py:324）
     let (tx, ty, px, py) = starting_coordinates(args.target_pos.0, args.target_pos.1);
     let target = get_target_color(src, tx, ty, px, py);
     let mut filler = Filler::new(target, args.tolerance as f64);
     let seed_lists = seeds_by_tile(&args.seeds);
 
-    let filled = scanline_fill(src, &mut filler, &seed_lists, &tiles_bbox);
+    let mut filled = scanline_fill(src, &mut filler, &seed_lists, &tiles_bbox);
+    // Dilate/Erode（floodfill.py:336-338）
+    if offset != 0 {
+        filled = super::fill_morphology::morph(offset, filled);
+    }
+    // Feather（floodfill.py:340-342）
+    if feather != 0 {
+        filled = super::fill_morphology::blur(feather, filled);
+    }
     composite(dst, args, &filled, &tiles_bbox)
 }
 
@@ -1054,34 +1157,53 @@ pub fn flood_fill_surface(surface: &mut PigmentSurface, args: &FillArgs) -> usiz
         return 0;
     }
     let tiles_bbox = TileBoundingBox::new(args.bbox);
+    let offset = args.offset.clamp(-(TILE_SIZE as i32), TILE_SIZE as i32);
+    let feather = args.feather.clamp(0, TILE_SIZE as i32);
     let (tx, ty, px, py) = starting_coordinates(args.target_pos.0, args.target_pos.1);
     let target = get_target_color(&*surface, tx, ty, px, py);
     let mut filler = Filler::new(target, args.tolerance as f64);
     let seed_lists = seeds_by_tile(&args.seeds);
-    let filled = scanline_fill(&*surface, &mut filler, &seed_lists, &tiles_bbox);
+    let mut filled = scanline_fill(&*surface, &mut filler, &seed_lists, &tiles_bbox);
+    if offset != 0 {
+        filled = super::fill_morphology::morph(offset, filled);
+    }
+    if feather != 0 {
+        filled = super::fill_morphology::blur(feather, filled);
+    }
     composite(surface, args, &filled, &tiles_bbox)
 }
 
 /// `rgba_tile_from_alpha_tile`（`floodfill.cpp:387-407`）：把 alpha tile 变成
 /// 预乘了填充色的 rgba tile（行主序，`[y * N + x] * 4`）。
 ///
-/// 源码的 `min_x/min_y/max_x/max_y` 只用来裁剪（bbox 跨界 + 膨胀/模糊时），
-/// 那两条路径未移植，所以这里恒写整块；未写区域在源码里也是 0。
-fn rgba_tile_from_alpha(alpha: &[u16], fill: [f64; 3]) -> Vec<u16> {
+/// `bounds = (min_x, min_y, max_x, max_y)` 是源码的四个裁剪参数：只写这块
+/// 矩形，其余保持 0。bbox 不跨界时是整块 `(0,0,N-1,N-1)`；膨胀/模糊之后
+/// 跨界的 tile 用 bbox 的 `tile_bounds`。未写区域在源码里也是 0。
+fn rgba_tile_from_alpha(
+    alpha: &[u16],
+    fill: [f64; 3],
+    bounds: (i32, i32, i32, i32),
+) -> Vec<u16> {
+    let (min_x, min_y, max_x, max_y) = bounds;
     let mut out = vec![0u16; PIXELS * 4];
-    for (i, &a) in alpha.iter().enumerate() {
-        let px = Rgba::from_straight(fill[0], fill[1], fill[2], a);
-        out[i * 4] = px.red;
-        out[i * 4 + 1] = px.green;
-        out[i * 4 + 2] = px.blue;
-        out[i * 4 + 3] = px.alpha;
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let i = (y as usize) * TILE_SIZE + x as usize;
+            let a = alpha[i];
+            let px = Rgba::from_straight(fill[0], fill[1], fill[2], a);
+            out[i * 4] = px.red;
+            out[i * 4 + 1] = px.green;
+            out[i * 4 + 2] = px.blue;
+            out[i * 4 + 3] = px.alpha;
+        }
     }
     out
 }
 
 /// 整块同 alpha 的 rgba tile（对应 `_FULL_TILE` 版与均匀 tile 版）。
 fn rgba_tile_uniform(alpha: u16, fill: [f64; 3]) -> Vec<u16> {
-    rgba_tile_from_alpha(&vec![alpha; PIXELS], fill)
+    let n = TILE_SIZE as i32;
+    rgba_tile_from_alpha(&vec![alpha; PIXELS], fill, (0, 0, n - 1, n - 1))
 }
 
 /// `composite`（`floodfill.py:371-476`）：把填充结果合成进目标表面。
@@ -1094,6 +1216,9 @@ fn composite(
     let params = args.blend_parameters();
     let skip_empty_dst = args.skip_empty_dst();
     let full_rgba = rgba_tile_uniform(OPAQUE, args.color);
+    // `floodfill.py:346`：只有"画框启用 + 膨胀/模糊"时才按 bbox 裁剪结果。
+    let trim_result = args.framed && (args.offset > 0 || args.feather != 0);
+    let n = TILE_SIZE as i32;
 
     // 坐标排序只为确定性（源码顺序来自 dict；合成结果与顺序无关）
     let mut coords: Vec<(i32, i32)> = filled.keys().copied().collect();
@@ -1102,9 +1227,9 @@ fn composite(
     let mut count = 0;
     for coord in coords {
         let tile = &filled[&coord];
-        // 源码只在 offset/feather 之后才需要按 bbox 裁剪；这里 tile 不会越界，
-        // 保留判据以对齐 `floodfill.py:402-405`。
-        if tiles_bbox.outside(coord) {
+        // 膨胀/模糊会把 tile 撑出 bbox；只有画框启用时才裁掉
+        // （`floodfill.py:402-405`）。
+        if trim_result && tiles_bbox.outside(coord) {
             continue;
         }
         // 擦除/锁 alpha 时空目标 tile 无事可做（floodfill.py:407-410）。
@@ -1116,13 +1241,44 @@ fn composite(
         if skip_empty_dst && dst.tile(coord.0, coord.1).is_none() {
             continue;
         }
-        let src_rgba = match tile {
-            AlphaTile::Full => full_rgba.clone(),
-            AlphaTile::Uniform(alpha) => rgba_tile_uniform(*alpha, args.color),
-            AlphaTile::Data(data) => rgba_tile_from_alpha(data.as_ref(), args.color),
-        };
+        // 跨界 tile 不能整块拷贝/整块清空（`floodfill.py:419` 的 cut_off）。
+        let cut_off = trim_result && tiles_bbox.crossing(coord);
+        let full_inner = matches!(tile, AlphaTile::Full) && !cut_off;
+
         let dst_tile = dst.tile_request_start(coord.0, coord.1);
         let dst_flat = dst_tile.as_flattened_mut().as_flattened_mut();
+        if full_inner {
+            // 直接拷贝/清空/跳过三条快捷路径（`floodfill.py:421-431`）。
+            if params.mode == CombineMode::Normal && args.opacity == 1.0 {
+                dst_flat.copy_from_slice(&full_rgba);
+                dst.tile_request_end(coord.0, coord.1);
+                count += 1;
+                continue;
+            }
+            if params.mode == CombineMode::DestinationOut && args.opacity == 1.0 {
+                dst_flat.fill(0);
+                dst.tile_request_end(coord.0, coord.1);
+                count += 1;
+                continue;
+            }
+            if params.mode == CombineMode::DestinationIn && args.opacity == 1.0 {
+                dst.tile_request_end(coord.0, coord.1);
+                continue;
+            }
+        }
+        let bounds = if trim_result {
+            tiles_bbox.tile_bounds(coord)
+        } else {
+            (0, 0, n - 1, n - 1)
+        };
+        let src_rgba = match tile {
+            AlphaTile::Full => full_rgba.clone(),
+            AlphaTile::Uniform(alpha) => {
+                let data = vec![*alpha; PIXELS];
+                rgba_tile_from_alpha(&data, args.color, bounds)
+            }
+            AlphaTile::Data(data) => rgba_tile_from_alpha(data.as_ref(), args.color, bounds),
+        };
         if params.lock_alpha && params.mode != CombineMode::SourceAtop {
             // 锁 alpha 且模式不是 SourceAtop：先合成一次，再用保留的 dst 副本
             // 以 DestinationAtop 把结果掩回原 alpha（floodfill.py:441-447）
@@ -1168,9 +1324,8 @@ pub const DISPLAY_NAME: &str = "Flood Fill";
 
 /// 填充模式的可调项（`gui/fill.py:433` 的 `FloodFillOptionsWidget`）。
 ///
-/// 只保留**已移植**的那几项，默认值照源码类常量（`fill.py:450-457`）；
-/// 其余选项（offset / feather / gap closing / sample merged / limit to view /
-/// make new layer）见模块头的记账清单。
+/// 默认值照源码类常量（`fill.py:450-462`）。`gap_closing*` 三项仍未移植
+/// （见模块头的记账清单），其余全部可用。
 #[derive(Clone, Copy, Debug)]
 pub struct FillOptions {
     /// 容差（`DEFAULT_TOLERANCE = 0.05`）。
@@ -1181,6 +1336,16 @@ pub struct FillOptions {
     pub comp_mode: CombineMode,
     /// 混合模式修饰键当前态（`BlendModes.NORMAL`）。
     pub blend_mode: FillBlendMode,
+    /// 从所有可见层的临时合成里取样（`DEFAULT_SAMPLE_MERGED = False`）。
+    pub sample_merged: bool,
+    /// 把填充限制在当前视口内（`DEFAULT_LIM_TO_VIEW = False`）。
+    pub limit_to_view: bool,
+    /// 这一次填充写到新层（`DEFAULT_MAKE_NEW_LAYER = False`，用完自动复位）。
+    pub make_new_layer: bool,
+    /// 膨胀（正）/腐蚀（负）像素数（`DEFAULT_OFFSET = 0`）。
+    pub offset: i32,
+    /// 高斯模糊半径（`DEFAULT_FEATHER = 0`）。
+    pub feather: i32,
 }
 
 impl Default for FillOptions {
@@ -1190,6 +1355,11 @@ impl Default for FillOptions {
             opacity: 1.0,
             comp_mode: CombineMode::Normal,
             blend_mode: FillBlendMode::Normal,
+            sample_merged: false,
+            limit_to_view: false,
+            make_new_layer: false,
+            offset: 0,
+            feather: 0,
         }
     }
 }
@@ -1213,6 +1383,9 @@ pub struct FillMode {
     fill_permitted: bool,
     /// 最近一次指针位置（`fill.py:82-83` 的 `_x`/`_y`，模型坐标）。
     last_pos: Option<(f32, f32)>,
+    /// 最近一次指针事件所属视口的模型包围盒（`tdw.get_corners_model_coords()`
+    /// + `helpers.rotated_rectangle_bbox`，`fill.py:222-224`）。
+    view_bbox: Option<(i32, i32, i32, i32)>,
 }
 
 impl Default for FillMode {
@@ -1234,6 +1407,7 @@ impl FillMode {
             target_pos: None,
             fill_permitted: true,
             last_pos: None,
+            view_bbox: None,
         }
     }
 
@@ -1251,10 +1425,14 @@ impl FillMode {
 
     /// `_update_ui` 里的可填判定（`fill.py:279-286`）。
     ///
-    /// 目标层可填（可见 + 未锁 + 祖先未锁：我们的 `get_paintable` 语义）；
-    /// 画框启用时，点还必须落在画框里。
+    /// 目标层可填 = `visible and not locked`（**只看本层**，与
+    /// `target_layer.visible and not target_layer.locked` 一致；组也算可填，
+    /// 因为命令会自动新建一层）。勾了 "New Layer" 时目标层不存在，
+    /// 源码直接 `permitted = True`。画框启用时，点还必须落在画框里。
     fn permitted_at(&self, ctx: &ModeContext<'_>, x: f32, y: f32) -> bool {
-        if !ctx.current_is_paintable() {
+        let permitted = self.options.make_new_layer
+            || ctx.doc.layers().current_fill_permitted();
+        if !permitted {
             return false;
         }
         if ctx.doc.get_frame_enabled() {
@@ -1300,32 +1478,44 @@ impl FillMode {
         if seeds.is_empty() {
             return false;
         }
-        // 当前层不可填（组 / 锁定 / 隐藏）：
-        //
-        // - 组与锁定层：`get_fillable()` False（`data.py:1335`、`group.py:459`），
-        //   源码会 `make_new_layer = True` 新建一层再填（`fill.py:213-216`）。
-        //   我们没有移植 make_new_layer → 什么都不做（最保守：不替用户改图层结构）。
-        // - 隐藏层：`get_fillable()` 只看 `locked`，但模式的 `_fill_permitted`
-        //   要求 `visible and not locked`（`fill.py:281`），所以源码在这种层上
-        //   **根本不会收集种子**，也就无从填充 —— 与本实现一致。
-        if !ctx.current_is_paintable() {
-            return false;
-        }
+        // `fill.py:213-216`：勾了 "New Layer" 或当前层 `get_fillable()` False
+        // （组/锁定层）时，命令会先建一层再填。隐藏层在 `_fill_permitted`
+        // 那一步就收不到种子，与源码一致。
+        let make_new_layer =
+            self.options.make_new_layer || !ctx.doc.layers().current_is_fillable();
         let color = current_color_linear(ctx.brush);
         // 包围盒（document.py:1064-1089）：必须在拿可变 surface 之前算好
-        let bbox = ctx.doc.fill_bbox(&seeds);
+        let view_bbox = if self.options.limit_to_view {
+            self.view_bbox
+        } else {
+            None
+        };
+        let bbox = ctx.doc.fill_bbox(&seeds, view_bbox);
         let args = FillArgs {
             target_pos: self.target_pos.unwrap_or(seeds[0]),
             seeds,
             color,
             tolerance: self.options.tolerance,
+            offset: self.options.offset,
+            feather: self.options.feather,
+            framed: ctx.doc.get_frame_enabled(),
             comp_mode: self.options.comp_mode,
             blend_mode: self.options.blend_mode,
             opacity: self.options.opacity,
             bbox,
         };
-        let cmd = crate::command::FloodFill::new(ctx.current_layer_id(), args);
-        ctx.doc.do_command(Box::new(cmd))
+        let src_path = ctx.doc.current_path().to_vec();
+        let cmd = crate::command::FloodFill::new(
+            ctx.current_layer_id(),
+            src_path,
+            args,
+            self.options.sample_merged,
+            make_new_layer,
+        );
+        let ok = ctx.doc.do_command(Box::new(cmd));
+        // `fill.py:254`：`opts.make_new_layer = False`（一次性开关）
+        self.options.make_new_layer = false;
+        ok
     }
 }
 
@@ -1388,7 +1578,9 @@ impl InteractionMode for FillMode {
         self.seeds.clear();
         self.target_pos = None;
         self.last_pos = None;
-        self.fill_permitted = ctx.current_is_paintable();
+        self.view_bbox = None;
+        self.fill_permitted =
+            self.options.make_new_layer || ctx.doc.layers().current_fill_permitted();
     }
 
     fn leave(&mut self, _ctx: &mut ModeContext<'_>) {
@@ -1407,12 +1599,14 @@ impl InteractionMode for FillMode {
         self.drag.enter(ev.modifiers);
         self.drag.drag.start(ev.x, ev.y);
         self.drag.drag.start_button = Some(ev.button);
+        self.view_bbox = ev.view_bbox;
         self.begin_drag(ctx, ev.x, ev.y);
         true
     }
 
     fn motion(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent) -> bool {
         // `motion_notify_cb`（fill.py:256-263）：不在拖拽中也记位置（刷光标）
+        self.view_bbox = ev.view_bbox;
         self.last_pos = Some((ev.x, ev.y));
         if self.drag.drag.in_drag {
             self.extend_drag(ctx, ev.x, ev.y);
@@ -1508,8 +1702,8 @@ mod tests {
     }
 
     impl TileSource for TestSource {
-        fn tile(&self, tx: i32, ty: i32) -> Option<&TilePixels> {
-            self.tiles.get(&(tx, ty)).map(|t| t.as_ref())
+        fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
+            self.tiles.get(&(tx, ty)).map(|t| TileRef::Borrowed(t.as_ref()))
         }
     }
 
@@ -1534,6 +1728,9 @@ mod tests {
             seeds,
             color: [1.0, 0.0, 0.0],
             tolerance: 0.05,
+            offset: 0,
+            feather: 0,
+            framed: false,
             comp_mode: CombineMode::Normal,
             blend_mode: FillBlendMode::Normal,
             opacity: 1.0,
@@ -1954,10 +2151,10 @@ mod tests {
         assert_eq!(surface.tile_count(), 1, "重做应重新填上");
     }
 
-    /// 组上单击不填充、也不产生命令（`get_fillable` False，且我们未移植
-    /// `make_new_layer`）。
+    /// 组上单击：`get_fillable()` False → 自动新建一层再填
+    /// （`fill.py:213-216`、`command.py:601-616`），撤销会把新层删掉。
     #[test]
-    fn fill_on_a_group_is_ignored() {
+    fn fill_on_a_group_creates_a_new_layer_and_undo_removes_it() {
         use pigment_surface::layer::Layer;
 
         let mut doc = Document::new();
@@ -1966,8 +2163,10 @@ mod tests {
         doc.layers_mut().insert(0, group);
         doc.select_layer(&[0]);
         assert!(doc.layers().paintable_at(&[0]).is_none());
+        let group_path = doc.current_path().to_vec();
         // `select_layer` 自己会入一条自动撤销命令，先记基线
         let before = doc.command_stack.undo_len();
+        let layers_before = doc.layers().len();
 
         let brush = crate::brushlib::default_brush();
         let mut state = crate::hokusai::BrushState::default();
@@ -1987,14 +2186,28 @@ mod tests {
         let mut mode = FillMode::new();
         let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
         InteractionMode::button_press(&mut mode, &mut ctx, &press);
-        assert!(mode.seeds().is_empty(), "不可填时不该收集种子");
+        assert!(!mode.seeds().is_empty(), "组可见且未锁，应收集种子");
         let release = PointerEvent::button(10.0, 10.0, 16.0, 1);
         InteractionMode::button_release(&mut mode, &mut ctx, &release);
+
         assert_eq!(
             ctx.doc.command_stack.undo_len(),
-            before,
-            "组上不能产生填充命令"
+            before + 1,
+            "组上填充应产生一条命令"
         );
+        assert_eq!(
+            ctx.doc.layers().len(),
+            layers_before + 1,
+            "应自动新建一层"
+        );
+        // 当前层切到了新的绘画层，且填上了内容
+        let surface = ctx.doc.layers().current().surface().expect("新绘画层");
+        assert!(surface.tile_count() > 0, "新层应有填充结果");
+        // 撤回：层数恢复、当前层回到组
+        ctx.doc.undo();
+        assert_eq!(ctx.doc.layers().len(), layers_before, "撤销应删掉新层");
+        assert_eq!(ctx.doc.current_path(), group_path.as_slice(), "当前层应恢复");
+        assert!(ctx.doc.layers().current().is_group());
     }
 
     /// 拖动收集多个种子；松开时按种子集合一次填充。
@@ -2035,6 +2248,212 @@ mod tests {
             "整段拖动只该产生一条命令"
         );
         assert!(mode.seeds().is_empty(), "填充后种子应清空");
+    }
+
+    /// `sample merged` 的源是整份图层栈的合成（`command.py:594-595`），
+    /// 不是目标层自身：目标层为空时也能按**别的层**的颜色决定填充范围。
+    #[test]
+    fn sample_merged_reads_other_layers() {
+        let mut doc = Document::new();
+        doc.layers_mut().set_background_visible(false);
+        // 当前层：左半边不透明红，右半边透明
+        {
+            let surface = doc.surface_mut();
+            let tile = surface.tile_request_start(0, 0);
+            for row in tile.iter_mut() {
+                for (x, px) in row.iter_mut().enumerate() {
+                    *px = if x < 32 { opaque(20000, 0, 0) } else { [0; 4] };
+                }
+            }
+            surface.tile_request_end(0, 0);
+        }
+        let mut dst = PigmentSurface::new();
+        let args = args_over((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), vec![(2, 2)]);
+        let src = MergedSource::new(doc.layers());
+        flood_fill(&src, &args, &mut dst);
+        assert_eq!(dst_px(&dst, 5, 5)[3], OPAQUE, "不透明红区应被填");
+        assert_eq!(dst_px(&dst, 40, 5)[3], 0, "透明区不该被填");
+        assert_eq!(dst_px(&dst, 5, 5)[0], OPAQUE);
+    }
+
+    /// 单层源渲染（`LayerSource`）：只有该层的像素参与，背景不参与。
+    #[test]
+    fn layer_source_renders_only_the_requested_layer() {
+        let mut doc = Document::new();
+        doc.layers_mut().set_background_visible(false);
+        {
+            let surface = doc.surface_mut();
+            let tile = surface.tile_request_start(0, 0);
+            for row in tile.iter_mut() {
+                for px in row.iter_mut() {
+                    *px = opaque(0, 0, 12000);
+                }
+            }
+            surface.tile_request_end(0, 0);
+        }
+        let src = LayerSource::new(doc.layers(), doc.current_path());
+        let px = src
+            .tile(0, 0)
+            .map(|t| t[3][3])
+            .expect("该层应有 tile");
+        assert_eq!(px, opaque(0, 0, 12000));
+        assert!(src.tile(1, 0).is_none(), "没有内容的 tile 应返回 None");
+    }
+
+    /// `offset > 0` 膨胀：不启用画框时结果会扩到 bbox 之外的邻 tile；
+    /// 启用画框时按 bbox 裁剪（`floodfill.py:344-348`、`:402-405`）。
+    #[test]
+    fn offset_grows_the_fill_and_frame_trims_it() {
+        let src = TestSource::new().with_tile(0, 0, |_, _| opaque(1000, 1000, 1000));
+        let mut args = args_over((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), vec![(5, 5)]);
+        args.offset = 2;
+        let mut free = PigmentSurface::new();
+        flood_fill(&src, &args, &mut free);
+        assert!(
+            dst_px(&free, -1, 10)[3] > 0,
+            "不裁剪时膨胀应越过 bbox 进入左邻块"
+        );
+        assert!(free.tile_count() > 1);
+
+        args.framed = true;
+        let mut framed = PigmentSurface::new();
+        flood_fill(&src, &args, &mut framed);
+        assert_eq!(framed.tile_count(), 1, "画框启用时邻块应被裁掉");
+        assert_eq!(dst_px(&framed, 63, 10)[3], OPAQUE, "bbox 内仍是满 alpha");
+        assert_eq!(dst_px(&framed, 64, 10)[3], 0, "bbox 外不该写");
+    }
+
+    /// `offset < 0` 腐蚀：满 tile 的填充边缘被吃掉，结果 alpha 变小。
+    #[test]
+    fn negative_offset_erodes_the_fill() {
+        let src = TestSource::new().with_tile(0, 0, |_, _| opaque(1000, 1000, 1000));
+        let mut args = args_over((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), vec![(5, 5)]);
+        args.offset = -3;
+        let mut dst = PigmentSurface::new();
+        flood_fill(&src, &args, &mut dst);
+        assert_eq!(dst_px(&dst, 32, 32)[3], OPAQUE, "内部仍满");
+        assert_eq!(dst_px(&dst, 0, 32)[3], 0, "边缘被腐蚀掉");
+        assert_eq!(dst_px(&dst, 63, 32)[3], 0);
+    }
+
+    /// `feather > 0` 高斯模糊：硬边出现半透明过渡带。
+    #[test]
+    fn feather_softens_the_fill_edge() {
+        let src = TestSource::new().with_tile(0, 0, |_, _| opaque(1000, 1000, 1000));
+        let mut args = args_over((0, 0, TILE_SIZE as i32, TILE_SIZE as i32), vec![(5, 5)]);
+        args.feather = 4;
+        let mut dst = PigmentSurface::new();
+        flood_fill(&src, &args, &mut dst);
+        let edge = dst_px(&dst, 63, 32)[3];
+        assert!(edge > 0 && edge < OPAQUE, "边缘应被模糊（实得 {edge}）");
+        assert!(dst_px(&dst, 32, 32)[3] > (OPAQUE as u32 * 9 / 10) as u16);
+    }
+
+    /// "New Layer (once)"：填充写到新层，原层不动；撤销删层并回到原层。
+    #[test]
+    fn make_new_layer_option_writes_to_a_fresh_layer() {
+        let mut doc = doc_with_paint();
+        // 换个非黑填充色，才能区分"新层内容"和原层的黑
+        let mut brush = crate::brushlib::default_brush();
+        brush.get_mut(BrushSetting::ColorS).base_value = 0.0;
+        brush.get_mut(BrushSetting::ColorV).base_value = 1.0;
+        let mut state = crate::hokusai::BrushState::default();
+        let before_layers = doc.layers().len();
+        let before_undo = doc.command_stack.undo_len();
+        {
+            let mut ctx = ModeContext {
+                doc: &mut doc,
+                brush: &brush,
+                brush_name: "test",
+                brush_state: &mut state,
+                fakepressure: 0.5,
+                fakerotation: 0.5,
+                hide_cursor_while_painting: false,
+                status: None,
+                color: [0.0, 0.0, 0.0],
+                picked_color: None,
+            };
+            let mut mode = FillMode::new();
+            mode.options.make_new_layer = true;
+            InteractionMode::button_press(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 0.0, 1),
+            );
+            InteractionMode::button_release(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 16.0, 1),
+            );
+            assert!(!mode.options.make_new_layer, "一次性开关应自动复位");
+            assert_eq!(ctx.doc.layers().len(), before_layers + 1);
+            assert_eq!(ctx.doc.command_stack.undo_len(), before_undo + 1);
+            // 原层仍是整块黑，新层是填充色
+            let old = ctx.doc.layers().layer_at(&[1]).unwrap().surface().unwrap();
+            assert_eq!(dst_px(old, 10, 10), opaque(0, 0, 0));
+            let new = ctx.doc.layers().current().surface().unwrap();
+            assert_eq!(dst_px(new, 10, 10)[3], OPAQUE);
+            assert_ne!(dst_px(new, 10, 10), opaque(0, 0, 0));
+            ctx.doc.undo();
+            assert_eq!(ctx.doc.layers().len(), before_layers);
+        }
+    }
+
+    /// 锁定层：`_fill_permitted` = `visible and not locked` → 默认收不到种子；
+    /// 勾 "New Layer" 后目标层为 None，permitted=True，才会新建一层
+    /// （`fill.py:275-281`）。
+    #[test]
+    fn locked_layer_needs_the_new_layer_option() {
+        let mut doc = doc_with_paint();
+        doc.layers_mut().current_mut().locked = true;
+        let before_layers = doc.layers().len();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        {
+            let mut ctx = ModeContext {
+                doc: &mut doc,
+                brush: &brush,
+                brush_name: "test",
+                brush_state: &mut state,
+                fakepressure: 0.5,
+                fakerotation: 0.5,
+                hide_cursor_while_painting: false,
+                status: None,
+                color: [0.0, 0.0, 0.0],
+                picked_color: None,
+            };
+            let mut mode = FillMode::new();
+            InteractionMode::button_press(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 0.0, 1),
+            );
+            assert!(mode.seeds().is_empty(), "锁定层默认不该收集种子");
+            InteractionMode::button_release(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 16.0, 1),
+            );
+            assert_eq!(ctx.doc.layers().len(), before_layers, "不该新建层");
+
+            mode.options.make_new_layer = true;
+            InteractionMode::button_press(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 32.0, 1),
+            );
+            assert!(!mode.seeds().is_empty(), "勾了 New Layer 后允许收集种子");
+            InteractionMode::button_release(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(10.0, 10.0, 48.0, 1),
+            );
+            assert_eq!(
+                ctx.doc.layers().len(),
+                before_layers + 1,
+                "应新建一层"
+            );
+        }
     }
 
     /// 橡皮填充（`BlendModes.ERASE` → DestinationOut）：把已有内容的 alpha 擦掉。

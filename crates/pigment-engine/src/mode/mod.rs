@@ -28,6 +28,7 @@
 
 pub mod brushresize;
 pub mod fill;
+pub mod fill_morphology;
 pub mod frameedit;
 pub mod freehand;
 pub mod ink;
@@ -163,6 +164,12 @@ pub struct PointerEvent {
     /// 鼠标按键号（1 = 左键；0 = 纯移动事件）。
     pub button: u32,
     pub modifiers: Modifiers,
+    /// 事件发生时视口的**模型坐标包围盒** `(x, y, w, h)`。
+    ///
+    /// `None` = 调用方没提供（测试/无视图的引擎调用）。填充模式的
+    /// "Limit to View" 直接用它（`fill.py:222-224` 的
+    /// `tdw.get_corners_model_coords()` → `rotated_rectangle_bbox`）。
+    pub view_bbox: Option<(i32, i32, i32, i32)>,
 }
 
 impl PointerEvent {
@@ -180,6 +187,7 @@ impl PointerEvent {
             barrel_rotation: None,
             button: 0,
             modifiers: Modifiers::NONE,
+            view_bbox: None,
         }
     }
 

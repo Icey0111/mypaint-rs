@@ -621,38 +621,109 @@ impl Command for Brushwork {
 ///   拿着一张过期的快照。
 ///
 /// 记账差异：
-/// - 未移植 `make_new_layer` 分支（`command.py:601-616`）：新建层 + 填进去 +
-///   `undo` 删层需要"填充命令负责图层增删"的复合语义，本块只做"覆盖当前层"。
-///   构造函数因此不接受 `make_new_layer`；调用方（[`crate::mode::fill`]）在
-///   当前层不可填时干脆不填充。
-/// - 未移植 `status_cb`（进度/取消对话框）与 `sample_merged` / `src_path`
-///   （采样源恒为目标层自身，即 `data.py:1360` 的 `src == dst`）。
-/// - 源码的 `fill_args.framed = doc.get_frame_enabled()`（`command.py:582`）
-///   在这里由调用方折算进 `bbox`（[`crate::Document::fill_bbox`]），所以本命令
-///   不再需要 `framed`。
+/// - 未移植 `status_cb`（进度/取消对话框）：填充是同步的；
+/// - `src_path`（从选项里指定"取样源图层"）未接 GUI：引擎命令只接受
+///   "当前层"或 `sample_merged` 两种源。
 pub struct FloodFill {
     /// 目标层 id（源码持图层对象引用，我们用稳定 id）。
     target_layer: u64,
+    /// 取样源图层路径（`command.py:596-599` 的 `src_layer = layers.current`）。
+    ///
+    /// 普通填充时等于目标层；"新建层再填"时源仍是原来的当前层（可能是组）。
+    src_path: Vec<usize>,
     /// 填充参数（`command.py:581` 的 `self.fill_args`）。
     fill_args: crate::mode::fill::FillArgs,
+    /// `sample merged`（`command.py:594-595`）：源改成整份图层栈的合成。
+    sample_merged: bool,
+    /// 是否写到新层（`command.py:601-616` / undo `:635-641`）。
+    make_new_layer: bool,
     /// 填充前的快照（`command.py:588` 的 `self.snapshot`；undo 后清空）。
     snapshot: Option<SurfaceSnapshot>,
+    /// 新建层的插入路径（undo 时按它删层；redo 时重建）。
+    new_layer_path: Option<Vec<usize>>,
+    /// 新建层的 id（插入后才知道；redo 里当目标）。
+    new_layer_id: Option<u64>,
+    /// 新建层之前的当前层（undo 恢复到这里）。
+    prev_current: u64,
 }
 
 impl FloodFill {
     /// 新建一条填充命令（`FloodFill.__init__`，`command.py:566-589`）。
-    pub fn new(target_layer: u64, fill_args: crate::mode::fill::FillArgs) -> Self {
+    pub fn new(
+        target_layer: u64,
+        src_path: Vec<usize>,
+        fill_args: crate::mode::fill::FillArgs,
+        sample_merged: bool,
+        make_new_layer: bool,
+    ) -> Self {
         Self {
             target_layer,
+            src_path,
             fill_args,
+            sample_merged,
+            make_new_layer,
             snapshot: None,
+            new_layer_path: None,
+            new_layer_id: None,
+            prev_current: 0,
+        }
+    }
+
+    /// 按源码的方式挑源，并把填充跑进 `target`。
+    fn run_fill(&self, ctx: &mut DocContext<'_>, target_id: u64) {
+        use crate::mode::fill::{flood_fill, flood_fill_surface, LayerSource, MergedSource};
+
+        // 源与目标相同（普通填充）时走两阶段就地填充，避免同一表面的双重借用。
+        let same_source = !self.sample_merged && self.target_layer == target_id;
+        if same_source {
+            if let Some(surface) = ctx.layers.surface_by_id(target_id) {
+                flood_fill_surface(surface, &self.fill_args);
+            }
+            return;
+        }
+        // 其余情形都需要"源"与"目标"同时存在：克隆一份图层栈当只读源
+        // （tile 像素按 Arc 共享，写目标时 COW 不会污染源快照）。
+        let stack = ctx.layers.clone();
+        let Some(target) = ctx.layers.surface_by_id(target_id) else {
+            return;
+        };
+        if self.sample_merged {
+            let src = MergedSource::new(&stack);
+            flood_fill(&src, &self.fill_args, target);
+        } else {
+            let src = LayerSource::new(&stack, &self.src_path);
+            flood_fill(&src, &self.fill_args, target);
         }
     }
 }
 
 impl Command for FloodFill {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
-        // `command.py:591-623`（去掉 make_new_layer / sample_merged / src_path）
+        // `command.py:591-623`
+        if self.make_new_layer {
+            // `command.py:601-616`：新建一层插在当前层位置（即当前层之上），
+            // 切到新层，再用它当目标。
+            if self.new_layer_path.is_none() {
+                self.prev_current = ctx.layers.current_id();
+                let insert = ctx.layers.current_path().to_vec();
+                let layer = pigment_surface::layer::Layer::new();
+                let id = layer.id;
+                let Some(p) = ctx.layers.insert_at(&insert, layer) else {
+                    return false;
+                };
+                self.new_layer_id = Some(id);
+                self.new_layer_path = Some(p.clone());
+                ctx.layers.set_current_path(&p);
+            }
+            let target_id = self.new_layer_id.expect("上面刚插入");
+            // `command.py:615-616`：锁 alpha / dst-in 等模式在空层上没有意义
+            if self.fill_args.skip_empty_dst() {
+                return true;
+            }
+            self.run_fill(ctx, target_id);
+            return true;
+        }
+
         let Some(surface) = ctx.layers.surface_by_id(self.target_layer) else {
             // 目标不是绘画层（组）：无从填充 → 按"取消"处理，不入栈
             return false;
@@ -661,7 +732,7 @@ impl Command for FloodFill {
         if self.snapshot.is_none() {
             self.snapshot = Some(surface.save_snapshot());
         }
-        crate::mode::fill::flood_fill_surface(surface, &self.fill_args);
+        self.run_fill(ctx, self.target_layer);
         // 源码 `redo()` 没有返回值，等价于"不是取消"→ 一定入栈
         // （`command.py:70` 的 `completed is False` 判据）。空填充也入栈，
         // 与源码一致：撤销栈里可能出现一条内容无变化的 Flood Fill。
@@ -669,7 +740,18 @@ impl Command for FloodFill {
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        // `command.py:633-645`（只保留覆盖当前层的分支）
+        // `command.py:633-645`
+        if self.make_new_layer {
+            if let Some(path) = self.new_layer_path.take() {
+                ctx.layers.remove_at(&path);
+            }
+            self.new_layer_id = None;
+            // 记账：源码 undo 用 `set_current_path(旧的新层路径)`（删层后会被
+            // 修剪到父路径）；这里恢复成填充前的当前层，语义更接近用户预期，
+            // 也与 `AddLayer.undo` 一致。
+            ctx.layers.set_current_by_id(self.prev_current);
+            return;
+        }
         if let Some(snapshot) = self.snapshot.take() {
             if let Some(surface) = ctx.layers.surface_by_id(self.target_layer) {
                 surface.load_snapshot(&snapshot);

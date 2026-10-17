@@ -366,5 +366,7 @@ fn scratch_pointer_event(
         barrel_rotation: None,
         button,
         modifiers,
+        // 暂存区没有独立的填充面板，Limit to View 不会用到它。
+        view_bbox: None,
     }
 }
