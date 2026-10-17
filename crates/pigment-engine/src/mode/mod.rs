@@ -404,6 +404,21 @@ pub trait InteractionMode {
         false
     }
 
+    /// 画布 OK 按钮：接受当前 Inking 曲线。
+    fn ink_accept(&mut self, _ctx: &mut ModeContext<'_>) -> bool {
+        false
+    }
+
+    /// 画布垃圾桶按钮：放弃当前 Inking 曲线。
+    fn ink_reject(&mut self, _ctx: &mut ModeContext<'_>) -> bool {
+        false
+    }
+
+    /// 是否正在拖节点（此时源码隐藏画布按钮）。
+    fn ink_dragging(&self) -> bool {
+        false
+    }
+
     /// `SimplifyNodes` 动作（`document.py:2318`）；返回删掉的节点数。
     fn simplify_nodes(&mut self, _ctx: &mut ModeContext<'_>) -> usize {
         0

@@ -1076,17 +1076,36 @@ impl PigmentApp {
             // CLICKED），`dispatched_drag` 只是防御性双保险。
             if !dispatched_drag && response.clicked_by(egui::PointerButton::Primary) {
                 if let Some(pos) = response.interact_pointer_pos() {
-                    self.stroke_state = pigment_engine::hokusai::BrushState::default();
-                    let press = self.pointer_event(pos, rect, now_ms, 1, mods);
-                    self.mode_button_press(press);
-                    let release = self.pointer_event(pos, rect, now_ms, 1, mods);
-                    self.mode_button_release(release);
-                    self.finish_oneshot(mods, now_ms / 1000.0);
-                    self.stroke_dirty = true;
-                    if !self.eraser {
-                        self.color_manager.push_current_history();
+                    // Inking 画布 OK/垃圾桶优先于绘画（`inktool.py:317-356`）
+                    let mut consumed = false;
+                    if let Some(accept) = self.ink_button_at(rect, pos) {
+                        consumed = self.with_mode(|modes, ctx| {
+                            if accept {
+                                modes.top_mut().ink_accept(ctx)
+                            } else {
+                                modes.top_mut().ink_reject(ctx)
+                            }
+                        });
+                        if consumed {
+                            let top = self.modes.top();
+                            let text = format!("{}: {}", top.name(), top.usage());
+                            self.set_status(text, now_ms / 1000.0);
+                            self.stroke_dirty = true;
+                        }
                     }
-                    self.record_brush_history();
+                    if !consumed {
+                        self.stroke_state = pigment_engine::hokusai::BrushState::default();
+                        let press = self.pointer_event(pos, rect, now_ms, 1, mods);
+                        self.mode_button_press(press);
+                        let release = self.pointer_event(pos, rect, now_ms, 1, mods);
+                        self.mode_button_release(release);
+                        self.finish_oneshot(mods, now_ms / 1000.0);
+                        self.stroke_dirty = true;
+                        if !self.eraser {
+                            self.color_manager.push_current_history();
+                        }
+                        self.record_brush_history();
+                    }
                 }
             }
         }
@@ -1145,6 +1164,21 @@ impl PigmentApp {
                         egui::Color32::from_rgb(0xEC, 0xF0, 0xF1)
                     };
                     painter.circle_filled(p, 4.0, color);
+                }
+            }
+            // 画布 OK / 垃圾桶浮动按钮（`inktool.py:1090-1116`）
+            if let Some((accept, reject)) = self.ink_button_positions(rect) {
+                let painter = ui.painter().with_clip_rect(rect);
+                for (local, glyph) in [(accept, "✓"), (reject, "×")] {
+                    let p = egui::pos2(rect.min.x + local.x, rect.min.y + local.y);
+                    painter.circle_filled(p, 16.0, egui::Color32::from_rgb(0xEC, 0xF0, 0xF1));
+                    painter.text(
+                        p,
+                        egui::Align2::CENTER_CENTER,
+                        glyph,
+                        egui::FontId::proportional(18.0),
+                        egui::Color32::BLACK,
+                    );
                 }
             }
         }

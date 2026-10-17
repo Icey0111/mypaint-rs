@@ -102,12 +102,91 @@ pub(crate) struct BrushKeySlot {
     pub(crate) name: String,
 }
 
-/// 视图操纵工具（`gui/viewmanip.py` 的 Pan/Zoom/Rotate 三个 Oneshot 模式）。
+/// 一次性的视图操纵工具（`gui/viewmanip.py`）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ViewTool {
     Pan,
     Zoom,
     Rotate,
+}
+
+/// `inktool._LayoutNode`：浮动按钮布局的斥力/弹簧顶点。
+#[derive(Clone, Copy, Debug)]
+struct LayoutNode {
+    x: f32,
+    y: f32,
+    fx: f32,
+    fy: f32,
+    vx: f32,
+    vy: f32,
+}
+
+impl LayoutNode {
+    fn new(x: f32, y: f32) -> Self {
+        Self {
+            x,
+            y,
+            fx: 0.0,
+            fy: 0.0,
+            vx: 0.0,
+            vy: 0.0,
+        }
+    }
+
+    /// `add_forces_inverse_square`。
+    fn inverse_square(&mut self, others: &[LayoutNode], k: f32) {
+        for o in others {
+            let rsq = (self.x - o.x).powi(2) + (self.y - o.y).powi(2);
+            if rsq != 0.0 {
+                self.fx += k * (o.x - self.x) / rsq;
+                self.fy += k * (o.y - self.y) / rsq;
+            }
+        }
+    }
+
+    /// `add_forces_linear`。
+    fn linear(&mut self, others: &[LayoutNode], k: f32) {
+        for o in others {
+            self.fx += k * (o.x - self.x);
+            self.fy += k * (o.y - self.y);
+        }
+    }
+
+    /// `update_position(damping=0.85)`。
+    fn update(&mut self) {
+        self.vx = (self.vx + self.fx) * 0.85;
+        self.vy = (self.vy + self.fy) * 0.85;
+        self.fx = 0.0;
+        self.fy = 0.0;
+        self.x += self.vx;
+        self.y += self.vy;
+    }
+
+    /// `constrain_position`。
+    fn constrain(&mut self, x0: f32, x1: f32, y0: f32, y1: f32) {
+        if self.x < x0 {
+            self.x = x0;
+            self.vx = 0.0;
+        } else if self.x > x1 {
+            self.x = x1;
+            self.vx = 0.0;
+        }
+        if self.y < y0 {
+            self.y = y0;
+            self.vy = 0.0;
+        } else if self.y > y1 {
+            self.y = y1;
+            self.vy = 0.0;
+        }
+    }
+
+    fn speed(&self) -> f32 {
+        self.vx.hypot(self.vy)
+    }
+
+    fn pos(&self) -> egui::Pos2 {
+        egui::pos2(self.x, self.y)
+    }
 }
 
 /// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
@@ -1561,6 +1640,92 @@ impl PigmentApp {
         }
     }
 
+    /// Inking 画布上 OK/垃圾桶按钮的位置（`Overlay.update_button_positions`，
+    /// `inktool.py:967-1060`）。返回画布局部坐标 `(accept, reject)`。
+    pub(crate) fn ink_button_positions(&self, rect: egui::Rect) -> Option<(egui::Pos2, egui::Pos2)> {
+        let top = self.modes.top();
+        if !top.ink_editing() || top.ink_dragging() {
+            return None;
+        }
+        let nodes = top.ink_nodes()?;
+        if nodes.is_empty() {
+            return None;
+        }
+        let fixed: Vec<LayoutNode> = nodes
+            .iter()
+            .map(|n| {
+                let s = self.view.world_to_screen(n.x, n.y);
+                LayoutNode::new(s[0], s[1])
+            })
+            .collect();
+        Self::layout_ink_buttons(&fixed, rect.width(), rect.height())
+    }
+
+/// 纯布局：给定节点的画布坐标，返回 OK/垃圾桶按钮位置
+/// （`Overlay.update_button_positions` 的力导向循环）。
+fn layout_ink_buttons(
+    fixed: &[LayoutNode],
+    width: f32,
+    height: f32,
+) -> Option<(egui::Pos2, egui::Pos2)> {
+    let last = fixed.len().checked_sub(1)?;
+    let quarter = (last * 3) / 4;
+    let mut tail = (
+        fixed[last].x - fixed[quarter].x,
+        fixed[last].y - fixed[quarter].y,
+    );
+    let len = tail.0.hypot(tail.1);
+    if len <= 0.0 {
+        tail = (0.0, 1.0);
+    } else {
+        tail = (tail.0 / len, tail.1 / len);
+    }
+    let margin = 1.5 * 16.0; // FLOATING_BUTTON_RADIUS
+    let mut accept = LayoutNode::new(
+        fixed[last].x + tail.0 * margin,
+        fixed[last].y + tail.1 * margin,
+    );
+    let mut reject = LayoutNode::new(
+        fixed[0].x - tail.0 * margin,
+        fixed[0].y - tail.1 * margin,
+    );
+    let reject_bbox = (margin, width - margin, margin, height - 2.666 * margin);
+    let accept_bbox = (margin, width - margin, 2.666 * margin, height - margin);
+    for _ in 0..100 {
+        accept.inverse_square(fixed, -25.0);
+        accept.inverse_square(&[reject], -25.0);
+        accept.linear(&[fixed[last]], 0.05);
+        reject.inverse_square(fixed, -25.0);
+        reject.inverse_square(&[accept], -25.0);
+        reject.linear(&[fixed[0]], 0.05);
+        reject.update();
+        reject.constrain(reject_bbox.0, reject_bbox.1, reject_bbox.2, reject_bbox.3);
+        accept.update();
+        accept.constrain(accept_bbox.0, accept_bbox.1, accept_bbox.2, accept_bbox.3);
+        if accept.speed() < 0.5 && reject.speed() < 0.5 {
+            break;
+        }
+    }
+    Some((accept.pos(), reject.pos()))
+}
+
+    /// 画布按钮命中：`Some(true)` = OK，`Some(false)` = 垃圾桶。
+    pub(crate) fn ink_button_at(
+        &self,
+        rect: egui::Rect,
+        pos: egui::Pos2,
+    ) -> Option<bool> {
+        let (accept, reject) = self.ink_button_positions(rect)?;
+        let local = egui::pos2(pos.x - rect.min.x, pos.y - rect.min.y);
+        if local.distance(accept) <= 16.0 {
+            Some(true)
+        } else if local.distance(reject) <= 16.0 {
+            Some(false)
+        } else {
+            None
+        }
+    }
+
     /// 切到取色模式（`ColorPickMode` 与 `H`/`C`/`Y` 三个变体）。
     ///
     /// 两条入口的构造参数不同，照 `document.py:2163-2201`：
@@ -2995,6 +3160,25 @@ mod tests {
         }
         assert_eq!(list.len(), 20);
         assert_eq!(list[0], "29.ora");
+    }
+
+    #[test]
+    fn ink_button_layout_keeps_buttons_in_bounds() {
+        let fixed = [
+            LayoutNode::new(100.0, 100.0),
+            LayoutNode::new(200.0, 200.0),
+            LayoutNode::new(300.0, 300.0),
+        ];
+        let (accept, reject) = PigmentApp::layout_ink_buttons(&fixed, 800.0, 600.0).unwrap();
+        let margin = 24.0;
+        for p in [accept, reject] {
+            assert!(p.x >= margin - 1e-3 && p.x <= 800.0 - margin + 1e-3);
+            assert!(p.y >= margin - 1e-3 && p.y <= 600.0 - margin + 1e-3);
+        }
+        assert!(accept.distance(reject) > 1.0, "两个按钮不能重叠");
+        // 尾部方向 (1,1)/√2：OK 在末点外、垃圾桶在首点内
+        assert!(accept.x > 300.0 && accept.y > 300.0);
+        assert!(reject.x < 100.0 && reject.y < 100.0);
     }
 
     #[test]

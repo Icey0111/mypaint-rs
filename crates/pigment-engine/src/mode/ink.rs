@@ -691,6 +691,26 @@ impl InteractionMode for InkingMode {
         self.ink_edit(ctx, edit)
     }
 
+    fn ink_accept(&mut self, ctx: &mut ModeContext<'_>) -> bool {
+        if self.phase != InkPhase::Adjust {
+            return false;
+        }
+        self.accept(ctx);
+        true
+    }
+
+    fn ink_reject(&mut self, ctx: &mut ModeContext<'_>) -> bool {
+        if self.phase != InkPhase::Adjust {
+            return false;
+        }
+        self.reject(ctx);
+        true
+    }
+
+    fn ink_dragging(&self) -> bool {
+        self.dragging
+    }
+
     fn simplify_nodes(&mut self, ctx: &mut ModeContext<'_>) -> usize {
         let n = InkingMode::simplify_nodes(self);
         if n > 0 {
