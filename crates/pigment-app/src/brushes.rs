@@ -177,6 +177,8 @@ pub struct BrushPanel {
     pub new_group: Option<String>,
     /// 对话框首帧是否还要抢一次焦点（`request_focus()` 不能每帧调）。
     pub new_group_focus: bool,
+    /// 删除确认对话框的目标（`entries` 下标）。
+    pub delete_confirm: Option<usize>,
 }
 
 impl BrushPanel {
@@ -206,6 +208,7 @@ impl BrushPanel {
             context: None,
             new_group: None,
             new_group_focus: false,
+            delete_confirm: None,
         };
         // `_init_default_brushkeys_and_history`（brushmanager.py:463-474）：
         // 空的历史槽位用启动分组的前 5 支补满（`group_i = i % len`）。
@@ -431,6 +434,7 @@ impl BrushPanel {
         let ctx = ui.ctx().clone();
         changed |= self.context_menu(&ctx);
         self.new_group_dialog(&ctx);
+        self.delete_brush_dialog(&ctx);
         changed
     }
 
@@ -678,6 +682,46 @@ impl BrushPanel {
         }
     }
 
+    /// 克隆一支笔刷（`BrushPopupMenu._clone_cb` + `ManagedBrush.clone`）。
+    fn clone_brush_at(&mut self, idx: usize) -> bool {
+        let Some(entry) = self.library.entries.get(idx).cloned() else {
+            return false;
+        };
+        let Ok(mut brush) = entry.load() else {
+            eprintln!("克隆失败：{} 解析不了", entry.key);
+            return false;
+        };
+        let preview = crate::thumb::render(&brush);
+        match self.library.clone_brush(
+            &entry.key,
+            &mut brush,
+            Some((crate::thumb::PREVIEW_W as u32, crate::thumb::PREVIEW_H as u32, &preview)),
+        ) {
+            Ok(new_idx) => {
+                self.save_order();
+                self.thumbnails.clear();
+                self.header_icons.clear();
+                self.previews.clear();
+                self.selected = new_idx;
+                self.rebuild_visible();
+                true
+            }
+            Err(e) => {
+                eprintln!("克隆失败: {e}");
+                false
+            }
+        }
+    }
+
+    /// 落盘后刷新缩略图缓存并写回 order.conf（保存/克隆共用）。
+    pub(crate) fn refresh_after_save(&mut self, idx: usize) {
+        self.thumbnails.remove(&idx);
+        self.previews.remove(&idx);
+        self.header_icons.clear();
+        self.rebuild_visible();
+        self.save_order();
+    }
+
     /// 右键菜单（`BrushPopupMenu`，`brushselectionwindow.py:210-345`）。
     ///
     /// 已移植：Add/Remove Favorites、Remove from Group、Edit Brush Settings；
@@ -722,8 +766,18 @@ impl BrushPanel {
                     self.context = None;
                     ui.close();
                 }
-                ui.add_enabled(false, egui::Button::new("Clone…"))
-                    .on_disabled_hover_text("未移植：需要 .myb 写回");
+                if ui.button("Clone…").clicked() {
+                    if self.clone_brush_at(idx) {
+                        changed = true;
+                    }
+                    self.context = None;
+                    ui.close();
+                }
+                if ui.button("Delete Brush…").clicked() {
+                    self.delete_confirm = Some(idx);
+                    self.context = None;
+                    ui.close();
+                }
                 if ui.button("Edit Brush Settings").clicked() {
                     if idx != self.selected {
                         self.selected = idx;
@@ -772,6 +826,64 @@ impl BrushPanel {
             }
         } else if open {
             self.new_group = Some(buf);
+        }
+    }
+
+    /// 删除确认（`brusheditor.py:1085-1115` 的确认 + `_delete_brush`）。
+    fn delete_brush_dialog(&mut self, ctx: &egui::Context) {
+        let Some(idx) = self.delete_confirm else {
+            return;
+        };
+        let Some(entry) = self.library.entries.get(idx).cloned() else {
+            self.delete_confirm = None;
+            return;
+        };
+        let mut open = true;
+        let mut delete = false;
+        let mut cancel = false;
+        egui::Window::new("Delete Brush")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.label(format!("Really delete “{}”?", entry.mypaint_name()));
+                if entry.is_embedded() {
+                    ui.label(
+                        egui::RichText::new(
+                            "官方内嵌笔刷删不掉，会移到 Deleted 组（源码行为）。",
+                        )
+                        .weak()
+                        .small(),
+                    );
+                }
+                ui.horizontal(|ui| {
+                    if ui.button("Delete").clicked() {
+                        delete = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if delete {
+            let key = entry.key.clone();
+            match self.library.delete_brush(&key) {
+                Ok(removed) => {
+                    self.save_order();
+                    self.thumbnails.clear();
+                    self.previews.clear();
+                    self.header_icons.clear();
+                    if removed {
+                        self.rescan();
+                    } else {
+                        self.rebuild_visible();
+                    }
+                }
+                Err(e) => eprintln!("删除笔刷失败: {e}"),
+            }
+            self.delete_confirm = None;
+        } else if !open || cancel {
+            self.delete_confirm = None;
         }
     }
 

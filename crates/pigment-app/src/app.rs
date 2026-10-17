@@ -793,7 +793,63 @@ impl PigmentApp {
         self.derive_active();
     }
 
-    /// 记录一笔结束后的笔刷历史 —— `BrushManager._input_stroke_ended_cb`
+    /// 用当前编辑器设置新建一支笔刷（BrushEditor 的 clone 按钮）。
+    pub(crate) fn new_brush_from_current(&mut self) -> bool {
+        let mut brush = self.base_brush.clone();
+        let preview = crate::thumb::render(&brush);
+        match self.brushes.library.new_brush(
+            &mut brush,
+            Some((
+                crate::thumb::PREVIEW_W as u32,
+                crate::thumb::PREVIEW_H as u32,
+                &preview,
+            )),
+        ) {
+            Ok(idx) => {
+                self.brushes.group = pigment_engine::brushlib::NEW_BRUSH_GROUP.to_string();
+                self.brushes.selected = idx;
+                self.brushes.search.clear();
+                self.brushes.refresh_after_save(idx);
+                true
+            }
+            Err(e) => {
+                eprintln!("新建笔刷失败: {e}");
+                false
+            }
+        }
+    }
+
+    /// 保存当前笔刷到用户目录 `.myb` + `_prev.png`（`ManagedBrush.save`）。
+    ///
+    /// 技术栈适配：MyPaint 的 BrushEditor 在 OK/Apply 时写盘；本项目编辑器
+    /// 实时生效，所以给一个显式 "Save Brush" 按钮。
+    pub(crate) fn save_current_brush_to_disk(&mut self) -> bool {
+        let Some(key) = self.brushes.selected_entry().map(|e| e.key.clone()) else {
+            return false;
+        };
+        let brush = self.base_brush.clone();
+        let preview = crate::thumb::render(&brush);
+        match self.brushes.library.save_brush_entry(
+            &key,
+            &brush,
+            Some((
+                crate::thumb::PREVIEW_W as u32,
+                crate::thumb::PREVIEW_H as u32,
+                &preview,
+            )),
+        ) {
+            Ok(idx) => {
+                self.brushes.refresh_after_save(idx);
+                true
+            }
+            Err(e) => {
+                eprintln!("保存笔刷失败: {e}");
+                false
+            }
+        }
+    }
+
+
     /// （`brushmanager.py:1064-1100`）。
     ///
     /// 源码的 `input_stroke_ended` **只由自由手绘模式发出**

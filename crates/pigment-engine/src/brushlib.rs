@@ -167,6 +167,14 @@ impl BrushEntry {
         matches!(self.origin, Origin::Embedded(_))
     }
 
+    /// 磁盘来源路径（内嵌笔刷为 `None`）。
+    pub fn origin_path(&self) -> Option<&Path> {
+        match &self.origin {
+            Origin::File(p) => Some(p),
+            Origin::Embedded(_) => None,
+        }
+    }
+
     /// 笔刷的 128×128 预览图 PNG 原文。
     ///
     /// 对齐 MyPaint `ManagedBrush.get_preview()`（`gui/brushmanager.py:1242`）：
@@ -689,6 +697,216 @@ impl BrushLibrary {
         true
     }
 
+    // ---- 落盘：`.myb` + `_prev.png`（`ManagedBrush.save`，brushmanager.py:1460-1484）----
+
+    /// 用户可写笔刷目录（`user_brushpath`）：优先取 order.conf 所在目录。
+    fn user_brush_dir(&self) -> PathBuf {
+        self.order_conf_path
+            .as_ref()
+            .and_then(|p| p.parent())
+            .map(PathBuf::from)
+            .or_else(|| default_brush_dirs().into_iter().next())
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+
+    /// 写 `.myb` + `_prev.png`，返回 `.myb` 路径。预览按源码合成到白底（去 alpha）。
+    pub fn save_brush_files(
+        &self,
+        key: &str,
+        brush: &Brush,
+        preview: Option<(u32, u32, &[u8])>,
+    ) -> io::Result<PathBuf> {
+        let dir = self.user_brush_dir();
+        let path = dir.join(format!("{key}.myb"));
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let json = hokusai::myb::to_string_pretty(brush)
+            .map_err(|e| io::Error::other(format!("序列化 .myb 失败: {e}")))?;
+        fs::write(&path, json)?;
+        if let Some((w, h, rgba)) = preview {
+            let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+            for px in rgba.chunks_exact(4) {
+                let a = px[3] as u32;
+                for c in 0..3 {
+                    // 直通 alpha 合成到白底：`c*a + 255*(1-a)`
+                    let v = (px[c] as u32 * a + 255 * (255 - a)) / 255;
+                    rgb.push(v as u8);
+                }
+            }
+            let png = path.with_file_name(format!(
+                "{}_prev.png",
+                path.file_stem().and_then(|s| s.to_str()).unwrap_or("brush")
+            ));
+            image::save_buffer(&png, &rgb, w, h, image::ColorType::Rgb8)
+                .map_err(|e| io::Error::other(format!("写 _prev.png 失败: {e}")))?;
+        }
+        Ok(path)
+    }
+
+    /// 唯一笔刷 key：若已存在则追加 ` 1`、` 2`……
+    fn unique_key(&self, base: &str) -> String {
+        if self.find(base).is_none() {
+            return base.to_string();
+        }
+        let mut n = 1u32;
+        loop {
+            let candidate = format!("{base} {n}");
+            if self.find(&candidate).is_none() {
+                return candidate;
+            }
+            n += 1;
+        }
+    }
+
+    /// 克隆一支笔刷到当前组中（`ManagedBrush.clone` + `BrushList.insert_brush`）。
+    ///
+    /// 返回新 `entries` 下标。新 key = `"{src_key} copy"`（重名再追加序号），
+    /// 落在源笔刷所在组、紧跟源笔刷之后；父笔刷名写回 `.myb` 的
+    /// `parent_brush_name`（`clone_into`，brushmanager.py:1372-1382）。
+    pub fn clone_brush(
+        &mut self,
+        src_key: &str,
+        brush: &mut Brush,
+        preview: Option<(u32, u32, &[u8])>,
+    ) -> io::Result<usize> {
+        let Some(src_idx) = self.find(src_key) else {
+            return Err(io::Error::other(format!("源笔刷不存在: {src_key}")));
+        };
+        let src = self.entries[src_idx].clone();
+        let new_key = self.unique_key(&format!("{src_key} copy"));
+        brush.parent_brush_name = Some(src_key.to_string());
+        let path = self.save_brush_files(&new_key, brush, preview)?;
+        let name = new_key
+            .rsplit('/')
+            .next()
+            .unwrap_or(&new_key)
+            .to_string();
+        let idx = self.entries.len();
+        self.entries.push(BrushEntry {
+            group: src.group.clone(),
+            group_display: src.group_display.clone(),
+            display: name.clone(),
+            notes: String::new(),
+            name,
+            key: new_key.clone(),
+            origin: Origin::File(path),
+            embedded_preview: None,
+        });
+        if let Some(g) = self.groups.iter_mut().find(|g| g.id == src.group) {
+            let pos = g
+                .members
+                .iter()
+                .position(|k| k == src_key)
+                .map(|p| p + 1)
+                .unwrap_or(g.members.len());
+            g.members.insert(pos, new_key);
+        } else {
+            self.groups.push(BrushGroup {
+                id: src.group.clone(),
+                display: src.group_display.clone(),
+                members: vec![new_key],
+            });
+        }
+        Ok(idx)
+    }
+
+    /// 保存**已有**笔刷（原地写回用户目录）：更新 entry 的来源与预览缓存。
+    pub fn save_brush_entry(
+        &mut self,
+        key: &str,
+        brush: &Brush,
+        preview: Option<(u32, u32, &[u8])>,
+    ) -> io::Result<usize> {
+        let Some(idx) = self.find(key) else {
+            return Err(io::Error::other(format!("笔刷不存在: {key}")));
+        };
+        let path = self.save_brush_files(key, brush, preview)?;
+        let e = &mut self.entries[idx];
+        e.origin = Origin::File(path);
+        e.embedded_preview = None;
+        Ok(idx)
+    }
+
+    /// 删除笔刷（`ManagedBrush.delete_from_disk` + BrushEditor `_delete_brush`）：
+    ///
+    /// - 用户目录笔刷：删 `.myb`/`_prev.png`，从所有组移除，并从库中删除；
+    /// - 官方内嵌笔刷（删不掉）：从所有组移除后放进 `Deleted` 组**最前**
+    ///   （`brusheditor.py:1104-1115`）。
+    ///
+    /// 返回是否从库中彻底删掉（官方笔刷为 `false`）。
+    pub fn delete_brush(&mut self, key: &str) -> io::Result<bool> {
+        let Some(idx) = self.find(key) else {
+            return Err(io::Error::other(format!("笔刷不存在: {key}")));
+        };
+        let entry = self.entries[idx].clone();
+        for g in &mut self.groups {
+            g.members.retain(|k| k != key);
+        }
+        if let Origin::File(path) = &entry.origin {
+            let _ = fs::remove_file(path);
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("brush");
+            let _ = fs::remove_file(path.with_file_name(format!("{stem}_prev.png")));
+            self.entries.remove(idx);
+            return Ok(true);
+        }
+        // 官方笔刷删不掉 → Deleted 组最前
+        if let Some(g) = self.groups.iter_mut().find(|g| g.id == DELETED_BRUSH_GROUP) {
+            g.members.insert(0, key.to_string());
+        } else {
+            self.groups.push(BrushGroup {
+                id: DELETED_BRUSH_GROUP.to_string(),
+                display: "Deleted".to_string(),
+                members: vec![key.to_string()],
+            });
+        }
+        Ok(false)
+    }
+
+    /// 用当前笔刷设置新建一支笔刷（BrushEditor 的 clone 按钮，
+    /// `brusheditor.py:664-690`）：写到用户目录、放进 `New` 组**最前**。
+    ///
+    /// 源码 `ManagedBrush.clone(name=None)` 走 `_get_fileprefix` 的
+    /// `"b%03d"` 命名；这里同样从 `b000` 开始找空位。
+    pub fn new_brush(
+        &mut self,
+        brush: &mut Brush,
+        preview: Option<(u32, u32, &[u8])>,
+    ) -> io::Result<usize> {
+        let mut n = 0u32;
+        let key = loop {
+            let candidate = format!("b{n:03}");
+            if self.find(&candidate).is_none() {
+                break candidate;
+            }
+            n += 1;
+        };
+        // 源码在 clone 按钮里把 parent_brush_name 清空
+        brush.parent_brush_name = None;
+        let path = self.save_brush_files(&key, brush, preview)?;
+        let idx = self.entries.len();
+        self.entries.push(BrushEntry {
+            group: NEW_BRUSH_GROUP.to_string(),
+            group_display: "New".to_string(),
+            name: key.clone(),
+            display: key.clone(),
+            notes: String::new(),
+            key: key.clone(),
+            origin: Origin::File(path),
+            embedded_preview: None,
+        });
+        if let Some(g) = self.groups.iter_mut().find(|g| g.id == NEW_BRUSH_GROUP) {
+            g.members.insert(0, key);
+        } else {
+            self.groups.push(BrushGroup {
+                id: NEW_BRUSH_GROUP.to_string(),
+                display: "New".to_string(),
+                members: vec![key],
+            });
+        }
+        Ok(idx)
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -973,5 +1191,83 @@ mod tests {
         assert!(lib.move_in_group("classic", &second, 0));
         let after = lib.group_members("classic");
         assert_eq!(after[0], members[1], "移到组首");
+    }
+
+    #[test]
+    fn new_brush_goes_to_front_of_new_group() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-newbrush-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        let mut brush = lib.entries[0].load().unwrap();
+        let preview = vec![10u8, 20, 30, 255];
+        let idx = lib.new_brush(&mut brush, Some((1, 1, &preview))).unwrap();
+        assert_eq!(lib.entries[idx].key, "b000");
+        assert_eq!(lib.entries[idx].group, NEW_BRUSH_GROUP);
+        assert_eq!(lib.group_members(NEW_BRUSH_GROUP), vec![idx]);
+        assert!(dir.join("b000.myb").is_file());
+        assert!(dir.join("b000_prev.png").is_file());
+        // 第二支 b001，插到组首
+        let idx2 = lib.new_brush(&mut brush, Some((1, 1, &preview))).unwrap();
+        assert_eq!(lib.entries[idx2].key, "b001");
+        assert_eq!(lib.group_members(NEW_BRUSH_GROUP), vec![idx2, idx]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn delete_user_brush_removes_files_and_stock_goes_to_deleted_group() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        // 先造一支用户笔刷
+        let mut brush = lib.entries[0].load().unwrap();
+        let preview = vec![0u8, 0, 0, 255];
+        let idx = lib.new_brush(&mut brush, Some((1, 1, &preview))).unwrap();
+        let key = lib.entries[idx].key.clone();
+        assert!(dir.join(format!("{key}.myb")).is_file());
+        assert!(lib.delete_brush(&key).unwrap(), "用户笔刷应彻底删除");
+        assert!(lib.find(&key).is_none());
+        assert!(!dir.join(format!("{key}.myb")).is_file());
+
+        // 官方笔刷删不掉 → Deleted 组最前，原组移除
+        let stock = "classic/pencil";
+        assert!(!lib.delete_brush(stock).unwrap());
+        assert!(lib.find(stock).is_some());
+        assert_eq!(lib.group_members(DELETED_BRUSH_GROUP)[0], lib.find(stock).unwrap());
+        assert!(!lib.group_members("classic").iter().any(|&i| lib.entries[i].key == stock));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn clone_writes_myb_and_preview_and_inserts_after_source() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-clone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+
+        let src_key = "classic/pencil";
+        let src_idx = lib.find(src_key).unwrap();
+        let mut brush = lib.entries[src_idx].load().unwrap();
+        let preview = vec![255u8, 0, 0, 128, 0, 0, 255, 255]; // 2×1 RGBA
+        let idx = lib
+            .clone_brush(src_key, &mut brush, Some((2, 1, &preview)))
+            .unwrap();
+        let new_key = lib.entries[idx].key.clone();
+        assert_eq!(new_key, "classic/pencil copy");
+        assert_eq!(
+            lib.entries[idx].origin_path(),
+            Some(dir.join("classic/pencil copy.myb")).as_deref()
+        );
+        let json = std::fs::read_to_string(dir.join("classic/pencil copy.myb")).unwrap();
+        let parsed = hokusai::myb::from_str(&json).unwrap();
+        assert_eq!(parsed.parent_brush_name.as_deref(), Some(src_key));
+        assert!(dir.join("classic/pencil copy_prev.png").is_file());
+
+        // 插在源笔刷之后，仍在 Classic 组
+        let members = lib.group_members("classic");
+        let pos = members.iter().position(|&i| i == idx).unwrap();
+        assert_eq!(members[pos - 1], src_idx);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -200,7 +200,7 @@ impl PigmentApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                         // ---- 笔刷信息 ----
-                        if let Some(e) = self.brushes.selected_entry() {
+                        if let Some(e) = self.brushes.selected_entry().cloned() {
                             ui.horizontal(|ui| {
                                 // 主标题用 MyPaint 的展示名（笔刷名），description 退居 tooltip
                                 ui.label(egui::RichText::new(e.mypaint_name()).heading())
@@ -210,6 +210,24 @@ impl PigmentApp {
                                         format!("{}\n{}", e.mypaint_name(), e.display)
                                     });
                                 ui.label(egui::RichText::new(&e.group_display).weak().small());
+                                if ui
+                                    .button("New Brush")
+                                    .on_hover_text(
+                                        "把当前设置另存为新笔刷（放进 New 组，brusheditor.py:664）",
+                                    )
+                                    .clicked()
+                                {
+                                    self.new_brush_from_current();
+                                }
+                                if ui
+                                    .button("Save Brush")
+                                    .on_hover_text(
+                                        "写回用户目录 .myb + _prev.png（ManagedBrush.save）",
+                                    )
+                                    .clicked()
+                                {
+                                    self.save_current_brush_to_disk();
+                                }
                             });
                             ui.label(
                                 egui::RichText::new(&e.key)
