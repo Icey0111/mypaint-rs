@@ -403,10 +403,29 @@ impl PigmentApp {
         let avail_h = ui.available_height();
         let n = groups.len();
         self.dock.normalize_heights();
+        // 图层组给更高的默认份额：它的行/工具栏内容最多。
+        let layer_gi = groups
+            .iter()
+            .position(|g| g.panels.get(g.active) == Some(&PanelId::LayersTool));
+        egui::ScrollArea::vertical()
+            .id_salt(match side {
+                Side::Left => "dock_scroll_left",
+                Side::Right => "dock_scroll_right",
+            })
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
         for (gi, group) in groups.iter().enumerate() {
             // 组高度：手动调过的用存值，否则平分
             let h_user = side.heights(&self.dock).get(gi).copied().flatten();
-            let h = h_user.unwrap_or(avail_h / n as f32);
+            let h = if let Some(lg) = layer_gi {
+                if gi == lg {
+                    h_user.unwrap_or(avail_h * 0.6)
+                } else {
+                    h_user.unwrap_or(avail_h * 0.4 / (n - 1).max(1) as f32)
+                }
+            } else {
+                h_user.unwrap_or(avail_h / n as f32)
+            };
             let h = h.max(60.0);
             if gi > 0 {
                 // 组间分隔条（GTK Paned 的 wide handle）
@@ -431,6 +450,7 @@ impl PigmentApp {
                 pick = self.dock_group(ui, group, side, Some((side, gi))) || pick;
             });
         }
+            });
         pick
     }
 

@@ -395,10 +395,10 @@ impl PigmentApp {
         // 浮动窗口里要让 egui::Window 包住内容（限高）；停靠侧栏时
         // 剩余空间更大，min 保证列表可滚。min = 源码
         // `RootStackTreeView.set_size_request(150, 200)` 的高。
+        // 用组内剩余高度滚动（不再写死 260：停靠组高度是动态的）。
         egui::ScrollArea::vertical()
             .id_salt("layers_tree_scroll")
-            .min_scrolled_height(200.0)
-            .max_height(260.0)
+            .max_height(ui.available_height().max(160.0))
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 for row in &rows {
