@@ -15,6 +15,7 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, NamedKey};
+use winit::cursor::Cursor as WinitCursor;
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, Window, WindowAttributes,
@@ -40,6 +41,7 @@ struct State {
     pointer_down: bool,
     last_pointer: Option<Pos2>,
     last_move_sent: Option<Pos2>,
+    last_cursor: Option<egui::CursorIcon>,
 }
 
 pub(crate) struct Shell {
@@ -163,6 +165,48 @@ fn clipboard_to_color_image(
         .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
         .collect();
     Some(egui::ColorImage::new([width, height], pixels))
+}
+
+/// egui 的光标图标 → winit 光标图标（None 由调用方隐藏系统光标）。
+fn map_cursor(icon: egui::CursorIcon) -> winit::cursor::CursorIcon {
+    use egui::CursorIcon as E;
+    use winit::cursor::CursorIcon as W;
+    match icon {
+        E::Default | E::None => W::Default,
+        E::ContextMenu => W::ContextMenu,
+        E::Help => W::Help,
+        E::PointingHand => W::Pointer,
+        E::Progress => W::Progress,
+        E::Wait => W::Wait,
+        E::Cell => W::Cell,
+        E::Crosshair => W::Crosshair,
+        E::Text => W::Text,
+        E::VerticalText => W::VerticalText,
+        E::Alias => W::Alias,
+        E::Copy => W::Copy,
+        E::Move => W::Move,
+        E::NoDrop => W::NoDrop,
+        E::NotAllowed => W::NotAllowed,
+        E::Grab => W::Grab,
+        E::Grabbing => W::Grabbing,
+        E::AllScroll => W::AllScroll,
+        E::ResizeHorizontal => W::EwResize,
+        E::ResizeVertical => W::NsResize,
+        E::ResizeNeSw => W::NeswResize,
+        E::ResizeNwSe => W::NwseResize,
+        E::ResizeEast => W::EResize,
+        E::ResizeSouthEast => W::SeResize,
+        E::ResizeSouth => W::SResize,
+        E::ResizeSouthWest => W::SwResize,
+        E::ResizeWest => W::WResize,
+        E::ResizeNorthWest => W::NwResize,
+        E::ResizeNorth => W::NResize,
+        E::ResizeNorthEast => W::NeResize,
+        E::ResizeColumn => W::ColResize,
+        E::ResizeRow => W::RowResize,
+        E::ZoomIn => W::ZoomIn,
+        E::ZoomOut => W::ZoomOut,
+    }
 }
 
 /// 剪贴板快捷键（Ctrl+C/X/V）的字符；其他键返回 None。
@@ -326,6 +370,7 @@ impl Shell {
             pointer_down: false,
             last_pointer: None,
             last_move_sent: None,
+            last_cursor: None,
         });
         if let Some(st) = self.state.as_ref() {
             st.window.request_redraw();
@@ -588,6 +633,17 @@ fn render_frame(st: &mut State) {
     let output = st.ctx.run_ui(st.raw.take(), |ui| {
         st.app.ui_root(ui);
     });
+    // 光标：egui 每帧给出图标；None 表示隐藏系统光标（画布自绘圆环）。
+    let cursor = output.platform_output.cursor_icon;
+    if cursor == egui::CursorIcon::None {
+        st.window.set_cursor_visible(false);
+    } else {
+        st.window.set_cursor_visible(true);
+        if st.last_cursor != Some(cursor) {
+            st.window.set_cursor(WinitCursor::Icon(map_cursor(cursor)));
+            st.last_cursor = Some(cursor);
+        }
+    }
     // 候选框跟随文本框光标（egui 的 IMEOutput.cursor_rect）。
     if let Some(ime) = &output.platform_output.ime {
         let p = ime.cursor_rect.min;
@@ -710,6 +766,17 @@ fn render_frame(st: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cursor_icons_map_to_winit_names() {
+        use winit::cursor::CursorIcon as W;
+        assert_eq!(map_cursor(egui::CursorIcon::PointingHand), W::Pointer);
+        assert_eq!(map_cursor(egui::CursorIcon::Crosshair), W::Crosshair);
+        assert_eq!(map_cursor(egui::CursorIcon::Grab), W::Grab);
+        assert_eq!(map_cursor(egui::CursorIcon::ResizeHorizontal), W::EwResize);
+        assert_eq!(map_cursor(egui::CursorIcon::ResizeNeSw), W::NeswResize);
+        assert_eq!(map_cursor(egui::CursorIcon::None), W::Default);
+    }
 
     #[test]
     fn shell_maps_drawing_shortcut_keys() {
