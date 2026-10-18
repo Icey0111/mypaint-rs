@@ -146,6 +146,34 @@ pub struct DockState {
     pub right_heights: Vec<Option<f32>>,
 }
 
+/// 布局 JSON 里的面板稳定键。
+pub fn panel_layout_key(p: PanelId) -> &'static str {
+    match p {
+        PanelId::BrushGroups => "brushgroups",
+        PanelId::BrushEditor => "brusheditor",
+        PanelId::ModeOptionsTool => "options",
+        PanelId::LayersTool => "layers",
+        PanelId::ScratchpadTool => "scratchpad",
+        PanelId::PreviewTool => "preview",
+        PanelId::HistoryPanel => "history",
+        PanelId::ComponentSlidersTool => "color-sliders",
+    }
+}
+
+pub fn panel_from_layout_key(key: &str) -> Option<PanelId> {
+    Some(match key {
+        "brushgroups" => PanelId::BrushGroups,
+        "brusheditor" => PanelId::BrushEditor,
+        "options" => PanelId::ModeOptionsTool,
+        "layers" => PanelId::LayersTool,
+        "scratchpad" => PanelId::ScratchpadTool,
+        "preview" => PanelId::PreviewTool,
+        "history" => PanelId::HistoryPanel,
+        "color-sliders" => PanelId::ComponentSlidersTool,
+        _ => return None,
+    })
+}
+
 impl DockState {
     /// 面板当前是否已添加（在任何栈里）。对应 `get_tool_widget_added`。
     pub fn is_added(&self, panel: PanelId) -> bool {
@@ -353,6 +381,62 @@ impl DockState {
             self.floating.push(g);
             self.normalize_heights();
         }
+    }
+
+    /// 把左右侧栏组/高度写进 `workspace.layout` 对象（键名本项目自定）。
+    pub fn write_layout(&self, obj: &mut serde_json::Map<String, serde_json::Value>) {
+        let groups = |gs: &[Group]| {
+            gs.iter()
+                .map(|g| {
+                    serde_json::json!({
+                        "panels": g.panels.iter().map(|p| panel_layout_key(*p)).collect::<Vec<_>>(),
+                        "active": g.active,
+                    })
+                })
+                .collect::<Vec<_>>()
+        };
+        obj.insert("left_groups".into(), serde_json::json!(groups(&self.left)));
+        obj.insert("right_groups".into(), serde_json::json!(groups(&self.right)));
+        obj.insert("left_heights".into(), serde_json::json!(self.left_heights));
+        obj.insert("right_heights".into(), serde_json::json!(self.right_heights));
+    }
+
+    /// 从 `workspace.layout` 对象读回侧栏布局；缺键返回 None。
+    pub fn read_layout(obj: &serde_json::Map<String, serde_json::Value>) -> Option<Self> {
+        let read_groups = |key: &str| -> Option<Vec<Group>> {
+            let arr = obj.get(key)?.as_array()?;
+            let mut out = Vec::new();
+            for item in arr {
+                let panels = item.get("panels")?.as_array()?;
+                let mut ids = Vec::new();
+                for p in panels {
+                    ids.push(panel_from_layout_key(p.as_str()?)?);
+                }
+                let active = item.get("active").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                out.push(Group {
+                    active: active.min(ids.len().saturating_sub(1)),
+                    panels: ids,
+                });
+            }
+            Some(out)
+        };
+        let left = read_groups("left_groups")?;
+        let right = read_groups("right_groups")?;
+        let heights = |key: &str| -> Vec<Option<f32>> {
+            obj.get(key)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().map(|v| v.as_f64().map(|f| f as f32)).collect())
+                .unwrap_or_default()
+        };
+        let mut d = DockState {
+            left,
+            right,
+            floating: Vec::new(),
+            left_heights: heights("left_heights"),
+            right_heights: heights("right_heights"),
+        };
+        d.normalize_heights();
+        Some(d)
     }
 }
 
@@ -596,6 +680,48 @@ fn placeholder_panel(ui: &mut egui::Ui, panel: PanelId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn layout_roundtrips_groups_heights_and_panel_keys() {
+        let mut d = DockState {
+            left: vec![Group {
+                panels: vec![PanelId::BrushGroups],
+                active: 0,
+            }],
+            right: vec![
+                Group {
+                    panels: vec![PanelId::BrushEditor, PanelId::LayersTool],
+                    active: 1,
+                },
+                Group {
+                    panels: vec![PanelId::ComponentSlidersTool],
+                    active: 0,
+                },
+            ],
+            floating: Vec::new(),
+            left_heights: vec![Some(120.0)],
+            right_heights: vec![Some(300.0), None],
+        };
+        d.normalize_heights();
+        let mut obj = serde_json::Map::new();
+        d.write_layout(&mut obj);
+        let back = DockState::read_layout(&obj).expect("layout parses");
+        assert_eq!(back.left, d.left);
+        assert_eq!(back.right, d.right);
+        assert_eq!(back.left_heights, d.left_heights);
+        assert_eq!(back.right_heights, d.right_heights);
+        assert!(back.floating.is_empty());
+    }
+
+    #[test]
+    fn layout_rejects_unknown_panel_keys_instead_of_guessing() {
+        let value = serde_json::json!({
+            "left_groups": [{"panels": ["not-a-panel"], "active": 0}],
+            "right_groups": [],
+        });
+        let obj = value.as_object().unwrap();
+        assert!(DockState::read_layout(obj).is_none());
+    }
 
     #[test]
     fn add_docks_into_sidebars_and_never_creates_floating_windows() {

@@ -213,7 +213,23 @@ fn store_workspace_layout(prefs: &mut Prefs, left: f32, right: f32) {
     prefs.set("workspace.layout", serde_json::Value::Object(obj));
 }
 
-/// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
+/// 从 `workspace.layout` 读回停靠组布局（本项目自定键）。
+fn dock_layout_from_prefs(prefs: &Prefs) -> Option<crate::shell::dock::DockState> {
+    let obj = prefs.get_object("workspace.layout")?;
+    crate::shell::dock::DockState::read_layout(obj)
+}
+
+/// 把停靠组布局合并进 `workspace.layout`，保留宽度/位置字段。
+fn store_dock_layout(prefs: &mut Prefs, dock: &crate::shell::dock::DockState) {
+    let mut obj = prefs
+        .get_object("workspace.layout")
+        .cloned()
+        .unwrap_or_default();
+    dock.write_layout(&mut obj);
+    prefs.set("workspace.layout", serde_json::Value::Object(obj));
+}
+
+/// 按 MyPaint 的规则播种 10 个槽位/// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
 fn seed_brushkeys(panel: &BrushPanel) -> [Option<BrushKeySlot>; NUM_BRUSHKEYS] {
     let seed = panel.library.brushkey_seed();
     std::array::from_fn(|i| {
@@ -1270,6 +1286,9 @@ impl PigmentApp {
             line_curve_drag: None,
             hcy_mask_saved: None,
         };
+        if let Some(dock) = dock_layout_from_prefs(&app.prefs) {
+            app.dock = dock;
+        }
         app.derive_active();
         // 兼容模式：文档默认层类型 / 笔刷默认颜料 / EOTF 标签
         app.apply_compat_mode(app.compat_mode);
@@ -2116,6 +2135,7 @@ impl PigmentApp {
             self.dock_left_width,
             self.dock_right_width,
         );
+        store_dock_layout(&mut self.prefs, &self.dock);
         // 3. 偏好整表落盘 —— `save_settings()`（`:628`）。存盘这一步的实现在
         //    `prefs_window::settings_on_accept`：它同时是偏好对话框 ACCEPT
         //    （`preferenceswindow.py:130`）的存盘动作，失败消息进窗口状态行。
