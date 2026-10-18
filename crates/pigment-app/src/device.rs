@@ -55,9 +55,37 @@ impl TabletUsage {
     }
 }
 
-/// 设备 id 的短标签：Windows HID 路径取最后一段，其它原样。
+/// 设备 id 的短标签。
+///
+/// Windows HID 接口路径里带 `VID_xxxx&PID_yyyy`：已知厂商映射成名字
+/// （Wacom/Huion/XP-Pen），否则显示 `VID:PID`；没有 VID/PID 时取最后一段。
 pub(crate) fn device_label(id: &str) -> String {
-    id.rsplit('#').next().unwrap_or(id).to_string()
+    let Some(seg) = id.split('#').find(|s| s.starts_with("VID_")) else {
+        return id.rsplit('#').next().unwrap_or(id).to_string();
+    };
+    let mut vid = None;
+    let mut pid = None;
+    for part in seg.split('&') {
+        if let Some(v) = part.strip_prefix("VID_") {
+            vid = Some(v.to_ascii_uppercase());
+        } else if let Some(p) = part.strip_prefix("PID_") {
+            pid = Some(p.to_ascii_uppercase());
+        }
+    }
+    let (Some(vid), Some(pid)) = (vid, pid) else {
+        return id.rsplit('#').next().unwrap_or(id).to_string();
+    };
+    let vendor = match vid.as_str() {
+        "056A" => "Wacom",
+        "256C" => "Huion",
+        "28BD" => "XP-Pen",
+        _ => "",
+    };
+    if vendor.is_empty() {
+        format!("{vid}:{pid}")
+    } else {
+        format!("{vendor} {vid}:{pid}")
+    }
 }
 
 /// 逐设备覆盖优先，缺失时回落到全局策略。
@@ -84,8 +112,12 @@ mod tests {
     #[test]
     fn device_labels_shorten_windows_paths() {
         assert_eq!(
+            device_label(r"\\?\HID#VID_056A&PID_0374#abc"),
+            "Wacom 056A:0374"
+        );
+        assert_eq!(
             device_label(r"\\?\HID#VID_1234&PID_5678#abc"),
-            "abc"
+            "1234:5678"
         );
         assert_eq!(device_label("#42"), "42");
     }
