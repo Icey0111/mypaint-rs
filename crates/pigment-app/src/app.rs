@@ -1642,8 +1642,13 @@ impl PigmentApp {
             Ok(_) => {
                 if !export {
                     self.current_file = Some(path.to_path_buf());
-                    // 从备份恢复的文件已经真正存盘了：那份备份可以清掉
+                    // 从备份恢复的文件已经真正存盘了：整份缓存目录可以清掉
+                    // （源码 `_cleanup_cache_dir` 删的是包含 `autosave/` 的
+                    // 工作目录，不是只删 `autosave/`）。
                     if let Some(dir) = self.recovered_autosave.take() {
+                        if let Some(parent) = dir.parent() {
+                            let _ = std::fs::remove_dir_all(parent);
+                        }
                         let _ = std::fs::remove_dir_all(dir);
                     }
                 }
@@ -4029,6 +4034,11 @@ impl eframe::App for PigmentApp {
         // 自动备份：每帧推一次（`Document._cache_updater_cb` 的等价物）
         let painting = ctx.input(|i| i.pointer.any_down());
         self.autosave_tick(now, painting);
+        // 源码靠 GLib 超时独立于重绘；egui 空闲时不产帧，必须主动约下一帧
+        // （1Hz 足够：`active` 10s、备份 5..300s）。
+        if self.autosave.enabled && self.autosave.cache_dir.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+        }
     }
 
     /// 退出时保存配置 —— `quit_cb` 里的 `app.save_gui_config()`
