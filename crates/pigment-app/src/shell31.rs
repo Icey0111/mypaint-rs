@@ -628,6 +628,7 @@ fn render_frame(st: &mut State) {
         }
     }
     // 笔尾橡皮端：按下时临时切到橡皮，抬起后恢复用户原来的 E 开关。
+    st.app.note_input_device();
     let tablet_eraser = st.app.tablet.is_eraser();
     st.app.apply_tablet_eraser(tablet_eraser);
     let output = st.ctx.run_ui(st.raw.take(), |ui| {

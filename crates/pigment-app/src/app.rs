@@ -462,6 +462,19 @@ fn build_pointer_event(
     }
 }
 
+/// 输入设备类别：0=鼠标/无笔，1=笔，2=笔尾橡皮。
+///
+/// 源码在 `freehand.py:383-394` 用 GDK 设备对象判断；winit 没有设备名，
+/// 用「是否数位板 + 是否橡皮端」近似。
+fn input_device_class(active: bool, eraser: bool) -> u8 {
+    if !active {
+        0
+    } else if eraser {
+        2
+    } else {
+        1
+    }
+}
 /// 笔尾橡皮端的状态转移：返回需要写回的新 `eraser` 值（`None` = 不变）。
 ///
 /// `saved` 在首次按下时记录用户原来的开关，抬起后恢复。
@@ -567,6 +580,8 @@ pub struct PigmentApp {
     pub(crate) tablet: TabletInput,
     /// 笔尾橡皮生效前用户的 `eraser` 开关（`None` = 笔尾未按下）。
     pub(crate) tablet_eraser_prev: Option<bool>,
+    /// 上一帧的输入设备类别（设备切换时重置笔刷状态）。
+    pub(crate) last_input_device: Option<u8>,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
     /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
@@ -1142,6 +1157,7 @@ impl PigmentApp {
             eraser: false,
             tablet: TabletInput::default(),
             tablet_eraser_prev: None,
+            last_input_device: None,
             paint_override: None,
             color_manager,
             last_selected_color: initial_color,
@@ -2026,6 +2042,17 @@ impl PigmentApp {
         !self.tablet.active || self.tablet_usage().allows_painting()
     }
 
+    /// 设备切换时重置笔刷状态（`freehand.py:383-394`）：否则上一支笔留下的
+    /// 非零压力会在新设备未按下时拖出一笔。
+    pub(crate) fn note_input_device(&mut self) {
+        let class = input_device_class(self.tablet.active, self.tablet.is_eraser());
+        if self.last_input_device != Some(class) {
+            if self.last_input_device.is_some() {
+                self.stroke_state = pigment_engine::hokusai::BrushState::default();
+            }
+            self.last_input_device = Some(class);
+        }
+    }
     /// 笔尾橡皮端生效时临时把 `eraser` 打开，抬起后恢复用户原来的开关
     /// （`gui/device.py`/`document.py` 的设备橡皮语义；恢复值在首次按下时记下）。
     pub(crate) fn apply_tablet_eraser(&mut self, active: bool) {
@@ -4958,6 +4985,14 @@ mod tests {
         assert_eq!(ev.pressure, None);
         assert_eq!(ev.xtilt, None);
         assert_eq!(ev.ytilt, None);
+    }
+
+    #[test]
+    fn input_device_classes_distinguish_mouse_pen_and_eraser() {
+        assert_eq!(input_device_class(false, false), 0);
+        assert_eq!(input_device_class(false, true), 0);
+        assert_eq!(input_device_class(true, false), 1);
+        assert_eq!(input_device_class(true, true), 2);
     }
 
     #[test]
