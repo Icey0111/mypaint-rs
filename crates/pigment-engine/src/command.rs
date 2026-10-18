@@ -1699,11 +1699,10 @@ impl Command for MergeLayerDown {
 /// 记账：源码「目标父是数据层 → 现场新建父组」的分支未移植（面板拖动只允许
 /// 拖进组或拖到行间）；`ValueError` 的三种校验改为 `new` 返回 `None`。
 pub struct RestackLayer {
-    src_path: Vec<usize>,
-    targ_path: Vec<usize>,
+    before: LayerStack,
+    after: Option<LayerStack>,
     moved_id: u64,
-    /// redo 之后移动层的新路径（undo 用它定位）。
-    after_path: Vec<usize>,
+    orig_targ: Vec<usize>,
 }
 
 impl RestackLayer {
@@ -1712,61 +1711,110 @@ impl RestackLayer {
             return None; // 不能挪进自己/自己内部，也不能挪到根
         }
         let moved = ctx.layers.layer_at(&src_path)?;
-        // 目标父必须是存在的组（空路径 = 根）
         let parent = &targ_path[..targ_path.len() - 1];
-        if !parent.is_empty() && ctx.layers.layer_at(parent).map(|l| l.is_group()) != Some(true) {
+        if !parent.is_empty() && ctx.layers.layer_at(parent).is_none() {
             return None;
         }
         Some(Self {
-            src_path,
-            targ_path,
+            before: ctx.layers.clone(),
+            after: None,
             moved_id: moved.id,
-            after_path: Vec::new(),
+            orig_targ: targ_path,
         })
     }
 
-    fn move_to(&mut self, ctx: &mut DocContext<'_>, src: &[usize], targ: &[usize]) -> bool {
-        let Some(layer) = ctx.layers.remove_at(src) else {
+    /// 执行一次移动；目标父不是组时现场建组（`command.py:1310-1337`）。
+    fn apply(&self, ctx: &mut DocContext<'_>) -> bool {
+        let src = self.src_path_for_apply();
+        let targ = self.targ_path_for_apply();
+        let Some(moved) = ctx.layers.remove_at(&src) else {
             return false;
         };
-        // 占位层保住源位置的索引（照 command.py:1310-1314）
+        // 占位层保索引（照 command.py:1310-1314）
         let placeholder = Layer::new();
         let ph_id = placeholder.id;
-        if ctx.layers.insert_at(src, placeholder).is_none() {
+        if ctx.layers.insert_at(&src, placeholder).is_none() {
             return false;
         }
-        if ctx.layers.insert_at(targ, layer).is_none() {
-            ctx.layers.remove_by_id(ph_id);
-            return false;
-        }
-        ctx.layers.remove_by_id(ph_id);
-        match ctx.layers.path_of_id(self.moved_id) {
-            Some(p) => {
-                self.after_path = p.clone();
-                ctx.layers.set_current_path(&p);
-                true
+        let parent_path = &targ[..targ.len() - 1];
+        let parent_is_group = ctx
+            .layers
+            .layer_at(parent_path)
+            .map(|l| l.is_group())
+            .unwrap_or(false);
+        let ok = if parent_is_group {
+            ctx.layers.insert_at(&targ, moved).is_some()
+        } else {
+            // 目标父是数据层：把目标层和移动层装进新组，组放在目标层原位置。
+            let Some(target_layer) = ctx.layers.remove_at(parent_path) else {
+                ctx.layers.remove_by_id(ph_id);
+                return false;
+            };
+            let group = Layer::new_group();
+            let group_path = parent_path.to_vec();
+            if ctx.layers.insert_at(&group_path, group).is_none() {
+                let _ = ctx.layers.insert_at(parent_path, target_layer);
+                ctx.layers.remove_by_id(ph_id);
+                return false;
             }
-            None => false,
+            // 组内顺序：移动层在上，目标层在下。
+            let mut target_path = group_path.clone();
+            target_path.push(0);
+            if ctx.layers.insert_at(&target_path, target_layer).is_none() {
+                ctx.layers.remove_by_id(ph_id);
+                return false;
+            }
+            if ctx.layers.insert_at(&target_path, moved).is_none() {
+                ctx.layers.remove_by_id(ph_id);
+                return false;
+            }
+            true
+        };
+        ctx.layers.remove_by_id(ph_id);
+        if ok {
+            if let Some(p) = ctx.layers.path_of_id(self.moved_id) {
+                ctx.layers.set_current_path(&p);
+            }
         }
+        ok
+    }
+
+    fn src_path_for_apply(&self) -> Vec<usize> {
+        self.before.path_of_id(self.moved_id).unwrap_or_default()
+    }
+
+    fn targ_path_for_apply(&self) -> Vec<usize> {
+        // `new` 保存的原始目标路径；用 before 里的路径定位目标父。
+        self.orig_targ.clone()
     }
 }
-
 impl Command for RestackLayer {
     fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
-        let (src, targ) = (self.src_path.clone(), self.targ_path.clone());
-        self.move_to(ctx, &src, &targ)
+        if let Some(after) = self.after.clone() {
+            *ctx.layers = after;
+            if let Some(p) = ctx.layers.path_of_id(self.moved_id) {
+                ctx.layers.set_current_path(&p);
+            }
+            return true;
+        }
+        let ok = self.apply(ctx);
+        if ok {
+            self.after = Some(ctx.layers.clone());
+        }
+        ok
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        let (src, targ) = (self.after_path.clone(), self.src_path.clone());
-        self.move_to(ctx, &src, &targ);
+        *ctx.layers = self.before.clone();
+        if let Some(p) = ctx.layers.path_of_id(self.moved_id) {
+            ctx.layers.set_current_path(&p);
+        }
     }
 
     fn display_name(&self) -> String {
         "Move Layer in Stack".to_string()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2215,6 +2263,34 @@ mod tests {
     }
 
     /// 跨组冒泡：出组/入组后，`undo` 用反方向冒泡必须精确还原结构。
+    #[test]
+    fn restack_into_data_layer_creates_parent_group_and_undoes() {
+        let a = Layer::new();
+        let b = Layer::new();
+        let c = Layer::new();
+        let (a_id, b_id, c_id) = (a.id, b.id, c.id);
+        let mut st = LayerStack::from_children(vec![a, b, c]);
+        let mut t = 0.0;
+        let mut stack = CommandStack::new(8);
+        st.set_current_by_id(c_id);
+
+        let cmd = RestackLayer::new(&mut ctx(&mut st, &mut t), vec![2], vec![1, 0])
+            .expect("target parent is a data layer");
+        assert!(stack.do_command(Box::new(cmd), &mut ctx(&mut st, &mut t)));
+        assert_eq!(st.len(), 2, "root should be [a, new group]");
+        assert_eq!(st.path_of_id(a_id), Some(vec![0]));
+        let group = st.layer(1);
+        assert!(group.is_group());
+        assert_eq!(st.path_of_id(c_id), Some(vec![1, 0]));
+        assert_eq!(st.path_of_id(b_id), Some(vec![1, 1]));
+        assert_eq!(st.current_id(), c_id);
+
+        stack.undo(&mut ctx(&mut st, &mut t));
+        assert_eq!(st.len(), 3);
+        assert_eq!(st.path_of_id(a_id), Some(vec![0]));
+        assert_eq!(st.path_of_id(b_id), Some(vec![1]));
+        assert_eq!(st.path_of_id(c_id), Some(vec![2]));
+    }
     #[test]
     fn bubble_layer_crosses_group_and_undo_restores() {
         let a = Layer::new();
