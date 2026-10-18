@@ -1169,6 +1169,16 @@ impl PigmentApp {
                 self.radius_override = None;
                 self.derive_active();
             }
+            // `LineModeOptionsWidget.reset_button_clicked_cb` 还会
+            // `curve._update(from_defaults=True)`（linemode.py:199-204）。
+            if matches!(
+                options_name.as_str(),
+                "Lines and Curves" | "Connected Lines" | "Ellipses and Circles"
+            ) {
+                self.line_settings =
+                    pigment_engine::mode::line::LineModeSettings::default();
+                self.apply_line_settings();
+            }
         }
     }
 
