@@ -102,6 +102,18 @@ pub fn fragments_from_prefs(prefs: &pigment_engine::prefs::Prefs) -> [bool; 8] {
     out
 }
 
+/// 写回片段开关 —— 偏好 `ui.toolbar_items`（`toolbar.py:110-126` 的 toggle）。
+pub fn fragments_to_prefs(
+    prefs: &mut pigment_engine::prefs::Prefs,
+    flags: &[bool; 8],
+) {
+    let mut map = serde_json::Map::new();
+    for (i, frag) in FRAGMENTS.iter().enumerate() {
+        map.insert(frag.action.to_string(), serde_json::json!(flags[i]));
+    }
+    prefs.set("ui.toolbar_items", serde_json::Value::Object(map));
+}
+
 /// 图标纹理缓存键：图标名（已含 -symbolic 后缀解析）。
 pub type IconCache = std::collections::HashMap<&'static str, egui::TextureHandle>;
 
@@ -393,6 +405,22 @@ mod tests {
         assert_eq!(icon_size(&prefs), 16.0);
         prefs.set_str("ui.toolbar_icon_size", "large");
         assert_eq!(icon_size(&prefs), 24.0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fragments_roundtrip_through_the_pref() {
+        let path = std::env::temp_dir().join(format!(
+            "pigment-toolbar-frags-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut prefs = pigment_engine::prefs::Prefs::load(&path);
+        let mut flags = DEFAULT_FRAGMENTS;
+        flags[1] = true;
+        flags[4] = false;
+        fragments_to_prefs(&mut prefs, &flags);
+        assert_eq!(fragments_from_prefs(&prefs), flags);
         let _ = std::fs::remove_file(&path);
     }
 

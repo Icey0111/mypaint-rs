@@ -182,6 +182,10 @@ impl PigmentApp {
             let mut on = self.toolbar_fragments[i];
             if ui.checkbox(&mut on, frag.label).changed() {
                 self.toolbar_fragments[i] = on;
+                // `ui.toolbar_items` 立即写回（源码的 toggle 动作最终落到偏好，
+                // 退出时统一 save_gui_config）。
+                let fragments = self.toolbar_fragments;
+                crate::shell::toolbars::fragments_to_prefs(&mut self.prefs, &fragments);
             }
         }
     }
