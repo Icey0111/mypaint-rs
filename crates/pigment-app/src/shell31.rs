@@ -15,7 +15,11 @@ use winit::event::{
 };
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{Key as WinitKey, NamedKey};
-use winit::window::{Window, WindowAttributes, WindowId};
+use winit::dpi::{LogicalPosition, LogicalSize};
+use winit::window::{
+    ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, Window, WindowAttributes,
+    WindowId,
+};
 
 use crate::app::PigmentApp;
 
@@ -179,10 +183,15 @@ impl Shell {
             }
         };
         let size = window.surface_size();
-        // winit 0.31 的新接口是 `request_ime_update`；这里沿用旧入口，
-        // 它内部会转成同一个 ImeRequest::Enable。
-        #[allow(deprecated)]
-        window.set_ime_allowed(true);
+        // 启用 IME，并声明支持 cursor area（候选框跟随光标）。
+        let ime_caps = ImeCapabilities::new().with_cursor_area();
+        let ime_data = ImeRequestData::default().with_cursor_area(
+            LogicalPosition::new(0.0, 0.0).into(),
+            LogicalSize::new(1.0, 1.0).into(),
+        );
+        if let Some(req) = ImeEnableRequest::new(ime_caps, ime_data) {
+            let _ = window.request_ime_update(ImeRequest::Enable(req));
+        }
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_without_display_handle(),
         );
@@ -524,6 +533,16 @@ fn render_frame(st: &mut State) {
     let output = st.ctx.run_ui(st.raw.take(), |ui| {
         st.app.ui_root(ui);
     });
+    // 候选框跟随文本框光标（egui 的 IMEOutput.cursor_rect）。
+    if let Some(ime) = &output.platform_output.ime {
+        let p = ime.cursor_rect.min;
+        let s = ime.cursor_rect.size();
+        let data = ImeRequestData::default().with_cursor_area(
+            LogicalPosition::new(p.x as f64, p.y as f64).into(),
+            LogicalSize::new(s.x.max(1.0) as f64, s.y.max(1.0) as f64).into(),
+        );
+        let _ = st.window.request_ime_update(ImeRequest::Update(data));
+    }
     // 把 egui 的复制命令写进系统剪贴板（Cut/Copy 的事件路径）。
     for cmd in &output.platform_output.commands {
         if let egui::OutputCommand::CopyText(text) = cmd {
