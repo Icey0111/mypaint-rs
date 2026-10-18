@@ -758,6 +758,8 @@ pub struct PigmentApp {
     pub(crate) hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState,
     /// 直线/曲线压力设置（`linemode.py:39-85`）。
     pub(crate) line_settings: pigment_engine::mode::line::LineModeSettings,
+    /// 压力曲线正在拖的控制点（0..3）。
+    pub(crate) line_curve_drag: Option<usize>,
     /// 上次写回偏好的 HCY 遮罩签名（扁平形状 + active），避免每帧写。
     hcy_mask_saved: Option<(Vec<Vec<String>>, bool)>,
     // ---- 工具条（S4）----
@@ -1265,6 +1267,7 @@ impl PigmentApp {
             wheel_pages: crate::shell::wheel_pages::WheelPagesState::new(),
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
             line_settings: pigment_engine::mode::line::LineModeSettings::default(),
+            line_curve_drag: None,
             hcy_mask_saved: None,
         };
         app.derive_active();
@@ -2125,7 +2128,19 @@ impl PigmentApp {
         }
     }
 
-    /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
+    /// 把 `line_settings` 写回偏好并推给模式栈（滑条/曲线共用）。
+    pub(crate) fn apply_line_settings(&mut self) {
+        let s = self.line_settings;
+        self.prefs.set_f64("linemode.entry_pressure", s.entry_pressure as f64);
+        self.prefs.set_f64("linemode.midpoint_pressure", s.midpoint_pressure as f64);
+        self.prefs.set_f64("linemode.exit_pressure", s.exit_pressure as f64);
+        self.prefs.set_f64("linemode.line_head", s.head as f64);
+        self.prefs.set_f64("linemode.line_tail", s.tail as f64);
+        self.modes.set_line_settings(s);
+        self.scratch.modes.set_line_settings(s);
+    }
+
+    /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。    /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
     pub(crate) fn tablet_usage(&self) -> crate::device::TabletUsage {
         let specific = self.tablet.device_id.as_ref().and_then(|id| {
             self.prefs

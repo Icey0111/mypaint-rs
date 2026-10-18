@@ -895,6 +895,80 @@ impl PigmentApp {
         }
     }
 
+    /// 直线压力-距离曲线 —— `LineModeCurveWidget`（`linemode.py:146-198`）。
+    ///
+    /// 4 个控制点：入场、head（中点）、tail、收尾；head/tail 可横拖，
+    /// 入场/中点/收尾可竖拖。映射与源码 `_SETTINGS_COORDINATE` 一致。
+    fn line_curve_widget(&mut self, ui: &mut egui::Ui) -> bool {
+        use pigment_engine::mode::line::{apply_curve_point, pressure_curve_points};
+        let size = egui::vec2(175.0, 125.0);
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 3.0, ui.visuals().extreme_bg_color);
+        painter.rect_stroke(
+            rect,
+            3.0,
+            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
+            egui::StrokeKind::Inside,
+        );
+        let to_screen = |p: (f32, f32)| {
+            egui::pos2(
+                rect.left() + p.0.clamp(0.0, 1.0) * rect.width(),
+                rect.top() + p.1.clamp(0.0, 1.0) * rect.height(),
+            )
+        };
+        let pts = pressure_curve_points(&self.line_settings);
+        let screen: Vec<egui::Pos2> = pts.iter().map(|p| to_screen(*p)).collect();
+        let line = egui::Stroke::new(1.5, ui.visuals().text_color());
+        for w in screen.windows(2) {
+            painter.line_segment([w[0], w[1]], line);
+        }
+        painter.hline(
+            rect.x_range(),
+            rect.top() + rect.height() * 0.5,
+            egui::Stroke::new(1.0, ui.visuals().faint_bg_color),
+        );
+        for (i, p) in screen.iter().enumerate() {
+            let active = self.line_curve_drag == Some(i);
+            painter.circle_filled(
+                *p,
+                if active { 5.0 } else { 4.0 },
+                if active {
+                    ui.visuals().selection.bg_fill
+                } else {
+                    ui.visuals().text_color()
+                },
+            );
+        }
+
+        let mut changed = false;
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                self.line_curve_drag = screen
+                    .iter()
+                    .enumerate()
+                    .map(|(i, q)| (i, q.distance(p)))
+                    .filter(|(_, d)| *d <= 20.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1))
+                    .map(|(i, _)| i);
+            }
+        }
+        if resp.dragged() {
+            if let (Some(i), Some(p)) =
+                (self.line_curve_drag, resp.interact_pointer_pos())
+            {
+                let nx = ((p.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+                let ny = ((p.y - rect.top()) / rect.height()).clamp(0.0, 1.0);
+                apply_curve_point(&mut self.line_settings, i, nx, ny);
+                self.apply_line_settings();
+                changed = true;
+            }
+        }
+        if resp.drag_stopped() {
+            self.line_curve_drag = None;
+        }
+        changed
+    }
     pub(crate) fn mode_options_panel_content(&mut self, ui: &mut egui::Ui) {
         let mode_name = self.modes.top().name().to_string();
         // 选项控件来自哪个模式：`BrushResizeMode.get_options_widget()` 直接
@@ -954,6 +1028,14 @@ impl PigmentApp {
         ) {
             ui.separator();
             ui.label(egui::RichText::new("Line pressures").strong());
+            if egui::CollapsingHeader::new("Pressure variation…")
+                .default_open(true)
+                .show(ui, |ui| self.line_curve_widget(ui))
+                .body_returned
+                == Some(true)
+            {
+                changed = true;
+            }
             let mut s = self.line_settings;
             let mut line_changed = false;
             line_changed |= value_slider(
@@ -978,13 +1060,7 @@ impl PigmentApp {
             line_changed |= value_slider(ui, "Tail:", &mut s.tail, 0.0001..=1.0);
             if line_changed {
                 self.line_settings = s;
-                self.prefs.set_f64("linemode.entry_pressure", s.entry_pressure as f64);
-                self.prefs.set_f64("linemode.midpoint_pressure", s.midpoint_pressure as f64);
-                self.prefs.set_f64("linemode.exit_pressure", s.exit_pressure as f64);
-                self.prefs.set_f64("linemode.line_head", s.head as f64);
-                self.prefs.set_f64("linemode.line_tail", s.tail as f64);
-                self.modes.set_line_settings(s);
-                self.scratch.modes.set_line_settings(s);
+                self.apply_line_settings();
                 changed = true;
             }
         }

@@ -67,7 +67,39 @@ impl LineModeSettings {
     }
 }
 
-/// 要画哪种几何图形（源码的 `line_mode` 字符串）。
+/// 压力-距离曲线的 4 个控制点（`linemode.py:146-195` 的映射）。
+///
+/// 坐标是归一化的 `(x, y)`，`y` 已按源码翻转（`value = 1 - pressure`
+/// 供 GTK 的向下坐标系）；本移植在绘制时直接按向下坐标使用。
+pub fn pressure_curve_points(s: &LineModeSettings) -> [(f32, f32); 4] {
+    [
+        (0.0, 1.0 - s.entry_pressure),
+        (s.head, 1.0 - s.midpoint_pressure),
+        (s.tail, 1.0 - s.midpoint_pressure),
+        (1.0, 1.0 - s.exit_pressure),
+    ]
+}
+
+/// 拖动曲线第 `idx` 个控制点后写回设置（`_changed_cb`，同坐标映射）。
+pub fn apply_curve_point(s: &mut LineModeSettings, idx: usize, x: f32, y: f32) {
+    let pressure = (1.0 - y).clamp(0.0001, 1.0);
+    match idx {
+        0 => s.entry_pressure = pressure,
+        1 => {
+            let tail = s.tail.max(0.0001);
+            s.head = x.clamp(0.0001, (tail - 0.0001).max(0.0001));
+            s.midpoint_pressure = pressure;
+        }
+        2 => {
+            let head = s.head.max(0.0001);
+            s.tail = x.clamp((head + 0.0001).min(0.9999), 0.9999);
+        }
+        3 => s.exit_pressure = pressure,
+        _ => {}
+    }
+}
+
+/// 要画哪种几何图形（源码的 `line_mode` 字符串）。/// 要画哪种几何图形（源码的 `line_mode` 字符串）。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LineKind {
     /// 两点之间的直线（`StraightMode`）
@@ -640,6 +672,26 @@ mod tests {
     use super::*;
     use crate::document::Document;
 
+    #[test]
+    fn pressure_curve_points_and_drag_write_back() {
+        let mut s = LineModeSettings::default();
+        let p = pressure_curve_points(&s);
+        assert_eq!(p[0].0, 0.0);
+        assert!((p[0].1 - 0.7).abs() < 1e-6); // 1 - 0.3
+        assert!((p[1].0 - 0.25).abs() < 1e-6);
+        assert!((p[2].0 - 0.75).abs() < 1e-6);
+        assert!((p[3].1 - 0.7).abs() < 1e-6);
+
+        apply_curve_point(&mut s, 1, 0.4, 0.2); // 中点压力 0.8，head=0.4
+        assert!((s.head - 0.4).abs() < 1e-6);
+        assert!((s.midpoint_pressure - 0.8).abs() < 1e-6);
+        apply_curve_point(&mut s, 2, 0.6, 0.0); // tail=0.6
+        assert!((s.tail - 0.6).abs() < 1e-6);
+        apply_curve_point(&mut s, 0, 0.0, 0.9); // entry=0.1
+        assert!((s.entry_pressure - 0.1).abs() < 1e-6);
+        apply_curve_point(&mut s, 3, 1.0, 0.4); // exit=0.6
+        assert!((s.exit_pressure - 0.6).abs() < 1e-6);
+    }
     #[test]
     fn line_settings_can_be_pushed_from_the_app() {
         let mut m = LineMode::new(LineKind::Straight);
