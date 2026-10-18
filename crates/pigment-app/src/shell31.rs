@@ -282,6 +282,7 @@ impl Shell {
         );
         let (saved_size, saved_pos) = crate::app::saved_window_geometry(&prefs);
         let saved_max = crate::app::saved_window_maximized(&prefs);
+        let saved_full = crate::app::saved_window_fullscreen(&prefs);
         let mut attrs = WindowAttributes::default()
             .with_title("pigment (winit 0.31 shell)")
             .with_surface_size(winit::dpi::PhysicalSize::new(1280, 800));
@@ -301,6 +302,9 @@ impl Shell {
         };
         if saved_max {
             window.set_maximized(true);
+        }
+        if saved_full {
+            window.set_fullscreen(Some(winit::monitor::Fullscreen::Borderless(None)));
         }
         let size = window.surface_size();
 

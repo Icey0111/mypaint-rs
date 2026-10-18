@@ -215,7 +215,32 @@ pub(crate) fn saved_window_geometry(
     (size, at)
 }
 
-/// 上次窗口是否最大化（`workspace.layout.position.maximized`）。
+/// 上次窗口是否全屏（`workspace.layout.position.fullscreen`）。
+pub(crate) fn saved_window_fullscreen(prefs: &Prefs) -> bool {
+    prefs
+        .get_object("workspace.layout")
+        .and_then(|o| o.get("position"))
+        .and_then(|p| p.get("fullscreen"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+fn store_window_fullscreen(prefs: &mut Prefs, fullscreen: bool) {
+    let Some(obj) = prefs.get_object("workspace.layout").cloned() else {
+        return;
+    };
+    let mut position = obj
+        .get("position")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    position.insert("fullscreen".into(), serde_json::json!(fullscreen));
+    let mut obj = obj;
+    obj.insert("position".into(), serde_json::Value::Object(position));
+    prefs.set("workspace.layout", serde_json::Value::Object(obj));
+}
+
+/// 上次窗口是否最大化（`workspace.layout.position.maximized`）。/// 上次窗口是否最大化（`workspace.layout.position.maximized`）。
 pub(crate) fn saved_window_maximized(prefs: &Prefs) -> bool {
     prefs
         .get_object("workspace.layout")
@@ -830,6 +855,7 @@ pub struct PigmentApp {
     pub(crate) window_size: Option<(u32, u32)>,
     pub(crate) window_pos: Option<(i32, i32)>,
     pub(crate) window_maximized: bool,
+    pub(crate) window_fullscreen: bool,
     // ---- 颜色器页签（B4-3 / B4-4a）----
     /// 颜色面板当前页 —— [`crate::shell::color_panel::COLOR_PAGES`] 的下标。
     ///
@@ -1246,6 +1272,7 @@ impl PigmentApp {
             .unwrap_or_default();
         let (win_size, win_pos) = saved_window_geometry(&prefs);
         let win_max = saved_window_maximized(&prefs);
+        let win_full = saved_window_fullscreen(&prefs);
         let mut app = Self {
             doc: Document::new(),
             prefs,
@@ -1366,6 +1393,7 @@ impl PigmentApp {
             window_size: win_size,
             window_pos: win_pos,
             window_maximized: win_max,
+            window_fullscreen: win_full,
             hcy_mask_saved: None,
         };
         if let Some(dock) = dock_layout_from_prefs(&app.prefs) {
@@ -2220,6 +2248,7 @@ impl PigmentApp {
         store_dock_layout(&mut self.prefs, &self.dock);
         store_window_geometry(&mut self.prefs, self.window_size, self.window_pos);
         store_window_maximized(&mut self.prefs, self.window_maximized);
+        store_window_fullscreen(&mut self.prefs, self.window_fullscreen);
         // 3. 偏好整表落盘 —— `save_settings()`（`:628`）。存盘这一步的实现在
         //    `prefs_window::settings_on_accept`：它同时是偏好对话框 ACCEPT
         //    （`preferenceswindow.py:130`）的存盘动作，失败消息进窗口状态行。
@@ -5282,6 +5311,10 @@ mod tests {
         assert!(saved_window_maximized(&prefs));
         store_window_maximized(&mut prefs, false);
         assert!(!saved_window_maximized(&prefs));
+        store_window_fullscreen(&mut prefs, true);
+        assert!(saved_window_fullscreen(&prefs));
+        store_window_fullscreen(&mut prefs, false);
+        assert!(!saved_window_fullscreen(&prefs));
     }
 
     #[test]
