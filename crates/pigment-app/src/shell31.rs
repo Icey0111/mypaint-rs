@@ -281,6 +281,7 @@ impl Shell {
             pigment_engine::prefs::settings_path(),
         );
         let (saved_size, saved_pos) = crate::app::saved_window_geometry(&prefs);
+        let saved_max = crate::app::saved_window_maximized(&prefs);
         let mut attrs = WindowAttributes::default()
             .with_title("pigment (winit 0.31 shell)")
             .with_surface_size(winit::dpi::PhysicalSize::new(1280, 800));
@@ -298,6 +299,9 @@ impl Shell {
                 return;
             }
         };
+        if saved_max {
+            window.set_maximized(true);
+        }
         let size = window.surface_size();
 
         let instance = wgpu::Instance::new(
