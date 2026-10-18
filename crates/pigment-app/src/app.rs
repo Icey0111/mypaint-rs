@@ -366,6 +366,8 @@ pub(crate) struct ConfirmState {
 pub(crate) enum ConfirmAction {
     /// 打开某个 scrap 文件（相对 `open_scrap_cb`）。
     OpenScrap(std::path::PathBuf),
+    /// 确认后退出（`quit_cb`，`drawwindow.py:680-698`）。
+    Quit,
 }
 
 /// 文件兼容警告 —— `incompatible_ora_warning_dialog`（`compatibility.py:117-184`）。
@@ -468,6 +470,12 @@ fn build_pointer_event(
         modifiers,
         view_bbox,
     }
+}
+
+/// 退出是否要弹确认 —— `confirm_destructive_action` 的 `t_bother = 1`
+/// （`filehandling.py:700-750`）：未保存作画 >1s 才打扰。
+fn quit_needs_confirmation(unsaved_painting_time: f64) -> bool {
+    unsaved_painting_time > 1.0
 }
 
 /// 输入设备类别：0=鼠标/无笔，1=笔，2=笔尾橡皮。
@@ -641,6 +649,8 @@ pub struct PigmentApp {
     pub(crate) recovered_autosave: Option<std::path::PathBuf>,
     /// 破坏性动作的确认框（`confirm_destructive_action`）。
     pub(crate) confirm: Option<ConfirmState>,
+    /// 确认后的退出请求；外壳每帧检查后退出事件循环。
+    pub(crate) quit_requested: bool,
     /// 最近一次打开/保存的 scrap（`filehandler.active_scrap_filename`，
     /// `filehandling.py:637-639`）。
     pub(crate) active_scrap: Option<std::path::PathBuf>,
@@ -1183,6 +1193,7 @@ impl PigmentApp {
             recovery: None,
             recovered_autosave: None,
             confirm: None,
+            quit_requested: false,
             active_scrap: None,
             compat_mode,
             compat_settings,
@@ -1411,6 +1422,28 @@ impl PigmentApp {
         }
     }
 
+    /// 退出请求 —— `quit_cb`（`drawwindow.py:680-698`）：先存配置，再按
+    /// 未保存作画时长决定是否弹确认。
+    pub(crate) fn request_quit(&mut self, _now: f64) {
+        self.save_gui_config();
+        if quit_needs_confirmation(self.doc.unsaved_painting_time) {
+            self.confirm = Some(ConfirmState {
+                title: "Really Quit?".to_string(),
+                confirm: "Quit".to_string(),
+                action: ConfirmAction::Quit,
+                save_to_scraps: false,
+            });
+        } else {
+            self.quit_now();
+        }
+    }
+
+    fn quit_now(&mut self) {
+        self.quit_requested = true;
+        // 正常退出删掉本进程缓存；崩溃时不会走到这里。
+        self.cleanup_autosave_cache();
+    }
+
     /// 破坏性动作确认框 —— `confirm_destructive_action`（`filehandling.py:700-812`）。
     pub(crate) fn confirm_dialog(&mut self, ctx: &egui::Context, now: f64) {
         let Some(mut state) = self.confirm.take() else {
@@ -1447,6 +1480,7 @@ impl PigmentApp {
             }
             match state.action {
                 ConfirmAction::OpenScrap(path) => self.open_scrap_now(&path, now),
+                ConfirmAction::Quit => self.quit_now(),
             }
         } else if cancel {
             self.set_status("已取消".to_string(), now);
@@ -5043,6 +5077,13 @@ mod tests {
         assert_eq!(ev.pressure, None);
         assert_eq!(ev.xtilt, None);
         assert_eq!(ev.ytilt, None);
+    }
+
+    #[test]
+    fn quit_confirmation_only_after_a_second_of_unsaved_work() {
+        assert!(!quit_needs_confirmation(0.0));
+        assert!(!quit_needs_confirmation(1.0));
+        assert!(quit_needs_confirmation(1.01));
     }
 
     #[test]

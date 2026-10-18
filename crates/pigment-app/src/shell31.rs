@@ -418,8 +418,11 @@ impl ApplicationHandler for Shell {
         };
         match event {
             WindowEvent::CloseRequested => {
-                eframe::App::on_exit(&mut st.app);
-                event_loop.exit();
+                // 走应用层的退出确认（`quit_cb`）；确认/无未保存后由
+                // render_frame 返回 quit 标志再退出事件循环。
+                let now = st.start.elapsed().as_secs_f64();
+                st.app.request_quit(now);
+                st.window.request_redraw();
             }
             WindowEvent::SurfaceResized(size) => {
                 st.config.width = size.width.max(1);
@@ -605,7 +608,10 @@ impl ApplicationHandler for Shell {
                 st.window.request_redraw();
             }
             WindowEvent::RedrawRequested => {
-                render_frame(st);
+                if render_frame(st) {
+                    eframe::App::on_exit(&mut st.app);
+                    event_loop.exit();
+                }
             }
             WindowEvent::Ime(ime) => {
                 // 照 egui-winit 0.37 的映射（`:770-828`）：winit 的 preedit 范围是
@@ -643,7 +649,7 @@ impl ApplicationHandler for Shell {
     }
 }
 
-fn render_frame(st: &mut State) {
+fn render_frame(st: &mut State) -> bool {
     st.raw.time = Some(st.start.elapsed().as_secs_f64());
     // 主键按住时，Windows 可能把整段移动合并到一帧；补一个当前指针位置，
     // 并在本帧结束后继续要帧，让 egui 的 drag 状态有机会推进。
@@ -739,7 +745,7 @@ fn render_frame(st: &mut State) {
             eprintln!("surface: {other:?}");
             st.surface.configure(&st.device, &st.config);
             textures.clear();
-            return;
+            return false;
         }
     };
     let view = frame
@@ -790,6 +796,7 @@ fn render_frame(st: &mut State) {
         st.renderer.free_texture(id);
     }
     textures.clear();
+    st.app.quit_requested
 }
 
 #[cfg(test)]
