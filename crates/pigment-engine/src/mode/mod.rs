@@ -550,6 +550,9 @@ impl BrushworkState {
             None => Brushwork::new(),
         };
         cmd.target_layer = Some(ctx.current_layer_id());
+        // `lib/command.py:415`：起笔时把**已有**的未保存作画时长记进命令，
+        // 收笔时 `time_after = time_before + stroke.total_painting_time`。
+        cmd.set_time_before(ctx.doc.unsaved_painting_time);
         let _ = abrupt || self.first_begin;
         self.first_begin = false;
         self.last_pos = None;

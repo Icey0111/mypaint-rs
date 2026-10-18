@@ -372,6 +372,16 @@ impl Brushwork {
         self.recording_started && !self.recording_finished
     }
 
+    /// 设置本段作画开始前的累计时长 —— `lib/command.py:415` 的
+    /// `self._time_before = model.unsaved_painting_time`。
+    ///
+    /// `BrushworkState::begin` 在起笔时从 `ctx.doc` 取值；直接构造
+    /// `Brushwork` 的测试路径可用它把起点接上。
+    pub fn set_time_before(&mut self, time_before: f64) {
+        assert!(!self.recording_started, "录制开始后不能再改起始时长");
+        self.time_before = time_before.max(0.0);
+    }
+
     /// 记录期是否已结束。
     #[inline]
     pub fn is_finished(&self) -> bool {
@@ -414,7 +424,8 @@ impl Brushwork {
             return Ok(());
         }
         self.sshot_before = Some(surface.save_snapshot());
-        self.time_before = 0.0;
+        // `time_before` 已由 `set_time_before`（或 `BrushworkState::begin`）
+        // 设好；这里不能清零，否则累计时长每笔都会从头开始。
         let mut seq = Stroke::new();
         seq.start_recording(brush, brush_name, state)?;
         self.stroke_seq = Some(seq);
@@ -1760,6 +1771,7 @@ impl Command for RestackLayer {
 mod tests {
     use super::*;
     use crate::brushlib::default_brush;
+    use crate::Document;
     use hokusai::BrushSetting;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2033,6 +2045,57 @@ mod tests {
         assert_eq!(surface.tile_count(), 0, "revert 后画布应回到起笔前");
     }
 
+
+    /// 未保存作画时长要跨命令累计，undo 回到 `_time_before`
+    /// （`lib/command.py:415/544-545/366/374`）。
+    #[test]
+    fn painting_time_accumulates_and_undo_restores_it() {
+        let brush = test_brush(2.0);
+        let mut state = BrushState::default();
+        let mut doc = Document::new();
+
+        let paint_once = |doc: &mut Document, state: &mut BrushState| {
+            let mut bw = Brushwork::new();
+            bw.set_time_before(doc.unsaved_painting_time);
+            let surface = doc.paintable_surface_mut().unwrap();
+            for i in 0..40 {
+                let ev = StrokeEvent::new(
+                    0.016,
+                    i as f32 * 2.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0,
+                );
+                bw.stroke_to(surface, &brush, "Test", state, ev);
+            }
+            let changed = bw.stop_recording(doc.paintable_surface_mut().unwrap(), state, false);
+            assert!(changed);
+            doc.do_brushwork(bw);
+        };
+
+        paint_once(&mut doc, &mut state);
+        let first = doc.unsaved_painting_time;
+        assert!(first > 0.5, "第一笔应累计 ~0.64s，实得 {first}");
+        paint_once(&mut doc, &mut state);
+        assert!(
+            doc.unsaved_painting_time > first + 0.5,
+            "第二笔要接在第一笔之后：{} → {}",
+            first,
+            doc.unsaved_painting_time
+        );
+        let second = doc.unsaved_painting_time;
+        doc.undo();
+        assert_eq!(
+            doc.unsaved_painting_time, first,
+            "undo 要把时长退回本笔的 _time_before"
+        );
+        doc.redo();
+        assert_eq!(doc.unsaved_painting_time, second);
+    }
 
     // ---- 图层命令（B2-3）----
 

@@ -325,6 +325,25 @@ pub(crate) struct RecoveryState {
         std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
 }
 
+/// 破坏性动作的确认框 —— `FileHandler.confirm_destructive_action`
+/// （`filehandling.py:700-790`）。
+///
+/// 源码只在"未保存作画时长 > 1s"时才弹；这里同判据。
+pub(crate) struct ConfirmState {
+    pub(crate) title: String,
+    pub(crate) confirm: String,
+    pub(crate) action: ConfirmAction,
+    /// "Save to Scraps first"（`filehandling.py:771-774`）。
+    pub(crate) save_to_scraps: bool,
+}
+
+/// 确认之后要执行的动作（目前只有 scrap 前后跳；后续 Revert/退出可复用）。
+#[derive(Clone, Debug)]
+pub(crate) enum ConfirmAction {
+    /// 打开某个 scrap 文件（相对 `open_scrap_cb`）。
+    OpenScrap(std::path::PathBuf),
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -453,6 +472,11 @@ pub struct PigmentApp {
     /// 从哪份自动备份恢复的：存盘成功或退出时删掉它
     /// （源码在关闭文档时清理缓存目录，`document.py:412-430`）。
     pub(crate) recovered_autosave: Option<std::path::PathBuf>,
+    /// 破坏性动作的确认框（`confirm_destructive_action`）。
+    pub(crate) confirm: Option<ConfirmState>,
+    /// 最近一次打开/保存的 scrap（`filehandler.active_scrap_filename`，
+    /// `filehandling.py:637-639`）。
+    pub(crate) active_scrap: Option<std::path::PathBuf>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -932,6 +956,8 @@ impl PigmentApp {
             autosave,
             recovery: None,
             recovered_autosave: None,
+            confirm: None,
+            active_scrap: None,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -1048,6 +1074,137 @@ impl PigmentApp {
             check_at_startup: self.prefs.bool_or("autorecovery.check_at_startup", true),
             thumbs: Default::default(),
         });
+    }
+
+    // ---- Scrap（`gui/filehandling.py:1339-1567`）----
+
+    /// 偏好 `saving.scrap_prefix` 展开后的绝对目录
+    /// （`get_scrap_prefix`，`filehandling.py:1420-1430`）。
+    pub(crate) fn scrap_dir(&self) -> std::path::PathBuf {
+        let raw = self
+            .prefs
+            .str_or("saving.scrap_prefix", "~/MyPaint/scrap");
+        let p = pigment_engine::scrap::expand_user(raw);
+        if p.is_absolute() {
+            p
+        } else {
+            abspath(&p.to_string_lossy())
+        }
+    }
+
+    /// `Save As Scrap` —— `save_scrap_cb`（`filehandling.py:1344-1351`）：
+    /// 永远按 autoincrement 规则写**新修订**，不覆盖当前文件。
+    pub(crate) fn save_scrap(&mut self, now: f64) -> bool {
+        let dir = self.scrap_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.set_status(format!("建 scrap 目录失败（{}）：{e}", dir.display()), now);
+            return false;
+        }
+        let path = pigment_engine::scrap::next_scrap_path(
+            &dir,
+            self.current_file.as_deref(),
+            self.save_extension(),
+        );
+        self.save_to_path(&path, false, now);
+        let ok = self.current_file.as_deref() == Some(path.as_path());
+        if ok {
+            self.active_scrap = Some(path.clone());
+            self.set_status(format!("已保存 scrap：{}", path.display()), now);
+        }
+        ok
+    }
+
+    /// `Open Next/Prev Scrap` —— `open_scrap_cb`（`filehandling.py:1529-1567`）。
+    ///
+    /// 未保存作画 >1s 时先弹确认（`confirm_destructive_action`，
+    /// `filehandling.py:700-750` 的 `t_bother = 1`）。
+    pub(crate) fn open_adjacent_scrap(&mut self, delta: i32, now: f64) {
+        let dir = self.scrap_dir();
+        let groups = pigment_engine::scrap::grouped_scraps(&dir);
+        if groups.is_empty() {
+            self.set_status(
+                "There are no scrap files yet. Try saving one first.".to_string(),
+                now,
+            );
+            return;
+        }
+        let active = self
+            .active_scrap
+            .clone()
+            .or_else(|| self.current_file.clone());
+        let Some(target) = pigment_engine::scrap::adjacent_scrap(
+            &groups,
+            active.as_deref(),
+            delta,
+        ) else {
+            return;
+        };
+        let title = if delta >= 0 {
+            "Open Next Scrap?"
+        } else {
+            "Open Previous Scrap?"
+        };
+        if self.doc.unsaved_painting_time > 1.0 {
+            self.confirm = Some(ConfirmState {
+                title: title.to_string(),
+                confirm: "Open".to_string(),
+                action: ConfirmAction::OpenScrap(target),
+                save_to_scraps: false,
+            });
+        } else {
+            self.open_scrap_now(&target, now);
+        }
+    }
+
+    fn open_scrap_now(&mut self, path: &std::path::Path, now: f64) {
+        self.open_from_path(path, now);
+        if self.current_file.as_deref() == Some(path) {
+            self.active_scrap = Some(path.to_path_buf());
+        }
+    }
+
+    /// 破坏性动作确认框 —— `confirm_destructive_action`（`filehandling.py:700-812`）。
+    pub(crate) fn confirm_dialog(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(mut state) = self.confirm.take() else {
+            return;
+        };
+        let mut run = false;
+        let mut cancel = false;
+        let secs = self.doc.unsaved_painting_time.max(0.0);
+        let risk = pigment_engine::autosave::human_time_period_abbr(
+            std::time::Duration::from_secs_f64(secs),
+        );
+        egui::Modal::new(egui::Id::unique("pigment_confirm_destructive")).show(ctx, |ui| {
+            ui.set_width(420.0);
+            ui.heading(&state.title);
+            ui.label(format!(
+                "You risk losing {risk} of unsaved painting."
+            ));
+            ui.checkbox(&mut state.save_to_scraps, "Save to Scraps first");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button(&state.confirm).clicked() {
+                        run = true;
+                    }
+                });
+            });
+        });
+        if run {
+            if state.save_to_scraps {
+                self.save_scrap(now);
+            }
+            match state.action {
+                ConfirmAction::OpenScrap(path) => self.open_scrap_now(&path, now),
+            }
+        } else if cancel {
+            self.set_status("已取消".to_string(), now);
+        } else {
+            self.confirm = Some(state);
+        }
     }
 
     /// 每帧推一次自动备份 —— `Document._cache_updater_cb` + 倒计时
@@ -1664,6 +1821,11 @@ impl PigmentApp {
             Ok(_) => {
                 if !export {
                     self.current_file = Some(path.to_path_buf());
+                    // `filehandler.filename` setter 的副作用：落在 scrap 目录里
+                    // 就记成"当前 scrap"（`filehandling.py:637-639`）。
+                    if pigment_engine::scrap::is_inside_scrap_dir(&self.scrap_dir(), path) {
+                        self.active_scrap = Some(path.to_path_buf());
+                    }
                     // 从备份恢复的文件已经真正存盘了：整份缓存目录可以清掉
                     // （源码 `_cleanup_cache_dir` 删的是包含 `autosave/` 的
                     // 工作目录，不是只删 `autosave/`）。
@@ -1717,6 +1879,9 @@ impl PigmentApp {
         match self.doc.load(path) {
             Ok(outcome) => {
                 self.current_file = Some(path.to_path_buf());
+                if pigment_engine::scrap::is_inside_scrap_dir(&self.scrap_dir(), path) {
+                    self.active_scrap = Some(path.to_path_buf());
+                }
                 self.force_resync = true;
                 self.view = View::default();
                 self.record_recent(path);
@@ -3148,6 +3313,8 @@ fn layout_ink_buttons(
             "New" | "Open" | "Save" | "SaveAs" | "Export" => true,
             // `RecoverAutosavedBackup`（resources.xml:172-177）恒可用
             "RecoverAutosavedBackup" => true,
+            // Scrap 三个动作（resources.xml:145-170）恒可用
+            "SaveScrap" | "PrevScrap" | "NextScrap" => true,
             // ---- 撤销栈（动态 sensitivity）----
             "Undo" => self.doc.command_stack.undo_len() > 0,
             "Redo" => self.doc.command_stack.redo_len() > 0,
@@ -3356,6 +3523,12 @@ fn layout_ink_buttons(
                 // `autorecover_cb`：手动打开恢复对话框
                 self.open_recovery(now);
             }
+            // ---- Scrap（`filehandling.py:1339-1567`）----
+            "SaveScrap" => {
+                self.save_scrap(now);
+            }
+            "PrevScrap" => self.open_adjacent_scrap(-1, now),
+            "NextScrap" => self.open_adjacent_scrap(1, now),
             // ---- 撤销栈（`gui/document.py:552-558`）----
             "Undo" => {
                 self.undo(now);
@@ -4049,6 +4222,7 @@ impl eframe::App for PigmentApp {
         self.color_details_dialog(&ctx);
         self.popup_menu(&ctx, now);
         self.recovery_window(&ctx);
+        self.confirm_dialog(&ctx, now);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();

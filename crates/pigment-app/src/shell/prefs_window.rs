@@ -362,9 +362,6 @@ const R_PRESSURE: &str = "输入压力映射（gui/curve.py 的 CurveWidget + Ap
                           application.py:594-610）未移植";
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
-/// `saving.scrap_prefix`
-const R_SCRAP_PREFIX: &str = "碎片（scrap）库与文件浏览器未移植（filehandling.py:1420-1451）；\
-                              暂存区目录走 get_scratchpad_prefix（:1431-1438），与本键无关";
 /// `display.colorspace`
 const R_COLORSPACE: &str = "色彩管理（lib/eotf.py + PNG/ORA 的色彩空间标签读写）未移植";
 /// `view.real_alpha_checks`
@@ -490,14 +487,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
         "glade:518-531",
     ),
     // `scrap_prefix_entry`（glade:533-545）；写回见 preferenceswindow.py:281-285。
-    ControlDef::unported(
+    // 消费方：`get_scrap_prefix`（`filehandling.py:1420-1430`）→ Save/Next/Prev Scrap。
+    ControlDef::wired(
         4,
         Kind::Entry,
         "scrap_prefix_entry",
         "",
         Some("saving.scrap_prefix"),
         "glade:533-545",
-        R_SCRAP_PREFIX,
     ),
     // 小节标题 `<b>Automated Backups</b>`（glade:674-689）
     ControlDef::text(
@@ -1975,11 +1972,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 13 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // 已接线的控件行 = 14 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 16);
-        assert_eq!(widgets - wired, 21, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 17);
+        assert_eq!(widgets - wired, 20, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2030,6 +2027,7 @@ mod tests {
                 "ui.support_smooth_scrolling",     // 画布滚轮增量来源
                 "document.autosave_backups",       // AutosaveState + autosave_tick
                 "document.autosave_interval",      // 同上（夹在 5..300）
+                "saving.scrap_prefix",             // scrap_dir → Save/Next/Prev Scrap
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2053,7 +2051,6 @@ mod tests {
         let must_be_disabled = [
             "input.global_pressure_mapping", // Pressure 页的曲线
             "input.device_mode",             // Devices 页的编辑器
-            "saving.scrap_prefix",           // Load & Save 页的输入框
             "display.colorspace",            // 色彩管理两个单选
             "view.real_alpha_checks",        // 棋盘格复选框
             "ui.toolbar_icon_size",          // 图标尺寸两个单选

@@ -15,6 +15,7 @@ pub mod fileio;
 pub mod layer_views;
 pub mod mode;
 pub mod prefs;
+pub mod scrap;
 pub mod scratchpad;
 pub mod stroke;
 pub mod zip;
