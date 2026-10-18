@@ -849,6 +849,18 @@ pub fn mask_templates() -> Vec<MaskTemplate> {
     ]
 }
 
+/// 整体旋转遮罩 —— `HCYMaskEditorWheel` 拖轮缘的 `__rotate_drag`
+/// （`hcywheel.py:760-790`）：所有形状的色相加同一个 `delta`。
+pub fn rotate_mask(mask: &mut [MaskShape], delta: f64) {
+    for shape in mask.iter_mut() {
+        for color in shape.iter_mut() {
+            let mut hcy = HcyColor::from_color(color);
+            hcy.h = (hcy.h + delta).rem_euclid(1.0);
+            *color = Color::Hcy(hcy);
+        }
+    }
+}
+
 /// 模板 → 真正的遮罩（`HCYColor` 列表）—— `HCYMaskTemplateDialog.__init__`
 /// （`hcywheel.py:1008-1015`）：
 ///
@@ -941,6 +953,20 @@ mod tests {
 
     fn close(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn rotate_mask_turns_every_point_and_wraps() {
+        let mut mask: Vec<MaskShape> = vec![vec![
+            Color::Hcy(HcyColor::new(0.9, 0.5, 0.5)),
+            Color::Hcy(HcyColor::new(0.1, 0.4, 0.6)),
+        ]];
+        rotate_mask(&mut mask, 0.25);
+        let a = HcyColor::from_color(&mask[0][0]);
+        let b = HcyColor::from_color(&mask[0][1]);
+        assert!(close(a.h, 0.15, 1e-9), "0.9+0.25 应回绕到 0.15，实得 {}", a.h);
+        assert!(close(b.h, 0.35, 1e-9));
+        assert!(close(a.c, 0.5, 1e-9) && close(a.y, 0.5, 1e-9));
     }
 
     /// 常量 = 源码类属性/模块常量（`hcywheel.py:43-44`、`:67`、`:303-311`、

@@ -74,9 +74,10 @@ use eframe::egui;
 use pigment_engine::color::{
     distance_fade_stops, hcy_luma_slider_samples, hcy_wheel_center_rgb,
     hcy_wheel_color_at_position, hcy_wheel_position_for_color, hcy_wheel_scroll, mask_templates,
-    masked_color_at_position, template_mask, visible_mask_voids, Color, ColorChanger,
+    masked_color_at_position, rotate_mask, template_mask, visible_mask_voids, Color, ColorChanger,
     ComponentSlider, HueRange, MaskShape, Point, SliderKind, UIColor,
-    WheelGeometry, BORDER_WIDTH, HCY_WHEEL_TOOLTIP, MASK_ACTIVE_LABEL, MASK_ACTIVE_TOOLTIP,
+    WheelGeometry, BORDER_WIDTH, EDITOR_CTRLPOINT_GRAB_RADIUS, EDITOR_CTRLPOINT_RADIUS,
+    HCY_WHEEL_TOOLTIP, MASK_ACTIVE_LABEL, MASK_ACTIVE_TOOLTIP,
     MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH,
     SLIDER_MIN_WIDTH,
 };
@@ -458,6 +459,8 @@ pub(crate) struct HcyWheelState {
     pub mask_edit: bool,
     /// 正在拖的顶点 `(形状下标, 点下标)`。
     pub mask_drag: Option<(usize, usize)>,
+    /// 正在整体旋转：`(起始角, 起始遮罩快照)`。
+    pub mask_rotate: Option<(f64, Vec<MaskShape>)>,
 }
 
 impl Default for HcyWheelState {
@@ -477,6 +480,7 @@ impl HcyWheelState {
             mask_template: None,
             mask_edit: false,
             mask_drag: None,
+            mask_rotate: None,
         }
     }
 
@@ -695,7 +699,7 @@ impl PigmentApp {
     /// （`hcywheel.py:370-822`）。
     ///
     /// 源码：拖顶点移动、拖边插入新顶点、拖轮缘整体旋转、Delete 删形状。
-    /// 这里实现前两项 + Shift 加顶点 / 右键删顶点；旋转留给后续（记账）。
+    /// 这里实现：拖顶点、Shift 加顶点、右键删顶点、拖轮缘整体旋转。
     fn hcy_mask_editor(
         &mut self,
         ui: &mut egui::Ui,
@@ -706,11 +710,14 @@ impl PigmentApp {
     ) {
         let resp = ui.interact(
             rect,
-            ui.id().with("hcy_mask_editor_wheel"),
+            ui.scope_id().with("hcy_mask_editor_wheel"),
             egui::Sense::click_and_drag(),
         );
-        let handle_r = 5.0;
-        let grab_r = 11.0;
+        let handle_r = EDITOR_CTRLPOINT_RADIUS as f32 + 2.0;
+        let grab_r = EDITOR_CTRLPOINT_GRAB_RADIUS as f32;
+        let center = rect.center();
+        let radius = rect.width().min(rect.height()) * 0.5;
+        let angle_at = |p: egui::Pos2| f64::from((p.y - center.y).atan2(p.x - center.x));
         let pos_for = |color: &Color| {
             let (x, y) = hcy_wheel_position_for_color(geom, color, ranges);
             rect.min + egui::vec2(x as f32, y as f32)
@@ -728,25 +735,37 @@ impl PigmentApp {
         if resp.drag_started() {
             if let Some(p) = resp.interact_pointer_pos() {
                 self.hcy_wheel.mask_drag = hit_at(&self.hcy_wheel.mask, p);
+                if self.hcy_wheel.mask_drag.is_none()
+                    && p.distance(center) > radius * 0.78
+                    && !self.hcy_wheel.mask.is_empty()
+                {
+                    self.hcy_wheel.mask_rotate =
+                        Some((angle_at(p), self.hcy_wheel.mask.clone()));
+                }
             }
         }
         if resp.dragged() {
-            if let (Some((si, pi)), Some(p)) =
-                (self.hcy_wheel.mask_drag, resp.interact_pointer_pos())
-            {
-                let x = f64::from(p.x - rect.left());
-                let y = f64::from(p.y - rect.top());
-                if let Some(c) = hcy_wheel_color_at_position(geom, x, y, managed, ranges) {
-                    if let Some(shape) = self.hcy_wheel.mask.get_mut(si) {
-                        if let Some(slot) = shape.get_mut(pi) {
-                            *slot = Color::Hcy(c);
+            if let Some(p) = resp.interact_pointer_pos() {
+                if let Some((si, pi)) = self.hcy_wheel.mask_drag {
+                    let x = f64::from(p.x - rect.left());
+                    let y = f64::from(p.y - rect.top());
+                    if let Some(c) = hcy_wheel_color_at_position(geom, x, y, managed, ranges) {
+                        if let Some(shape) = self.hcy_wheel.mask.get_mut(si) {
+                            if let Some(slot) = shape.get_mut(pi) {
+                                *slot = Color::Hcy(c);
+                            }
                         }
                     }
+                } else if let Some((start, snapshot)) = &self.hcy_wheel.mask_rotate {
+                    let delta = angle_at(p) - *start;
+                    self.hcy_wheel.mask = snapshot.clone();
+                    rotate_mask(&mut self.hcy_wheel.mask, delta);
                 }
             }
         }
         if resp.drag_stopped() {
             self.hcy_wheel.mask_drag = None;
+            self.hcy_wheel.mask_rotate = None;
         }
 
         // Shift+点击：在指针处加一个顶点（源码是拖边插入，语义等价）
