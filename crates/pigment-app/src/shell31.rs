@@ -276,9 +276,20 @@ fn install_cjk_font(ctx: &egui::Context) {
 }
 impl Shell {
     fn make_state(&mut self, event_loop: &(dyn ActiveEventLoop + 'static)) {
-        let attrs = WindowAttributes::default()
+        // 上次窗口尺寸/位置（`workspace.layout.position`）。
+        let prefs = pigment_engine::prefs::Prefs::load(
+            pigment_engine::prefs::settings_path(),
+        );
+        let (saved_size, saved_pos) = crate::app::saved_window_geometry(&prefs);
+        let mut attrs = WindowAttributes::default()
             .with_title("pigment (winit 0.31 shell)")
             .with_surface_size(winit::dpi::PhysicalSize::new(1280, 800));
+        if let Some((w, h)) = saved_size {
+            attrs = attrs.with_surface_size(winit::dpi::PhysicalSize::new(w, h));
+        }
+        if let Some((x, y)) = saved_pos {
+            attrs = attrs.with_position(winit::dpi::PhysicalPosition::new(x, y));
+        }
         let window: Arc<dyn Window> = match event_loop.create_window(attrs) {
             Ok(w) => Arc::from(w),
             Err(e) => {
@@ -419,7 +430,11 @@ impl ApplicationHandler for Shell {
                 st.app.request_quit(now);
                 st.window.request_redraw();
             }
+            WindowEvent::Moved(pos) => {
+                st.app.window_pos = Some((pos.x, pos.y));
+            }
             WindowEvent::SurfaceResized(size) => {
+                st.app.window_size = Some((size.width, size.height));
                 st.config.width = size.width.max(1);
                 st.config.height = size.height.max(1);
                 st.surface.configure(&st.device, &st.config);

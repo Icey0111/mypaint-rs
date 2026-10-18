@@ -189,7 +189,55 @@ impl LayoutNode {
     }
 }
 
-/// 从 `workspace.layout` 读左右停靠侧栏宽度（缺失用出厂值 240/310）。
+/// 从 `workspace.layout.position` 读窗口几何（源码 `windowing.py:702-780`）。
+pub(crate) fn saved_window_geometry(
+    prefs: &Prefs,
+) -> (Option<(u32, u32)>, Option<(i32, i32)>) {
+    let Some(pos) = prefs
+        .get_object("workspace.layout")
+        .and_then(|o| o.get("position"))
+    else {
+        return (None, None);
+    };
+    let get = |key: &str| pos.get(key).and_then(|v| v.as_i64());
+    let size = match (get("w"), get("h")) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => {
+            Some((w as u32, h as u32))
+        }
+        _ => None,
+    };
+    let at = match (get("x"), get("y")) {
+        (Some(x), Some(y)) if x >= 0 && y >= 0 => {
+            Some((x as i32, y as i32))
+        }
+        _ => None,
+    };
+    (size, at)
+}
+
+/// 把窗口几何写进 `workspace.layout.position`，保留其它字段。
+fn store_window_geometry(
+    prefs: &mut Prefs,
+    size: Option<(u32, u32)>,
+    pos: Option<(i32, i32)>,
+) {
+    let Some((w, h)) = size else { return };
+    let mut obj = prefs
+        .get_object("workspace.layout")
+        .cloned()
+        .unwrap_or_default();
+    let mut p = serde_json::Map::new();
+    p.insert("w".into(), serde_json::json!(w));
+    p.insert("h".into(), serde_json::json!(h));
+    if let Some((x, y)) = pos {
+        p.insert("x".into(), serde_json::json!(x));
+        p.insert("y".into(), serde_json::json!(y));
+    }
+    obj.insert("position".into(), serde_json::Value::Object(p));
+    prefs.set("workspace.layout", serde_json::Value::Object(obj));
+}
+
+/// 从 `workspace.layout` 读左右停靠侧栏宽度（缺失用出厂值 240/310）。/// 从 `workspace.layout` 读左右停靠侧栏宽度（缺失用出厂值 240/310）。
 fn workspace_widths_from_prefs(prefs: &Prefs) -> (f32, f32) {
     let obj = prefs.get_object("workspace.layout");
     let get = |key: &str, fallback: f32| {
@@ -753,6 +801,9 @@ pub struct PigmentApp {
     /// 工作区停靠状态（左/右/浮动组）。默认布局 = 左 BrushGroupTool、
     /// 右 BrushEditor（差异记账见 shell/dock.rs 模块文档）。
     pub(crate) dock: crate::shell::dock::DockState,
+    /// 上次窗口尺寸/位置（物理像素）；外壳每帧更新，退出时写回。
+    pub(crate) window_size: Option<(u32, u32)>,
+    pub(crate) window_pos: Option<(i32, i32)>,
     // ---- 颜色器页签（B4-3 / B4-4a）----
     /// 颜色面板当前页 —— [`crate::shell::color_panel::COLOR_PAGES`] 的下标。
     ///
@@ -1167,6 +1218,7 @@ impl PigmentApp {
                     .collect()
             })
             .unwrap_or_default();
+        let (win_size, win_pos) = saved_window_geometry(&prefs);
         let mut app = Self {
             doc: Document::new(),
             prefs,
@@ -1284,6 +1336,8 @@ impl PigmentApp {
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
             line_settings: pigment_engine::mode::line::LineModeSettings::default(),
             line_curve_drag: None,
+            window_size: win_size,
+            window_pos: win_pos,
             hcy_mask_saved: None,
         };
         if let Some(dock) = dock_layout_from_prefs(&app.prefs) {
@@ -2136,6 +2190,7 @@ impl PigmentApp {
             self.dock_right_width,
         );
         store_dock_layout(&mut self.prefs, &self.dock);
+        store_window_geometry(&mut self.prefs, self.window_size, self.window_pos);
         // 3. 偏好整表落盘 —— `save_settings()`（`:628`）。存盘这一步的实现在
         //    `prefs_window::settings_on_accept`：它同时是偏好对话框 ACCEPT
         //    （`preferenceswindow.py:130`）的存盘动作，失败消息进窗口状态行。
@@ -5178,6 +5233,21 @@ mod tests {
         assert!(t.is_eraser());
         t.clear();
         assert!(!t.active && t.pressure == 1.0 && t.tilt == (0.0, 0.0));
+    }
+
+    #[test]
+    fn window_geometry_roundtrips_position_keys() {
+        let mut prefs = fresh_prefs("window-geom");
+        prefs.set("workspace.layout", serde_json::json!({}));
+        store_window_geometry(&mut prefs, Some((1111, 777)), Some((12, 34)));
+        let (size, pos) = saved_window_geometry(&prefs);
+        assert_eq!(size, Some((1111, 777)));
+        assert_eq!(pos, Some((12, 34)));
+        // 缺尺寸时不写 position（避免半套数据）
+        let mut prefs2 = fresh_prefs("window-geom2");
+        prefs2.set("workspace.layout", serde_json::json!({}));
+        store_window_geometry(&mut prefs2, None, Some((1, 2)));
+        assert_eq!(saved_window_geometry(&prefs2), (None, None));
     }
 
     #[test]
