@@ -44,6 +44,7 @@ struct State {
     last_cursor: Option<egui::CursorIcon>,
     /// IME 只在文本框获得焦点时启用，否则单键快捷键会被输入法吃掉。
     ime_enabled: bool,
+    last_title: String,
 }
 
 pub(crate) struct Shell {
@@ -403,6 +404,7 @@ impl Shell {
             last_move_sent: None,
             last_cursor: None,
             ime_enabled: false,
+            last_title: String::new(),
         });
         if let Some(st) = self.state.as_ref() {
             st.window.request_redraw();
@@ -696,6 +698,12 @@ fn render_frame(st: &mut State) -> bool {
             st.window.set_cursor(WinitCursor::Icon(map_cursor(cursor)));
             st.last_cursor = Some(cursor);
         }
+    }
+    // 标题跟随当前文件/兼容模式（`drawwindow.py:274-289`）。
+    let title = st.app.window_title();
+    if title != st.last_title {
+        st.window.set_title(&title);
+        st.last_title = title;
     }
     // egui 的视口命令（菜单 Quit / Fullscreen / Maximized 等）。
     for viewport in output.viewport_output.values() {

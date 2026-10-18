@@ -189,6 +189,28 @@ impl LayoutNode {
     }
 }
 
+/// `drawwindow.py:274-289` 的标题拼接（文件名 / MyPaint + 1.x 后缀）。
+fn window_title_for(
+    file: Option<&std::path::Path>,
+    compat: pigment_engine::compat::CompatMode,
+) -> String {
+    let base = match file {
+        Some(path) => {
+            let name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string());
+            format!("{name} - MyPaint")
+        }
+        None => "MyPaint".to_string(),
+    };
+    if compat == pigment_engine::compat::CompatMode::C1X {
+        format!("{base} (1.x)")
+    } else {
+        base
+    }
+}
+
 /// 从 `workspace.layout.position` 读窗口几何（源码 `windowing.py:702-780`）。
 pub(crate) fn saved_window_geometry(
     prefs: &Prefs,
@@ -2294,6 +2316,11 @@ impl PigmentApp {
         self.prefs.set_f64("linemode.line_tail", s.tail as f64);
         self.modes.set_line_settings(s);
         self.scratch.modes.set_line_settings(s);
+    }
+
+    /// 窗口标题（`drawwindow.py:274-289`）：文件名/MyPaint + 1.x 兼容后缀。
+    pub(crate) fn window_title(&self) -> String {
+        window_title_for(self.current_file.as_deref(), self.compat_mode)
     }
 
     /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。    /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
@@ -5314,6 +5341,20 @@ mod tests {
         assert!(t.is_eraser());
         t.clear();
         assert!(!t.active && t.pressure == 1.0 && t.tilt == (0.0, 0.0));
+    }
+
+    #[test]
+    fn window_title_uses_basename_and_compat_suffix() {
+        use pigment_engine::compat::CompatMode;
+        assert_eq!(window_title_for(None, CompatMode::C2X), "MyPaint");
+        assert_eq!(
+            window_title_for(Some(std::path::Path::new("/tmp/a.png")), CompatMode::C2X),
+            "a.png - MyPaint"
+        );
+        assert_eq!(
+            window_title_for(Some(std::path::Path::new("b.ora")), CompatMode::C1X),
+            "b.ora - MyPaint (1.x)"
+        );
     }
 
     #[test]
