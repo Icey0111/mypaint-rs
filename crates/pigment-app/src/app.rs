@@ -376,6 +376,55 @@ pub(crate) struct FileWarningState {
     pub(crate) skip: bool,
 }
 
+/// 数位板输入的当前快照 —— 由外壳（winit 0.31 事件循环）每帧写入。
+///
+/// 压感/倾斜是**设备坐标**归一化后的 0..1 / -1..1（winit
+/// `TabletToolData::force.normalized`、`tilt` 的角度换算由外壳做）。
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TabletInput {
+    /// 当前事件来自数位板工具（笔/橡皮）而非鼠标。
+    pub(crate) active: bool,
+    /// 0..=1。
+    pub(crate) pressure: f32,
+    /// `(x, y)` 倾斜，-1..=1（对应 MyPaint 的 `xtilt`/`ytilt`）。
+    pub(crate) tilt: (f32, f32),
+    /// 笔尾橡皮端。
+    pub(crate) eraser: bool,
+}
+
+impl Default for TabletInput {
+    fn default() -> Self {
+        Self {
+            active: false,
+            pressure: 1.0,
+            tilt: (0.0, 0.0),
+            eraser: false,
+        }
+    }
+}
+
+impl TabletInput {
+    /// 把 winit 的归一化压力/角度倾斜写进快照。
+    #[allow(dead_code)] // 外壳接入前先保留 API（当前 eframe 路径不会调用）
+    pub(crate) fn set(&mut self, pressure: f32, tilt: (f32, f32), eraser: bool) {
+        self.active = true;
+        self.pressure = pressure.clamp(0.0, 1.0);
+        self.tilt = (tilt.0.clamp(-1.0, 1.0), tilt.1.clamp(-1.0, 1.0));
+        self.eraser = eraser;
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    /// 当前是否应该把画布输入当橡皮（`device.py` 的笔尾）。
+    #[allow(dead_code)]
+    pub(crate) fn is_eraser(&self) -> bool {
+        self.active && self.eraser
+    }
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -455,6 +504,8 @@ pub struct PigmentApp {
     pub(crate) radius_override: Option<f32>,
     /// 橡皮覆盖（`E`）。
     pub(crate) eraser: bool,
+    /// 数位板输入快照（由外壳的事件循环每帧更新）。
+    pub(crate) tablet: TabletInput,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
     /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
@@ -1020,6 +1071,7 @@ impl PigmentApp {
             brush_name,
             radius_override: None,
             eraser: false,
+            tablet: TabletInput::default(),
             paint_override: None,
             color_manager,
             last_selected_color: initial_color,
@@ -2632,13 +2684,22 @@ impl PigmentApp {
     ) -> pigment_engine::mode::PointerEvent {
         let local = pos - rect.min;
         let [x, y] = self.view.screen_to_world(local.x, local.y);
+        let (pressure, xtilt, ytilt) = if self.tablet.active {
+            (
+                Some(self.tablet.pressure),
+                Some(self.tablet.tilt.0),
+                Some(self.tablet.tilt.1),
+            )
+        } else {
+            (None, None, None)
+        };
         pigment_engine::mode::PointerEvent {
             time_ms,
             x,
             y,
-            pressure: None,
-            xtilt: None,
-            ytilt: None,
+            pressure,
+            xtilt,
+            ytilt,
             viewzoom: self.view.zoom,
             // 源码 `freehand.py:403-404`：`viewzoom = tdw.scale`、
             // `viewrotation = tdw.rotation`（弧度，cairo 的 `Matrix.rotate`）。
@@ -4780,6 +4841,19 @@ mod tests {
         p.push(format!("pigment-app-prefs-{}-{tag}.json", std::process::id()));
         let _ = std::fs::remove_file(&p);
         Prefs::load(p)
+    }
+
+    #[test]
+    fn tablet_input_clamps_and_clears() {
+        let mut t = TabletInput::default();
+        assert!(!t.active && !t.is_eraser());
+        t.set(1.7, (2.0, -3.0), true);
+        assert!(t.active);
+        assert_eq!(t.pressure, 1.0);
+        assert_eq!(t.tilt, (1.0, -1.0));
+        assert!(t.is_eraser());
+        t.clear();
+        assert!(!t.active && t.pressure == 1.0 && t.tilt == (0.0, 0.0));
     }
 
     #[test]

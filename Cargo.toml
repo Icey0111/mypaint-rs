@@ -4,6 +4,7 @@ members = [
     "crates/pigment-engine",
     "crates/pigment-surface",
     "crates/pigment-app",
+    "crates/tablet-probe",
 ]
 
 [workspace.package]
