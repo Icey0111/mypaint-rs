@@ -85,6 +85,17 @@ fn encode_pixel_composited(p: [u16; 4], bg: [u8; 3], bg_lin: [f32; 3], out: &mut
     }
 }
 
+/// 单个像素：fix15 预乘线性 → **预乘** 8 位 RGBA（GPU 预乘混合用）。
+#[inline]
+pub fn fix15_pixel_rgba8_premultiplied(p: [u16; 4]) -> [u8; 4] {
+    [
+        (eotf_encode(fix15::to_f32(p[0]).clamp(0.0, 1.0)) * 255.0).round() as u8,
+        (eotf_encode(fix15::to_f32(p[1]).clamp(0.0, 1.0)) * 255.0).round() as u8,
+        (eotf_encode(fix15::to_f32(p[2]).clamp(0.0, 1.0)) * 255.0).round() as u8,
+        (fix15::to_f32(p[3]) * 255.0).round() as u8,
+    ]
+}
+
 /// 单个像素：fix15 预乘线性 → 去预乘的直通 alpha，写 4 字节。
 ///
 /// 对应源码里 `blit_tile_into(dst, dst_has_alpha=True, ...)` 走
@@ -105,6 +116,14 @@ fn encode_pixel_with_alpha(p: [u16; 4], out: &mut [u8]) {
         out[1] = 0;
         out[2] = 0;
     }
+}
+
+/// 单个 fix15 像素 → 直通 alpha 的 8 位 RGBA（供 GPU 合成路径逐像素用）。
+#[inline]
+pub fn fix15_pixel_rgba8_alpha(p: [u16; 4]) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    encode_pixel_with_alpha(p, &mut out);
+    out
 }
 
 /// 把一块 fix15 tile 合成到 `bg` 底色并转为显示用 RGBA8。

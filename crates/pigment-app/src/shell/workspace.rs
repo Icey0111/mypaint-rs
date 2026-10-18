@@ -135,13 +135,16 @@ pub(crate) fn prepare_canvas(
         // 背景）都会抬高它。粒度粗于逐 tile revision，但正确性不变；
         // 逐 tile 哈希记账为后续优化。
         let composite_rev = layers.composite_revision();
+        // 背景不可见时每个可见 tile 都要重传（空 tile 也要传成全透明），
+        // 否则显存里旧的纸纹 tile 会把棋盘格盖住。
+        let transparent = !layers.render_is_opaque();
         let plan = crate::gpu::plan_uploads(
             |c| renderer.uploaded_rev(c),
             &visible,
             crate::gpu::MAX_UPLOADS_PER_FRAME,
             // 纯色背景由面板底色兜底，不必上传；**图案背景**必须上传合成
             // tile，否则整块画布显示的是平均色而不是纸纹。
-            |c| layers.has_paint_at(c.0, c.1) || layers.background_is_image(),
+            |c| transparent || layers.has_paint_at(c.0, c.1) || layers.background_is_image(),
             composite_rev,
         );
         for coord in plan {
@@ -159,7 +162,10 @@ pub(crate) fn prepare_canvas(
         crate::gpu::plan_evictions(
             |c| renderer.uploaded_rev(c).is_some(),
             &visible,
-            |c| layers.has_paint_at(c.0, c.1) || layers.background_is_image(),
+            |c| {
+                !transparent
+                    && (layers.has_paint_at(c.0, c.1) || layers.background_is_image())
+            },
         )
     };
     // ---- 视图矩阵：world px → **本回调 viewport** 的裁剪空间 ----
@@ -1665,6 +1671,8 @@ impl PigmentApp {
                     uploads: tiles.uploads,
                     evict: tiles.evict,
                     visible: tiles.visible,
+                    checks: !self.doc.layers().render_is_opaque()
+                        && self.prefs.bool_or("view.real_alpha_checks", true),
                 },
             ));
 

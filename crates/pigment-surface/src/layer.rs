@@ -1520,18 +1520,28 @@ impl LayerStack {
     /// 纸色上——与现渲染管线的"CPU 预合成、无混合"模型一致。坐标无内容时
     /// 返回 `None`（调用方据此从显存剔除）。
     pub fn composite_tile_rgba8(&self, tx: i32, ty: i32) -> Option<Box<[u8; TILE_RGBA8_BYTES]>> {
-        // 预览时即使当前层是空的也要输出（否则旧 tile 会留在显存里）
-        if self.preview.is_none() && !self.has_content_at(tx, ty) {
+        // 预览时即使当前层是空的也要输出；背景不可见时也要输出透明 tile
+        // （否则旧的不透明 tile 会留在显存里，棋盘格只在部分区域出现）。
+        if self.preview.is_none() && self.render_is_opaque() && !self.has_content_at(tx, ty) {
             return None;
         }
         let mut scratch = vec![0u16; TILE_CHANNELS];
         self.composite_tile(tx, ty, &mut scratch);
+        // 背景不可见/透明性无法保证时保留 alpha，交给 GPU 与棋盘格合成；
+        // 否则仍预合成到底色（不透明，走最快路径）。
+        let keep_alpha = !self.render_is_opaque();
         let bg = self.background_color;
         let bg_lin = color::bg_to_linear(bg);
         let mut out = Box::new([0u8; TILE_RGBA8_BYTES]);
         for i in 0..TILE_SIZE * TILE_SIZE {
             let px: [u16; 4] = scratch[i * 4..i * 4 + 4].try_into().unwrap();
-            out[i * 4..i * 4 + 4].copy_from_slice(&color::tile_to_rgba8_single(px, bg, bg_lin));
+            if keep_alpha {
+                out[i * 4..i * 4 + 4]
+                    .copy_from_slice(&color::fix15_pixel_rgba8_premultiplied(px));
+            } else {
+                out[i * 4..i * 4 + 4]
+                    .copy_from_slice(&color::tile_to_rgba8_single(px, bg, bg_lin));
+            }
         }
         Some(out)
     }
@@ -2207,6 +2217,44 @@ mod tests {
         assert!(dst[2] > 30_000, "背景隐藏时预览应显示背景");
 
         st.set_preview_path(None);
+    }
+
+    /// 背景隐藏时 `composite_tile_rgba8` 必须保留 alpha（供 GPU 与棋盘格混合）。
+    #[test]
+    fn transparent_background_keeps_alpha_in_rgba8() {
+        let mut st = LayerStack::new();
+        st.set_background_visible(false);
+        let mut px = vec![0u8; 64 * 64 * 4];
+        // 左上角一个半透明红像素，其余全透明
+        px[0..4].copy_from_slice(&[255, 0, 0, 128]);
+        st.layer_mut(0)
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&px, 0, 0, 64, 64);
+        let out = st.composite_tile_rgba8(0, 0).expect("有内容");
+        assert!(
+            (100..=150).contains(&out[3]),
+            "alpha 应保留为 ~128，实得 {}",
+            out[3]
+        );
+        assert!(
+            out[0] > 150,
+            "预乘红色应约 186（alpha 0.5），实得 {}",
+            out[0]
+        );
+        // 不透明像素在背景隐藏时也必须保留 alpha=255
+        px[0..4].copy_from_slice(&[0, 255, 0, 255]);
+        st.layer_mut(0)
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&px, 0, 0, 64, 64);
+        let out = st.composite_tile_rgba8(0, 0).unwrap();
+        assert_eq!(out[3], 255, "不透明像素 alpha 应为 255");
+        assert!(out[1] > 200, "绿色应可见，实得 {}", out[1]);
+        // 背景可见时仍走不透明预合成
+        st.set_background_visible(true);
+        let out = st.composite_tile_rgba8(0, 0).unwrap();
+        assert_eq!(out[3], 255);
     }
 }
 

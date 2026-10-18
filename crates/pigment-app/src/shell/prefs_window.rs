@@ -359,9 +359,6 @@ impl ControlDef {
 
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
-/// `view.real_alpha_checks`
-const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未接 \
-                             tileddrawwidget.py:1078-1081 的 _draw_real_alpha_checks";
 /// `lib.i18n.userlocale`
 const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
 
@@ -617,14 +614,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `real_alpha_checks_checkbutton`（glade:1010-1028）；初值
     // preferenceswindow.py:197-199，写回 `:306-308`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Check,
         "real_alpha_checks_checkbutton",
         "Use a real checkerboard pattern",
         Some("view.real_alpha_checks"),
         "glade:1010-1028",
-        R_ALPHA_CHECK,
     )
     .tip(
         "Draw a real checkerboard pattern to show transparency.\n\
@@ -2004,8 +2000,8 @@ mod tests {
         // 已接线的控件行 = 30 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 34);
-        assert_eq!(widgets - wired, 3, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 35);
+        assert_eq!(widgets - wired, 2, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2066,6 +2062,7 @@ mod tests {
                 "display.colorspace",              // ORA 是否写 mypaint:eotf
                 "input.global_pressure_mapping",   // 压力曲线编辑器
                 "ui.blink_layers",                 // 图层闪烁（LayerStack preview）
+                "view.real_alpha_checks",          // 透明棋盘格 + GPU alpha 混合
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2088,7 +2085,6 @@ mod tests {
             .collect();
         let must_be_disabled = [
             "input.device_mode",             // Devices 页的编辑器
-            "view.real_alpha_checks",        // 棋盘格复选框
             "lib.i18n.userlocale",           // 语言下拉
         ];
         for key in must_be_disabled {

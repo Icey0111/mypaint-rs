@@ -99,6 +99,8 @@ struct GpuTile {
 
 pub struct TileRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// 透明棋盘格背景（全屏三角形，无绑定组）。
+    check_pipeline: wgpu::RenderPipeline,
     view_buf: wgpu::Buffer,
     view_bg: wgpu::BindGroup,
     tile_layout: wgpu::BindGroupLayout,
@@ -158,6 +160,23 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return textureSample(tile_tex, tile_samp, in.uv);
+}
+
+@vertex
+fn vs_check(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
+    var p = array<vec2<f32>, 3>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0)
+    );
+    return vec4<f32>(p[vi], 0.0, 1.0);
+}
+
+@fragment
+fn fs_check(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
+    // 16×16 屏幕像素、两种灰（style.py:24-26）
+    let cell = floor(pos.xy / 16.0);
+    let odd = (cell.x + cell.y) - 2.0 * floor((cell.x + cell.y) / 2.0);
+    let c = mix(0.5, 0.45, odd);
+    return vec4<f32>(c, c, c, 1.0);
 }
 "#;
 
@@ -265,7 +284,40 @@ impl TileRenderer {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: target_format,
-                    blend: None, // tile 已在 CPU 侧合成到白纸底，输出不透明
+                    // 背景不可见时 tile 保留**预乘** alpha（棋盘格透出）
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // 透明棋盘格：无绑定组、不混合，画在 tile 之前
+        let check_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("alpha check layout"),
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        let check_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("alpha check pipeline"),
+            layout: Some(&check_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_check"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_check"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: target_format,
+                    blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
             }),
@@ -278,6 +330,7 @@ impl TileRenderer {
 
         Self {
             pipeline,
+            check_pipeline,
             view_buf,
             view_bg,
             tile_layout,
@@ -447,6 +500,8 @@ pub struct CanvasPaint {
     pub evict: Vec<(i32, i32)>,
     /// 画布矩形覆盖的可见 tile 坐标（可能含尚未有内容的空 tile）。
     pub visible: Vec<(i32, i32)>,
+    /// 是否先画透明棋盘格（背景不可见 + `view.real_alpha_checks`）。
+    pub checks: bool,
 }
 
 impl CallbackTrait for CanvasPaint {
@@ -478,6 +533,10 @@ impl CallbackTrait for CanvasPaint {
         _resources: &CallbackResources,
     ) {
         let r = self.renderer.lock().unwrap();
+        if self.checks {
+            render_pass.set_pipeline(&r.check_pipeline);
+            render_pass.draw(0..3, 0..1);
+        }
         render_pass.set_pipeline(&r.pipeline);
         render_pass.set_bind_group(0, &r.view_bg, &[]);
         for coord in &self.visible {

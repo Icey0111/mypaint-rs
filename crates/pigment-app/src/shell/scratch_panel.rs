@@ -282,6 +282,8 @@ impl PigmentApp {
                     uploads: tiles.uploads,
                     evict: tiles.evict,
                     visible: tiles.visible,
+                    checks: !self.scratch.doc.layers().render_is_opaque()
+                        && self.prefs.bool_or("view.real_alpha_checks", true),
                 },
             ));
 
