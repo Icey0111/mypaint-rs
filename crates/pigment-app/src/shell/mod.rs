@@ -29,6 +29,7 @@ pub(crate) mod background_window;
 pub(crate) mod button_mapping;
 pub(crate) mod buttonmap_editor;
 pub(crate) mod color_panel;
+pub(crate) mod curve;
 pub(crate) mod dock;
 pub(crate) mod hcy_wheel_page;
 pub(crate) mod icon_editor;

@@ -357,9 +357,6 @@ impl ControlDef {
 
 // ---- 未接线原因（每条都指到"缺哪个子系统"）----
 
-/// `input.global_pressure_mapping`
-const R_PRESSURE: &str = "输入压力映射（gui/curve.py 的 CurveWidget + Application.pressure_mapping，\
-                          application.py:594-610）未移植";
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
 /// `view.real_alpha_checks`
@@ -375,14 +372,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // ===== 0. Pressure（glade:95-255；外框标题 Global Pressure Mapping）=====
     // CurveWidget `mapping_curve`（glade:123-130，300×215）；偏好读取
     // `input.global_pressure_mapping`（preferenceswindow.py:147），写回 `:276-279`。
-    ControlDef::unported(
+    ControlDef::wired(
         0,
         Kind::Curve,
         "mapping_curve",
         "",
         Some("input.global_pressure_mapping"),
         "glade:123-130",
-        R_PRESSURE,
     ),
     // ===== 1. Devices（glade:268-328）=====
     // `MyPaintDeviceSettingsEditor`（glade:286-291，450×350）；`input.device_mode`
@@ -1328,6 +1324,8 @@ pub(crate) struct PrefsWindowState {
     pub(crate) tab: usize,
     /// 按钮行右侧的状态文字（本项目补的，见模块文档的记账）。
     pub(crate) status: Option<String>,
+    /// 压力曲线正在拖的点（`CurveWidget.grabbed`，`curve.py:49`）。
+    pub(crate) curve_drag: Option<usize>,
 }
 
 impl PrefsWindowState {
@@ -1505,7 +1503,7 @@ impl PigmentApp {
                 // 已移植的自绘编辑器：直接嵌进来（glade:439 的 AccelMapEditor）
                 self.keys_editor_page(ui);
             }
-            Kind::Curve => curve_placeholder(ui, c),
+            Kind::Curve => self.prefs_curve_row(ui, c),
             Kind::DeviceEditor => editor_placeholder(ui, c, egui::vec2(450.0, 350.0)),
             Kind::ButtonEditor => self.button_editor_page(ui),
             Kind::Check | Kind::Switch => self.prefs_check_row(ui, c),
@@ -1540,9 +1538,43 @@ impl PigmentApp {
         }
     }
 
-    /// 复选框 / 开关一行。
-    fn prefs_check_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
+    /// 压力曲线一行 —— `CurveWidget`（`gui/curve.py`）。
+    fn prefs_curve_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let key = c.key.unwrap_or_default();
+        let enabled = self.control_enabled(c);
+        // 轴标签照 glade（`preferenceswindow.glade:145-217`）：竖排的 y 轴标签
+        // 在 egui 里改为横排放上方（只有版式差异）。
+        ui.label(
+            egui::RichText::new(format!("{AXIS_BRUSH_PRESSURE} ↑"))
+                .weak()
+                .small(),
+        );
+        let mut points = crate::shell::curve::points_from_json(self.prefs.get(key));
+        let changed = ui
+            .add_enabled_ui(enabled, |ui| {
+                crate::shell::curve::curve_editor(
+                    ui,
+                    &mut points,
+                    &mut self.prefs_window.curve_drag,
+                )
+            })
+            .inner;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("0.0").weak().small());
+            ui.add_space(40.0);
+            ui.label(egui::RichText::new(AXIS_INPUT_PRESSURE).weak().small());
+            ui.add_space(40.0);
+            ui.label(egui::RichText::new("1.0").weak().small());
+        });
+        if enabled && changed {
+            self.prefs
+                .set(key, crate::shell::curve::points_to_json(&points));
+            self.after_wired_change();
+        }
+    }
+
+    /// 复选框 / 开关一行。
+    fn prefs_check_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {        let key = c.key.unwrap_or_default();
         // `compability_settings` 是**嵌套对象**：开关写的是某个模式下的
         // `pigment_on_by_default`（`compatibility.py:407-409`），不是整条键。
         if key == "compability_settings" {
@@ -1839,32 +1871,6 @@ fn editor_placeholder(ui: &mut egui::Ui, c: &ControlDef, size: egui::Vec2) {
     );
 }
 
-/// 压力映射曲线的禁用占位区 + 源码里的轴标签。
-///
-/// 源码是 `CurveWidget`（`gui/curve.py`，300×215，glade `:123-130`），
-/// 轴标签来自 glade：`Input Pressure`（`:145`，x 轴）、`Brush Pressure`
-/// （`:159`，y 轴，glade 里 `angle = 90` 竖排）与四个 `0.0`/`1.0` 刻度
-/// （`:174`/`:188` 在 x 轴，`:202`/`:217` 在 y 轴）。
-///
-/// **技术栈适配**：egui 画竖排文字要自己旋转字形，这里把 y 轴标签按横排
-/// 画在占位区上方 —— 只有版式差异，没有语义。
-fn curve_placeholder(ui: &mut egui::Ui, c: &ControlDef) {
-    ui.label(egui::RichText::new(format!("{AXIS_BRUSH_PRESSURE} ↑")).weak().small());
-    placeholder(
-        ui,
-        egui::vec2(300.0, 215.0),
-        "（压力映射曲线）",
-        format!("{NOT_PORTED}\n未移植：{}", c.reason),
-    );
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("0.0").weak().small());
-        ui.add_space(40.0);
-        ui.label(egui::RichText::new(AXIS_INPUT_PRESSURE).weak().small());
-        ui.add_space(40.0);
-        ui.label(egui::RichText::new("1.0").weak().small());
-    });
-}
-
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
@@ -1998,11 +2004,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 29 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // 已接线的控件行 = 30 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 32);
-        assert_eq!(widgets - wired, 5, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 33);
+        assert_eq!(widgets - wired, 4, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2061,6 +2067,7 @@ mod tests {
                 "ui.file_compat_warning_mild",     // 兼容警告开关
                 "ui.file_compat_warning_severe",   // 同上
                 "display.colorspace",              // ORA 是否写 mypaint:eotf
+                "input.global_pressure_mapping",   // 压力曲线编辑器
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2082,7 +2089,6 @@ mod tests {
             .filter_map(|c| c.key)
             .collect();
         let must_be_disabled = [
-            "input.global_pressure_mapping", // Pressure 页的曲线
             "input.device_mode",             // Devices 页的编辑器
             "view.real_alpha_checks",        // 棋盘格复选框
             "ui.blink_layers",               // 图层闪烁
@@ -2429,6 +2435,7 @@ mod tests {
             open: true,
             tab: 5,
             status: None,
+            curve_drag: None,
         };
         state.close();
         assert!(!state.open);

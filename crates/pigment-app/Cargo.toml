@@ -13,6 +13,8 @@ pigment-surface = { path = "../pigment-surface" }
 eframe = { version = "0.37", features = ["wgpu"] }
 # 诊断导出（F2）与后续 OpenRaster 导出复用
 image = { version = "0.25", default-features = false, features = ["png"] }
+# 压力曲线等需要把嵌套数组写回偏好（与引擎同一份 serde_json）
+serde_json = "1"
 
 [build-dependencies]
 resvg = "0.48.1"
