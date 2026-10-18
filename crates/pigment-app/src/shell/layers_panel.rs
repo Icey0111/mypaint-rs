@@ -523,6 +523,7 @@ impl PigmentApp {
             let rect = resp.rect;
             if let Some(pos) = ui.ctx().pointer_interact_pos() {
                 let target = Self::layer_drop_path(&row.path, pos.y, rect);
+                Self::paint_layer_drop_hint(ui, rect, &row.path, &target);
                 self.layer_drop_target = Some(target);
             }
         }
@@ -548,6 +549,36 @@ fn layer_drop_path(row_path: &[usize], pos_y: f32, rect: egui::Rect) -> Vec<usiz
         p
     }
 }
+    /// 拖动时给落点画提示：放进层 = 描整行，前/后插入 = 画一条横线。
+    fn paint_layer_drop_hint(
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        row_path: &[usize],
+        target: &[usize],
+    ) {
+        let accent = ui.visuals().selection.bg_fill;
+        let painter = ui.painter();
+        if target.len() == row_path.len() + 1 {
+            painter.rect_stroke(
+                rect.shrink(2.0),
+                2.0,
+                egui::Stroke::new(2.0, accent),
+                egui::StrokeKind::Inside,
+            );
+        } else if target == row_path {
+            painter.hline(
+                rect.x_range(),
+                rect.top() + 1.0,
+                egui::Stroke::new(2.0, accent),
+            );
+        } else {
+            painter.hline(
+                rect.x_range(),
+                rect.bottom() - 1.0,
+                egui::Stroke::new(2.0, accent),
+            );
+        }
+    }
 /// 拖动结束（全局）：把拖着的层挪到落点。
     fn layer_drag_finish(&mut self, ctx: &egui::Context) {
         if self.layer_drag.is_none() {
