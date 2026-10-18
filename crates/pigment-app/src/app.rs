@@ -215,7 +215,25 @@ pub(crate) fn saved_window_geometry(
     (size, at)
 }
 
-/// 上次窗口是否全屏（`workspace.layout.position.fullscreen`）。
+/// 全屏边缘自动隐藏（`workspace.layout.autohide`，源码默认 True）。
+pub(crate) fn saved_autohide(prefs: &Prefs) -> bool {
+    prefs
+        .get_object("workspace.layout")
+        .and_then(|o| o.get("autohide"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true)
+}
+
+fn store_autohide(prefs: &mut Prefs, autohide: bool) {
+    let mut obj = prefs
+        .get_object("workspace.layout")
+        .cloned()
+        .unwrap_or_default();
+    obj.insert("autohide".into(), serde_json::json!(autohide));
+    prefs.set("workspace.layout", serde_json::Value::Object(obj));
+}
+
+/// 上次窗口是否全屏（`workspace.layout.position.fullscreen`）。/// 上次窗口是否全屏（`workspace.layout.position.fullscreen`）。
 pub(crate) fn saved_window_fullscreen(prefs: &Prefs) -> bool {
     prefs
         .get_object("workspace.layout")
@@ -856,6 +874,8 @@ pub struct PigmentApp {
     pub(crate) window_pos: Option<(i32, i32)>,
     pub(crate) window_maximized: bool,
     pub(crate) window_fullscreen: bool,
+    /// 全屏时顶栏是否只在鼠标碰到上边缘时出现（`workspace.layout.autohide`）。
+    pub(crate) autohide: bool,
     // ---- 颜色器页签（B4-3 / B4-4a）----
     /// 颜色面板当前页 —— [`crate::shell::color_panel::COLOR_PAGES`] 的下标。
     ///
@@ -1273,6 +1293,7 @@ impl PigmentApp {
         let (win_size, win_pos) = saved_window_geometry(&prefs);
         let win_max = saved_window_maximized(&prefs);
         let win_full = saved_window_fullscreen(&prefs);
+        let autohide = saved_autohide(&prefs);
         let mut app = Self {
             doc: Document::new(),
             prefs,
@@ -1394,6 +1415,7 @@ impl PigmentApp {
             window_pos: win_pos,
             window_maximized: win_max,
             window_fullscreen: win_full,
+            autohide,
             hcy_mask_saved: None,
         };
         if let Some(dock) = dock_layout_from_prefs(&app.prefs) {
@@ -2249,6 +2271,7 @@ impl PigmentApp {
         store_window_geometry(&mut self.prefs, self.window_size, self.window_pos);
         store_window_maximized(&mut self.prefs, self.window_maximized);
         store_window_fullscreen(&mut self.prefs, self.window_fullscreen);
+        store_autohide(&mut self.prefs, self.autohide);
         // 3. 偏好整表落盘 —— `save_settings()`（`:628`）。存盘这一步的实现在
         //    `prefs_window::settings_on_accept`：它同时是偏好对话框 ACCEPT
         //    （`preferenceswindow.py:130`）的存盘动作，失败消息进窗口状态行。

@@ -38,7 +38,15 @@ impl PigmentApp {
         let hide_toolbar = self
             .prefs
             .bool_or("ui.hide_toolbar_in_fullscreen", true);
-        if self.fullscreen && hide_menu && hide_toolbar {
+        // 全屏 autohide：鼠标碰到上边缘才把整条顶栏露出来。
+        let reveal = self.fullscreen
+            && self.autohide
+            && ui.ctx().input(|i| {
+                i.pointer
+                    .hover_pos()
+                    .is_some_and(|p| p.y <= 4.0)
+            });
+        if self.fullscreen && !reveal && hide_menu && hide_toolbar {
             return;
         }
         egui::Panel::top("topbar")
@@ -46,10 +54,10 @@ impl PigmentApp {
             .resizable(false)
             .show(ui, |ui| {
                 ui.set_min_height(TOPBAR_MIN_HEIGHT);
-                if !self.fullscreen || !hide_menu {
+                if !self.fullscreen || !hide_menu || reveal {
                     self.menubar_row(ui);
                 }
-                if !self.fullscreen || !hide_toolbar {
+                if !self.fullscreen || !hide_toolbar || reveal {
                     self.toolbar_row(ui);
                 }
             });
