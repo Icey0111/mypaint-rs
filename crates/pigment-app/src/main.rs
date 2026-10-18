@@ -11,6 +11,7 @@ mod convert;
 mod dump;
 mod editor;
 mod gpu;
+mod i18n;
 mod scratch;
 mod shell;
 mod thumb;

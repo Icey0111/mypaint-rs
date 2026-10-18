@@ -75,7 +75,7 @@ impl PigmentApp {
                 // resources.xml 里菜单动作的注释），不置灰（GTK 的菜单标题
                 // 只在整组动作 sensitive=false 时才灰，MyPaint 没有这种用法）
                 let label = crate::shell::menubar::item_info(action).label;
-                ui.menu_button(label, |ui| {
+                ui.menu_button(crate::i18n::tr(&label), |ui| {
                     for n in items.iter() {
                         self.menu_node(ui, n);
                     }
@@ -95,7 +95,7 @@ impl PigmentApp {
             let available = !self.recent_files().is_empty();
             let resp = crate::shell::menubar::item(
                 ui,
-                &info.label,
+                crate::i18n::tr(&info.label),
                 info.accel.as_deref(),
                 available,
                 self.toggle_state(id),
@@ -111,7 +111,7 @@ impl PigmentApp {
         let available = self.action_available(id);
         let resp = crate::shell::menubar::item(
             ui,
-            &info.label,
+            crate::i18n::tr(&info.label),
             info.accel.as_deref(),
             available,
             self.toggle_state(id),
@@ -120,7 +120,7 @@ impl PigmentApp {
         if available {
             if let Some(tip) = &info.tooltip {
                 // on_hover_text 消费 Response，用 clone 保住后面的点击判定
-                let _ = resp.clone().on_hover_text(tip.clone());
+                let _ = resp.clone().on_hover_text(crate::i18n::tr(tip));
             }
         }
         if available && resp.clicked() {
@@ -134,7 +134,7 @@ impl PigmentApp {
     /// `File → Open Recent` 子菜单（`GtkRecentAction`，`filehandling.py:1497`）。
     fn open_recent_menu(&mut self, ui: &mut egui::Ui) {
         let label = crate::shell::menubar::item_info("OpenRecent").label;
-        ui.menu_button(label, |ui| {
+        ui.menu_button(crate::i18n::tr(&label), |ui| {
             let files = self.recent_files().to_vec();
             if files.is_empty() {
                 ui.add_enabled(false, egui::Button::new("No Recent Files"));
@@ -219,7 +219,8 @@ impl PigmentApp {
         let pressed = self.toolbar_pressed(id);
         let action = crate::shell::actions::by_id(id);
         let tip = action.map(|a| {
-            let mut t = a.effective_label().unwrap_or(id).to_string();
+            let mut t =
+                crate::i18n::tr(a.effective_label().unwrap_or(id)).to_string();
             if let Some(acc) = a.accel {
                 t.push_str(&format!("  ({})", acc.label()));
             }
@@ -236,6 +237,7 @@ impl PigmentApp {
                 tip,
                 fallback_label: action
                     .and_then(|a| a.toolbar_label())
+                    .map(crate::i18n::tr)
                     .unwrap_or(id)
                     .to_string(),
             },

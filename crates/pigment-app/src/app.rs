@@ -1668,6 +1668,10 @@ impl PigmentApp {
     /// 对话框本身属 B6-3）。
     pub(crate) fn apply_settings(&mut self) {
         self.mode_prefs = ModePrefs::from_prefs(&self.prefs);
+        // 界面语言（`lib.i18n.userlocale`）；菜单/动作文案按它查官方中文表
+        crate::i18n::set_from_pref(
+            &self.prefs.str_or("lib.i18n.userlocale", ""),
+        );
         let cfg = FreehandConfig::from_prefs(&self.prefs);
         self.modes.set_freehand_config(cfg.clone());
         self.scratch.modes.set_freehand_config(cfg);

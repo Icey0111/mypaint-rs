@@ -360,7 +360,6 @@ impl ControlDef {
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
 /// `lib.i18n.userlocale`
-const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
 
 /// 全部页面的全部控件（顺序 = glade 的 attach 顺序；同一页内自上而下）。
 pub(crate) static CONTROLS: &[ControlDef] = &[
@@ -633,14 +632,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `locale_combobox`（glade:1225-1243）；初值 preferenceswindow.py:157-163，
     // 写回 `:412-418`。偏好键是 `lib/i18n.py:24` 的 `USER_LOCALE_PREF`
     // = `lib.i18n.userlocale`（软键，默认表里没有）。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Combo,
         "locale_combobox",
         "",
         Some("lib.i18n.userlocale"),
         "glade:1225-1243",
-        R_LOCALE,
     ),
     // 组合框右边的 `(needs restart)`（glade:1260-1273）
     ControlDef::text(5, Kind::Note, "label42", "(needs restart)", "glade:1260-1273"),
@@ -1091,6 +1089,13 @@ pub(crate) struct OptionDef {
     pub(crate) label: &'static str,
 }
 
+/// `lib.i18n.userlocale` 的三个候选（`lib/i18n.py` 的 system/en/zh 三类）。
+pub(crate) static LOCALES: &[OptionDef] = &[
+    OptionDef { id: "", label: "System default" },
+    OptionDef { id: "en_US", label: "English" },
+    OptionDef { id: "zh_CN", label: "中文（中国）" },
+];
+
 /// `saving.default_format` 的三个取值 —— glade `default_save_format_liststore`
 /// （`:14-35`）；与 `pigment_engine::prefs::format_extension` 的扩展名同源。
 pub(crate) static SAVE_FORMATS: &[OptionDef] = &[
@@ -1190,6 +1195,7 @@ pub(crate) fn options_for(control_id: &str) -> &'static [OptionDef] {
         "default_zoom_combobox" => ZOOM_LEVELS,
         "freehand_cursor_combobox" => CURSOR_TYPES,
         "compat_file_behavior_combobox" => COMPAT_FILE_BEHAVIORS,
+        "locale_combobox" => LOCALES,
         _ => &[],
     }
 }
@@ -2000,8 +2006,8 @@ mod tests {
         // 已接线的控件行 = 30 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 35);
-        assert_eq!(widgets - wired, 2, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 36);
+        assert_eq!(widgets - wired, 1, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2063,6 +2069,7 @@ mod tests {
                 "input.global_pressure_mapping",   // 压力曲线编辑器
                 "ui.blink_layers",                 // 图层闪烁（LayerStack preview）
                 "view.real_alpha_checks",          // 透明棋盘格 + GPU alpha 混合
+                "lib.i18n.userlocale",             // 菜单/动作文案语言
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2085,7 +2092,6 @@ mod tests {
             .collect();
         let must_be_disabled = [
             "input.device_mode",             // Devices 页的编辑器
-            "lib.i18n.userlocale",           // 语言下拉
         ];
         for key in must_be_disabled {
             assert!(disabled.contains(key), "{key} 应标成未接线");
@@ -2269,7 +2275,7 @@ mod tests {
         assert_eq!(options_for("default_zoom_combobox").len(), 4);
         assert_eq!(options_for("freehand_cursor_combobox").len(), 4);
         assert_eq!(options_for("compat_file_behavior_combobox").len(), 3);
-        assert!(options_for("locale_combobox").is_empty());
+        assert_eq!(options_for("locale_combobox").len(), 3);
         assert!(options_for("nope").is_empty());
     }
 
