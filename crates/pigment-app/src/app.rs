@@ -756,6 +756,8 @@ pub struct PigmentApp {
     /// 源码里遮罩挂在 `MaskableWheelMixin` 实例上（`hcywheel.py:70-71` 的
     /// `__mask` 与 `mask_toggle`），egui 没有控件对象，只能由应用持有。
     pub(crate) hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState,
+    /// 直线/曲线压力设置（`linemode.py:39-85`）。
+    pub(crate) line_settings: pigment_engine::mode::line::LineModeSettings,
     /// 上次写回偏好的 HCY 遮罩签名（扁平形状 + active），避免每帧写。
     hcy_mask_saved: Option<(Vec<Vec<String>>, bool)>,
     // ---- 工具条（S4）----
@@ -1262,6 +1264,7 @@ impl PigmentApp {
             color_page: crate::shell::color_panel::PAGE_COMPONENT_SLIDERS,
             wheel_pages: crate::shell::wheel_pages::WheelPagesState::new(),
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
+            line_settings: pigment_engine::mode::line::LineModeSettings::default(),
             hcy_mask_saved: None,
         };
         app.derive_active();
@@ -1876,6 +1879,16 @@ impl PigmentApp {
             .clamp(5, 300) as u64;
         // 主题变体（`ui.dark_theme_variant`）由下一帧的 `apply_appearance` 套用
         self.appearance_dirty = true;
+        // 直线/曲线压力（`linemode.*` 软键）
+        self.line_settings = pigment_engine::mode::line::LineModeSettings {
+            entry_pressure: self.prefs.f64_or("linemode.entry_pressure", 0.3) as f32,
+            midpoint_pressure: self.prefs.f64_or("linemode.midpoint_pressure", 1.0) as f32,
+            exit_pressure: self.prefs.f64_or("linemode.exit_pressure", 0.3) as f32,
+            head: self.prefs.f64_or("linemode.line_head", 0.25) as f32,
+            tail: self.prefs.f64_or("linemode.line_tail", 0.75) as f32,
+        };
+        self.modes.set_line_settings(self.line_settings);
+        self.scratch.modes.set_line_settings(self.line_settings);
         // HCY 遮罩（`colors.hcywheel.mask.*`）
         self.load_hcy_mask();
     }

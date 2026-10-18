@@ -531,6 +531,10 @@ impl InteractionMode for LineMode {
         self.kind.usage()
     }
 
+    fn set_line_settings(&mut self, settings: LineModeSettings) {
+        self.settings = settings;
+    }
+
     fn pointer_behavior(&self) -> Behavior {
         Behavior::PAINT_CONSTRAINED
     }
@@ -635,6 +639,26 @@ impl LineMode {
 mod tests {
     use super::*;
     use crate::document::Document;
+
+    #[test]
+    fn line_settings_can_be_pushed_from_the_app() {
+        let mut m = LineMode::new(LineKind::Straight);
+        let s = LineModeSettings {
+            entry_pressure: 0.1,
+            midpoint_pressure: 0.9,
+            exit_pressure: 0.2,
+            head: 0.3,
+            tail: 0.7,
+        };
+        m.set_line_settings(s);
+        let (p1, p2, p2_minus_p1, p3_minus_p2, head, tail) = m.settings.line_settings();
+        assert!((p1 - 0.1).abs() < 1e-6);
+        assert!((p2 - 0.9).abs() < 1e-6);
+        assert!((p2_minus_p1 - 0.8).abs() < 1e-6);
+        assert!((p3_minus_p2 + 0.7).abs() < 1e-6);
+        assert!((head - 0.3).abs() < 1e-6);
+        assert!((tail - 0.7).abs() < 1e-6);
+    }
 
     fn ctx_and_mode<'a>(
         doc: &'a mut Document,

@@ -42,6 +42,8 @@ struct State {
     last_pointer: Option<Pos2>,
     last_move_sent: Option<Pos2>,
     last_cursor: Option<egui::CursorIcon>,
+    /// IME 只在文本框获得焦点时启用，否则单键快捷键会被输入法吃掉。
+    ime_enabled: bool,
 }
 
 pub(crate) struct Shell {
@@ -286,15 +288,7 @@ impl Shell {
             }
         };
         let size = window.surface_size();
-        // 启用 IME，并声明支持 cursor area（候选框跟随光标）。
-        let ime_caps = ImeCapabilities::new().with_cursor_area();
-        let ime_data = ImeRequestData::default().with_cursor_area(
-            LogicalPosition::new(0.0, 0.0).into(),
-            LogicalSize::new(1.0, 1.0).into(),
-        );
-        if let Some(req) = ImeEnableRequest::new(ime_caps, ime_data) {
-            let _ = window.request_ime_update(ImeRequest::Enable(req));
-        }
+
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_without_display_handle(),
         );
@@ -389,6 +383,7 @@ impl Shell {
             last_pointer: None,
             last_move_sent: None,
             last_cursor: None,
+            ime_enabled: false,
         });
         if let Some(st) = self.state.as_ref() {
             st.window.request_redraw();
@@ -679,15 +674,49 @@ fn render_frame(st: &mut State) -> bool {
             st.last_cursor = Some(cursor);
         }
     }
+    // IME 只在文本框获得焦点时启用。全局启用会把单键快捷键（k/t/…）
+    // 送进输入法，画到候选窗里。
+    let ime_wanted = output.platform_output.ime.is_some();
+    if ime_wanted != st.ime_enabled {
+        if ime_wanted {
+            let rect = output
+                .platform_output
+                .ime
+                .map(|i| i.cursor_rect)
+                .unwrap_or(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1.0, 1.0),
+                ));
+            let data = ImeRequestData::default().with_cursor_area(
+                LogicalPosition::new(rect.min.x as f64, rect.min.y as f64).into(),
+                LogicalSize::new(
+                    rect.width().max(1.0) as f64,
+                    rect.height().max(1.0) as f64,
+                )
+                .into(),
+            );
+            if let Some(req) =
+                ImeEnableRequest::new(ImeCapabilities::new().with_cursor_area(), data)
+            {
+                let _ = st.window.request_ime_update(ImeRequest::Enable(req));
+                st.ime_enabled = true;
+            }
+        } else {
+            let _ = st.window.request_ime_update(ImeRequest::Disable);
+            st.ime_enabled = false;
+        }
+    }
     // 候选框跟随文本框光标（egui 的 IMEOutput.cursor_rect）。
-    if let Some(ime) = &output.platform_output.ime {
-        let p = ime.cursor_rect.min;
-        let s = ime.cursor_rect.size();
-        let data = ImeRequestData::default().with_cursor_area(
-            LogicalPosition::new(p.x as f64, p.y as f64).into(),
-            LogicalSize::new(s.x.max(1.0) as f64, s.y.max(1.0) as f64).into(),
-        );
-        let _ = st.window.request_ime_update(ImeRequest::Update(data));
+    if st.ime_enabled {
+        if let Some(ime) = &output.platform_output.ime {
+            let p = ime.cursor_rect.min;
+            let s = ime.cursor_rect.size();
+            let data = ImeRequestData::default().with_cursor_area(
+                LogicalPosition::new(p.x as f64, p.y as f64).into(),
+                LogicalSize::new(s.x.max(1.0) as f64, s.y.max(1.0) as f64).into(),
+            );
+            let _ = st.window.request_ime_update(ImeRequest::Update(data));
+        }
     }
     // 把 egui 的复制命令写进系统剪贴板（Cut/Copy 的事件路径）。
     for cmd in &output.platform_output.commands {

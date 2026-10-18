@@ -354,6 +354,9 @@ pub trait InteractionMode {
     /// 其余模式没有这类配置，默认什么都不做。
     fn set_freehand_config(&mut self, _config: freehand::FreehandConfig) {}
 
+    /// 收下应用推来的直线/曲线压力设置（`linemode.py:39-85`）。
+    fn set_line_settings(&mut self, _settings: line::LineModeSettings) {}
+
     /// 选项面板是否沿用**栈里下面那个模式**的控件
     /// （`BrushResizeMode.get_options_widget()`，`gui/brushmanip.py:296-297`）。
     fn delegates_options(&self) -> bool {
@@ -870,6 +873,13 @@ impl ModeStack {
         }
     }
 
+    /// 把直线/曲线压力设置推给栈里所有 `LineMode`。
+    pub fn set_line_settings(&mut self, settings: line::LineModeSettings) {
+        for mode in &mut self.stack {
+            mode.set_line_settings(settings);
+        }
+    }
+
     /// 压入一个模式：先 `leave()` 旧栈顶，再 `enter()` 新模式（`push`）。
     pub fn push(&mut self, mut mode: Box<dyn InteractionMode>, ctx: &mut ModeContext<'_>) {
         if let Some(old) = self.stack.last_mut() {
@@ -1035,7 +1045,8 @@ mod tests {
         assert_eq!(stack.names(), vec!["default", "zoom"]);
         // context_push 一个笔刷类：不兼容的栈顶被逐个弹掉
         stack.context_push(Box::new(Probe { name: "brush2", log: std::rc::Rc::clone(&log), behavior: Behavior::PAINT_FREEHAND }), &mut ctx);
-        // 笔刷类不能叠在笔刷类之上（issue #530），所以默认模式也被弹掉`r`n        assert_eq!(stack.names(), vec!["brush2"]);
+        // 笔刷类不能叠在笔刷类之上（issue #530），所以默认模式也被弹掉
+        assert_eq!(stack.names(), vec!["brush2"]);
 
         // pop 到空 → 自动补默认模式并 enter
         stack.pop(&mut ctx);
