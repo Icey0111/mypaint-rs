@@ -1369,7 +1369,7 @@ impl PigmentApp {
     pub(crate) fn preferences_window(&mut self, ctx: &egui::Context) {
         if self.prefs_window.open {
             let mut open = true;
-            egui::Window::new(TITLE)
+            egui::Window::new(crate::i18n::tr(TITLE))
                 .open(&mut open)
                 .collapsible(false)
                 .resizable(true)
@@ -1406,11 +1406,11 @@ impl PigmentApp {
         let mut accept = false;
         let mut revert = false;
         ui.horizontal(|ui| {
-            if ui.button(BUTTON_REVERT).clicked() {
+            if ui.button(crate::i18n::tr(BUTTON_REVERT)).clicked() {
                 revert = true;
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button(BUTTON_OK).clicked() {
+                if ui.button(crate::i18n::tr(BUTTON_OK)).clicked() {
                     accept = true;
                 }
                 if let Some(status) = &self.prefs_window.status {
@@ -1432,10 +1432,11 @@ impl PigmentApp {
             for (index, tab) in TABS.iter().enumerate() {
                 let selected = self.prefs_window.tab == index;
                 // `selectable_label` 的选中态 = `GtkNotebook` 的活动页
-                let resp = ui.selectable_label(selected, tab.title);
+                let resp =
+                    ui.selectable_label(selected, crate::i18n::tr(tab.title));
                 let tip = match tab.frame_heading {
-                    Some(h) => format!("{}\n{h}", tab.title),
-                    None => tab.title.to_string(),
+                    Some(h) => format!("{}\n{h}", crate::i18n::tr(tab.title)),
+                    None => crate::i18n::tr(tab.title).to_string(),
                 };
                 if resp.on_hover_text(tip).clicked() {
                     self.prefs_window.tab = index;
@@ -1474,7 +1475,7 @@ impl PigmentApp {
     /// 一页的全部行（外框标题 + [`CONTROLS`] 里 `page == tab` 的那些）。
     fn prefs_page_rows(&mut self, ui: &mut egui::Ui, tab: usize) {
         if let Some(heading) = TABS.get(tab).and_then(|t| t.frame_heading) {
-            ui.label(egui::RichText::new(heading).strong());
+            ui.label(egui::RichText::new(crate::i18n::tr(heading)).strong());
             ui.separator();
         }
         for control in CONTROLS.iter().filter(|c| c.page == tab) {
@@ -1487,15 +1488,20 @@ impl PigmentApp {
         match c.kind {
             Kind::Header => {
                 ui.add_space(10.0);
-                ui.label(egui::RichText::new(c.label).strong());
+                ui.label(egui::RichText::new(crate::i18n::tr(c.label)).strong());
             }
             Kind::Note => {
-                ui.label(egui::RichText::new(c.label).weak().small().italics());
+                ui.label(
+                    egui::RichText::new(crate::i18n::tr(c.label))
+                        .weak()
+                        .small()
+                        .italics(),
+                );
             }
             Kind::RowLabel => {
-                let resp = ui.label(c.label);
+                let resp = ui.label(crate::i18n::tr(c.label));
                 if let Some(tip) = c.tip {
-                    resp.on_hover_text(tip);
+                    resp.on_hover_text(crate::i18n::tr(tip));
                 }
             }
             Kind::AccelEditor => {
@@ -1580,7 +1586,7 @@ impl PigmentApp {
             if let Some(mode) = compat_mode_control(c.id) {
                 let enabled = self.control_enabled(c);
                 let mut value = self.compat_settings.mode(mode).pigment_on_by_default;
-                let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, c.label));
+                let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, crate::i18n::tr(c.label)));
                 let resp = attach_tip(resp, c, enabled);
                 if enabled && resp.changed() {
                     self.compat_settings.mode_mut(mode).pigment_on_by_default = value;
@@ -1592,7 +1598,7 @@ impl PigmentApp {
         }
         let mut value = self.prefs.bool_or(key, c.default_bool);
         let enabled = self.control_enabled(c);
-        let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, c.label));
+        let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, crate::i18n::tr(c.label)));
         let resp = attach_tip(resp, c, enabled);
         if enabled && resp.changed() {
             self.prefs.set_bool(key, value);
@@ -1604,7 +1610,7 @@ impl PigmentApp {
     fn prefs_radio_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let selected = self.radio_selected(c);
         let enabled = self.control_enabled(c);
-        let resp = ui.add_enabled(enabled, egui::RadioButton::new(selected, c.label));
+        let resp = ui.add_enabled(enabled, egui::RadioButton::new(selected, crate::i18n::tr(c.label)));
         let resp = attach_tip(resp, c, enabled);
         if enabled && resp.clicked() && !selected {
             if let (Some(key), Some(value)) = (c.key, c.value) {
@@ -1747,7 +1753,7 @@ impl PigmentApp {
                 .speed(1.0),
         );
         if !c.label.is_empty() {
-            ui.label(c.label);
+            ui.label(crate::i18n::tr(c.label));
         }
         let resp = attach_tip(resp, c, enabled);
         if enabled && resp.changed() {
@@ -1810,20 +1816,20 @@ fn button_row_reserve(ui: &egui::Ui) -> f32 {
 fn attach_tip(resp: egui::Response, c: &ControlDef, enabled: bool) -> egui::Response {
     if enabled {
         match c.tip {
-            Some(tip) => resp.on_hover_text(tip),
+            Some(tip) => resp.on_hover_text(crate::i18n::tr(tip)),
             None => resp,
         }
     } else if c.wired {
         // 已接线但被联动禁用（自动备份间隔 / crosshair 预设下的十字线）
         let text = c
             .tip
-            .map(|t| format!("{t}\n当前设置下不可用"))
+            .map(|t| format!("{}\n当前设置下不可用", crate::i18n::tr(t)))
             .unwrap_or_else(|| "当前设置下不可用".to_string());
         resp.on_disabled_hover_text(text)
     } else {
         let mut text = String::new();
         if let Some(tip) = c.tip {
-            text.push_str(tip);
+            text.push_str(crate::i18n::tr(tip));
             text.push('\n');
         }
         text.push_str(NOT_PORTED);
