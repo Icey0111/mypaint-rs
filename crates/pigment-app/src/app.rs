@@ -504,6 +504,8 @@ pub struct PigmentApp {
     )>,
     /// 笔刷包 readme 对话框：`(文件名, 正文)`。
     pub(crate) brushpack_readme: Option<(String, String)>,
+    /// 待导出的分组 id（`BrushGroupsMenu` 的 Export Group…）。
+    pub(crate) pending_export_group: Option<String>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -686,6 +688,8 @@ impl ModePrefs {
         PaletteSaveAs,
         /// 笔刷包 `.zip` 导入（`brushmanager.py:647-812`）
         BrushpackOpen,
+        /// 当前分组导出为 `.zip`（`brushmanager.py:845-886`）
+        BrushpackExport,
     }
 
     pub(crate) struct FilePrompt {
@@ -734,6 +738,7 @@ impl ModePrefs {
                 FileAction::PaletteOpen => "导入调色板 .gpl",
                 FileAction::PaletteSaveAs => "导出调色板 .gpl",
                 FileAction::BrushpackOpen => "导入笔刷包（.zip）",
+                FileAction::BrushpackExport => "导出分组为笔刷包（.zip）",
             }
         }
     }
@@ -766,6 +771,7 @@ fn action_extension(action: FileAction, doc_ext: &'static str) -> &'static str {
         FileAction::Export => ".png",
         FileAction::PaletteOpen | FileAction::PaletteSaveAs => ".gpl",
         FileAction::BrushpackOpen => ".zip",
+        FileAction::BrushpackExport => ".zip",
         _ => doc_ext,
     }
 }
@@ -999,6 +1005,7 @@ impl PigmentApp {
             blink_until: None,
             brushpack_pending: None,
             brushpack_readme: None,
+            pending_export_group: None,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -2345,6 +2352,22 @@ impl PigmentApp {
                 }
                 self.start_brushpack_import(&path, now);
             }
+            FileAction::BrushpackExport => {
+                let Some(group) = self.pending_export_group.take() else {
+                    return;
+                };
+                match pigment_engine::brushpack::export_group(
+                    &self.brushes.library,
+                    &group,
+                    &path,
+                ) {
+                    Ok(n) => self.set_status(
+                        format!("已导出 {n} 支笔刷到 {}", path.display()),
+                        now,
+                    ),
+                    Err(e) => self.set_status(format!("导出笔刷包失败：{e}"), now),
+                }
+            }
             FileAction::PaletteOpen => {
                 if !path.is_file() {
                     self.file_prompt = Some(FilePrompt {
@@ -2446,6 +2469,7 @@ impl PigmentApp {
                 FileAction::PaletteOpen => "要导入的 GIMP 调色板路径（.gpl）：",
                 FileAction::PaletteSaveAs => "导出调色板的路径（不带后缀时按 .gpl 处理）：",
                 FileAction::BrushpackOpen => "要导入的笔刷包路径（.zip）：",
+                FileAction::BrushpackExport => "导出笔刷包的路径（.zip）：",
             });
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut prompt.path)
@@ -4585,6 +4609,25 @@ impl eframe::App for PigmentApp {
 
         // 暂存区面板关掉时存盘（`scratchwindow.py:57-58` 的 destroy/delete-event）
         let now = ui.input(|i| i.time);
+        // 分组菜单里点的三项（需要 app 的动作/文件弹层，不能在面板闭包里做）
+        if std::mem::take(&mut self.brushes.import_requested) {
+            self.run_action("ImportBrushPack", &ctx, now);
+        }
+        if std::mem::take(&mut self.brushes.download_requested) {
+            self.run_action("DownloadBrushPack", &ctx, now);
+        }
+        if std::mem::take(&mut self.brushes.export_group_requested) {
+            let group = self.brushes.group.clone();
+            let seed = std::env::current_dir()
+                .map(|d| d.join(format!("{}.zip", group.replace('/', "_"))))
+                .ok();
+            self.pending_export_group = Some(group);
+            self.file_prompt = Some(FilePrompt::new(
+                FileAction::BrushpackExport,
+                seed.as_deref(),
+                ".zip",
+            ));
+        }
         self.save_scratchpad_on_close(now);
 
         // 文件路径弹层放最后画（浮在最上层）。它打开时输入框会拿到键盘焦点，

@@ -200,6 +200,48 @@ pub fn install_brushpack(
     Ok(report)
 }
 
+/// 导出一个分组为笔刷包 —— `BrushManager.export_group`
+/// （`brushmanager.py:845-886`）。
+///
+/// zip 内是 `order.conf`（`Group: <组名>` + 每个笔刷 key）与每支笔刷的
+/// `.myb`/`_prev.png`；顺序与库内成员顺序一致。
+pub fn export_group(
+    lib: &crate::brushlib::BrushLibrary,
+    group_id: &str,
+    filename: impl AsRef<Path>,
+) -> io::Result<usize> {
+    let title = lib
+        .groups
+        .iter()
+        .find(|g| g.id == group_id)
+        .map(|g| g.display.clone())
+        .unwrap_or_else(|| group_id.to_string());
+    let mut order = format!("Group: {title}\n");
+    let mut z = crate::zip::ZipWriter::create(filename.as_ref())
+        .map_err(io::Error::other)?;
+    let mut count = 0;
+    for i in lib.group_members(group_id) {
+        let entry = &lib.entries[i];
+        let key = &entry.key;
+        let json = entry
+            .read_json()
+            .map_err(|e| io::Error::other(e.to_string()))?;
+        z.add_stored(&format!("{key}.myb"), json.as_bytes())
+            .map_err(io::Error::other)?;
+        if let Some(prev) = entry.preview_png() {
+            z.add_stored(&format!("{key}_prev.png"), prev.as_ref())
+                .map_err(io::Error::other)?;
+        }
+        order.push_str(key);
+        order.push('\n');
+        count += 1;
+    }
+    z.add_stored(ORDER_CONF, order.as_bytes())
+        .map_err(io::Error::other)?;
+    z.finish().map_err(io::Error::other)?;
+    Ok(count)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,5 +343,23 @@ mod tests {
         taken.insert("a#2".into());
         assert_eq!(unique_name("a", &taken), "a#3");
         assert_eq!(unique_name("b", &taken), "b");
+    }
+
+    #[test]
+    fn exported_group_reads_back_as_a_pack() {
+        let lib = crate::brushlib::BrushLibrary::embedded();
+        let n = lib.group_members("classic").len();
+        let path = std::env::temp_dir().join(format!(
+            "pigment-export-{}.zip",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let count = export_group(&lib, "classic", &path).unwrap();
+        assert_eq!(count, n);
+        let back = read_brushpack(&path).unwrap();
+        assert_eq!(back.brush_keys().count(), count);
+        assert_eq!(back.groups[0].0, "Classic");
+        assert!(back.entries.iter().all(|(_, _, prev)| prev.is_some()));
+        let _ = std::fs::remove_file(&path);
     }
 }

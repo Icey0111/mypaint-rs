@@ -183,6 +183,10 @@ pub struct BrushPanel {
     /// `BrushManager.set_pigment_by_default`（`brushmanager.py:609-643`）：
     /// 2.x 兼容模式 true、1.x false。由 `PigmentApp::apply_compat` 维护。
     pub pigment_by_default: bool,
+    /// 分组菜单请求：导入笔刷包 / 打开下载页 / 导出当前分组（由 app 消费）。
+    pub import_requested: bool,
+    pub download_requested: bool,
+    pub export_group_requested: bool,
 }
 
 impl BrushPanel {
@@ -214,6 +218,9 @@ impl BrushPanel {
             new_group_focus: false,
             delete_confirm: None,
             pigment_by_default: true,
+            import_requested: false,
+            download_requested: false,
+            export_group_requested: false,
         };
         // `_init_default_brushkeys_and_history`（brushmanager.py:463-474）：
         // 空的历史槽位用启动分组的前 5 支补满（`group_i = i % len`）。
@@ -497,6 +504,9 @@ impl BrushPanel {
         let mut picked: Option<String> = None;
         let mut rescan = false;
         let mut new_group_requested = false;
+        let mut import_requested = false;
+        let mut download_requested = false;
+        let mut export_requested = false;
         ui.horizontal(|ui| {
             match &icon {
                 Some(t) => {
@@ -520,15 +530,22 @@ impl BrushPanel {
                     }
                     ui.separator();
                     // 静态项（`BrushGroupsMenu.__init__`，`:559-569`）：
-                    // New Group 写回 order.conf；另外两项仍属未移植。
                     if ui.button("New Group…").clicked() {
                         new_group_requested = true;
                         ui.close();
                     }
-                    ui.add_enabled(false, egui::Button::new("Import Brushes…"))
-                        .on_disabled_hover_text("未移植：需要 .zip 笔刷包导入");
-                    ui.add_enabled(false, egui::Button::new("Get More Brushes…"))
-                        .on_disabled_hover_text("未移植：需要联网下载笔刷包");
+                    if ui.button("Import Brushes…").clicked() {
+                        import_requested = true;
+                        ui.close();
+                    }
+                    if ui.button("Get More Brushes…").clicked() {
+                        download_requested = true;
+                        ui.close();
+                    }
+                    if ui.button("Export Group…").clicked() {
+                        export_requested = true;
+                        ui.close();
+                    }
                     ui.separator();
                     // 本项目新增入口（MyPaint 靠重启重扫笔刷目录）
                     if ui.button("重新扫描笔刷目录（本项目新增）").clicked() {
@@ -545,6 +562,9 @@ impl BrushPanel {
             self.new_group = Some(String::new());
             self.new_group_focus = true;
         }
+        self.import_requested |= import_requested;
+        self.download_requested |= download_requested;
+        self.export_group_requested |= export_requested;
         picked
     }
 
