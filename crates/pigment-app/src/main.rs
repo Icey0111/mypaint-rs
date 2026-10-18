@@ -14,10 +14,16 @@ mod gpu;
 mod i18n;
 mod scratch;
 mod shell;
+mod shell31;
 mod thumb;
 mod view;
 
-fn main() -> eframe::Result<()> {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Plan A 外壳（winit 0.31 + egui-wgpu）；默认仍是 eframe。
+    if std::env::args().any(|a| a == "--shell31") {
+        shell31::run()?;
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
         renderer: eframe::Renderer::Wgpu,
         viewport: eframe::egui::ViewportBuilder::default()
@@ -29,5 +35,6 @@ fn main() -> eframe::Result<()> {
         "pigment",
         options,
         Box::new(|cc| Ok(Box::new(app::PigmentApp::new(cc)))),
-    )
+    )?;
+    Ok(())
 }

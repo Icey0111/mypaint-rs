@@ -2914,12 +2914,17 @@ name = "pigment-app"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "egui-wgpu",
+ "egui_system_font_provider",
  "image",
  "pigment-engine",
  "pigment-surface",
+ "pollster",
  "resvg",
  "roxmltree 0.21.1",
  "serde_json",
+ "wgpu",
+ "winit 0.31.0-beta.3",
 ]
 
 [[package]]

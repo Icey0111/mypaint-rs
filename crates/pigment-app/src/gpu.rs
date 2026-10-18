@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
-use eframe::egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
+use egui_wgpu::{CallbackResources, CallbackTrait, ScreenDescriptor};
 use eframe::wgpu;
 
 use crate::convert::TILE_RGBA8_BYTES;

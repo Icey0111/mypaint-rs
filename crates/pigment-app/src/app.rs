@@ -1005,9 +1005,17 @@ impl PigmentApp {
             .wgpu_render_state
             .as_ref()
             .expect("pigment 需要 wgpu renderer（NativeOptions.renderer = Wgpu）");
-        let renderer = TileRenderer::new(&rs.device, rs.target_format);
+        Self::new_with_renderer(&rs.device, rs.target_format)
+    }
+
+    /// 不依赖 eframe 的构造：Plan A 外壳（winit 0.31 + egui-wgpu）直接调用。
+    pub fn new_with_renderer(
+        device: &wgpu::Device,
+        target_format: wgpu::TextureFormat,
+    ) -> Self {
+        let renderer = TileRenderer::new(device, target_format);
         // 暂存区是第二块画布 → 第二份显存缓存（见字段文档）
-        let scratch_renderer = TileRenderer::new(&rs.device, rs.target_format);
+        let scratch_renderer = TileRenderer::new(device, target_format);
 
         let brushes = BrushPanel::new();
         let base_brush = brushes.load_selected().unwrap_or_else(|e| {
@@ -4762,14 +4770,14 @@ fn layout_ink_buttons(
     }
 }
 
-impl eframe::App for PigmentApp {
+impl PigmentApp {
     /// egui 0.37 的 App 入口是 Ui 形态：`ui` 覆盖整个 `content_rect`。
     ///
     /// 面板的声明顺序 = 源码的三段结构（`gui/mypaint.glade`）：
     /// 顶栏切走上边、底栏切走下边，剩下的矩形归工作区（内部再切左右侧栏，
     /// 中央留给画布）。**顺序不能换** —— egui 的面板是从当前剩余矩形上"压边"
     /// 出来的，先声明的先占。
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+    pub(crate) fn ui_root(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.apply_appearance(&ctx);
         self.handle_keys(&ctx);
@@ -4835,9 +4843,14 @@ impl eframe::App for PigmentApp {
             ctx.request_repaint_after(std::time::Duration::from_secs(1));
         }
     }
+}
+
+impl eframe::App for PigmentApp {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.ui_root(ui);
+    }
 
     /// 退出时保存配置 —— `quit_cb` 里的 `app.save_gui_config()`
-    /// （`gui/drawwindow.py:688-690`）。
     ///
     /// 源码在 `quit_cb` 的**确认对话框之前**保存（`:690`），即使最后取消了退出
     /// 也写盘；eframe 侧 `on_exit` 在窗口真正关闭时调用一次，语义相当。

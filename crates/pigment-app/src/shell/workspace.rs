@@ -1664,7 +1664,7 @@ impl PigmentApp {
         self.pending_uploads = tiles.uploads.len();
 
         ui.painter()
-            .add(eframe::egui_wgpu::Callback::new_paint_callback(
+            .add(egui_wgpu::Callback::new_paint_callback(
                 rect,
                 crate::gpu::CanvasPaint {
                     renderer: std::sync::Arc::clone(&self.renderer),
