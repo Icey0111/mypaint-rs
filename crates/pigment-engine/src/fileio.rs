@@ -57,6 +57,7 @@ use pigment_surface::color::{self, CANVAS_BG};
 use pigment_surface::layer::{BackgroundImage, LayerContent, LayerMode};
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
+use crate::compat::EOTF_2X;
 use crate::zip::{ZipArchive, ZipWriter};
 
 // ---- 常量（照搬 lib/xml.py、lib/document.py、lib/meta.py）----
@@ -375,6 +376,7 @@ fn build_stack_xml(
     yres: Option<u32>,
     frame_active: bool,
     json_settings_entry: Option<&str>,
+    eotf: Option<f32>,
     layer_elems: &[OraElement],
     bg_elem: Option<&[(&'static str, String)]>,
 ) -> String {
@@ -390,13 +392,15 @@ fn build_stack_xml(
         ("w", image_w.to_string()),
         ("h", image_h.to_string()),
         ("version", OPENRASTER_VERSION.to_string()),
-        (ATTR_NS_EOTF, EOTF_ATTR_VALUE.to_string()),
         (
             ATTR_NS_FRAME_ACTIVE,
             if frame_active { "true" } else { "false" }.to_string(),
         ),
         (ATTR_NS_VERSION, MYPAINT_VERSION.to_string()),
     ];
+    if let Some(eotf) = eotf {
+        image_attrs.push((ATTR_NS_EOTF, eotf_attr_value(eotf)));
+    }
     if let Some(j) = json_settings_entry {
         image_attrs.push((ATTR_NS_JSON_SETTINGS, j.to_string()));
     }
@@ -611,6 +615,9 @@ pub struct OraSaveOptions {
     pub frame_active: bool,
     /// 文档设置 JSON（`None` 则整个属性与条目都不写）。
     pub settings_json: Option<String>,
+    /// `mypaint:eotf` 的值；`None` 不写该属性
+    /// （`display.colorspace == "unknown"` 时"不做转换也不打标签"）。
+    pub eotf: Option<f32>,
 }
 
 impl Default for OraSaveOptions {
@@ -623,7 +630,18 @@ impl Default for OraSaveOptions {
             // 源码里 save_ora 传 `settings=dict(self._settings)`，
             // 默认文档是空 dict，序列化成 `{}`
             settings_json: Some("{}".to_string()),
+            // `lib/eotf.py:16` 的 `DEFAULT_EOTF = 2.2`
+            eotf: Some(EOTF_2X),
         }
+    }
+}
+
+/// EOTF 属性的字符串形式 —— Python `str(1.0)` = `"1.0"`、`str(2.2)` = `"2.2"`。
+pub(crate) fn eotf_attr_value(value: f32) -> String {
+    if value.fract() == 0.0 {
+        format!("{value:.1}")
+    } else {
+        format!("{value}")
     }
 }
 
@@ -774,6 +792,7 @@ pub fn save_ora(
         opts.yres,
         opts.frame_active,
         settings_entry,
+        opts.eotf,
         &layer_elems,
         Some(&bg_elem),
     );
@@ -1009,6 +1028,8 @@ pub struct OraLoaded {
     pub frame_enabled: bool,
     pub settings_json: Option<String>,
     pub mypaint_version: Option<String>,
+    /// 文件里的 `mypaint:eotf`（缺失/非法为 None）。
+    pub eotf: Option<f32>,
     /// 目标版本对当前实现的兼容度（对应 `_compat_check`，`:1788`）。
     pub compatibility: Option<Compatibility>,
     /// 根 stack 的子层（自顶向下；index 0 = 最顶层，`group.py:124-131`），
@@ -1023,6 +1044,34 @@ pub struct OraLoaded {
     /// 载入后应选中的层（`_set_current_path_after_ora_load`：按 walk 序找
     /// `selected` 标记的最上层，否则第一项 = `(0,)`）。
     pub current_path: Option<Vec<usize>>,
+}
+
+/// 只读 `stack.xml` 的元数据（打开前的兼容警告用，不加载图层数据）。
+#[derive(Debug, Clone)]
+pub struct OraMeta {
+    pub width: i32,
+    pub height: i32,
+    pub mypaint_version: Option<String>,
+    pub eotf: Option<f32>,
+    pub compatibility: Option<Compatibility>,
+}
+
+/// 预读一个 ORA 的 `stack.xml` 元数据 —— `Document._compat_check` 之前
+/// 需要知道版本/EOTF 的那一步（`compatibility.py:87-115`）。
+pub fn peek_ora(filename: impl AsRef<Path>) -> Result<OraMeta, FileError> {
+    let z = ZipArchive::open(filename.as_ref())?;
+    let xml_bytes = z
+        .read("stack.xml")
+        .map_err(|_| FileError::Malformed("ORA 缺少 stack.xml".to_string()))?;
+    let xml = String::from_utf8_lossy(&xml_bytes);
+    let img = parse_stack_xml(&xml)?;
+    Ok(OraMeta {
+        width: img.width,
+        height: img.height,
+        compatibility: img.mypaint_version.as_deref().and_then(compatibility),
+        mypaint_version: img.mypaint_version,
+        eotf: img.eotf,
+    })
 }
 
 /// 载入 OpenRaster（照搬 `lib/document.py:1804` `load_ora`）。
@@ -1102,6 +1151,7 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
         frame_enabled: img.frame_active,
         settings_json,
         mypaint_version: img.mypaint_version.clone(),
+        eotf: img.eotf,
         compatibility: img.mypaint_version.as_deref().and_then(compatibility),
         layers: out_layers,
         background_color,
@@ -1309,6 +1359,8 @@ pub struct XmlImage {
     pub yres: i32,
     pub frame_active: bool,
     pub mypaint_version: Option<String>,
+    /// `mypaint:eotf`（`lib/eotf.py` 的值；1.0 = 1.x 兼容模式）。
+    pub eotf: Option<f32>,
     pub json_settings: Option<String>,
     /// 根 stack 的子元素（文档序，第一个 = 最顶层）。
     pub layers: Vec<XmlLayer>,
@@ -1449,6 +1501,9 @@ fn apply_image_attrs(img: &mut XmlImage, attrs: &[(String, String)], saw_image: 
     // **文件格式版本**，不是 MyPaint 版本；源码 `_compat_check` 读的是
     // `mypaint:version`（`document.py:1788`），无前缀属性不参与判定。
     img.mypaint_version = get(ATTR_NS_VERSION);
+    // `mypaint:eotf`：非法值等同缺失（`compatibility.py:416-424` 的
+    // `except ValueError` 分支把 eotf 置 None，改走用户偏好）。
+    img.eotf = get(ATTR_NS_EOTF).and_then(|v| v.trim().parse::<f32>().ok());
     img.json_settings = get(ATTR_NS_JSON_SETTINGS).or_else(|| get("json-settings"));
 }
 
@@ -1681,9 +1736,44 @@ fn test_layer_attrs(
 
     /// 写出的 layer/stack opacity 必须是 `"1.0"`（与真实 MyPaint 文件一致）。
     #[test]
+    fn eotf_attribute_roundtrips_and_can_be_omitted() {
+        // 1.x 写 "1.0"（Python str(1.0)），2.x 写 "2.2"
+        let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
+        let xml = build_stack_xml(
+            1,
+            1,
+            None,
+            None,
+            false,
+            None,
+            Some(1.0),
+            &[test_layer_elem(layer)],
+            None,
+        );
+        assert!(xml.contains("mypaint:eotf=\"1.0\""), "{xml}");
+        assert_eq!(parse_stack_xml(&xml).unwrap().eotf, Some(1.0));
+
+        // `display.colorspace == "unknown"`：不写标签
+        let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
+        let xml = build_stack_xml(
+            1,
+            1,
+            None,
+            None,
+            false,
+            None,
+            None,
+            &[test_layer_elem(layer)],
+            None,
+        );
+        assert!(!xml.contains("eotf"), "unknown 不该写 eotf：{xml}");
+        assert_eq!(parse_stack_xml(&xml).unwrap().eotf, None);
+    }
+
+    #[test]
     fn stack_xml_writes_opacity_as_python_float() {
         let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(1, 1, None, None, false, None, &[test_layer_elem(layer)], None);
+        let xml = build_stack_xml(1, 1, None, None, false, None, Some(2.2), &[test_layer_elem(layer)], None);
         assert!(xml.contains("opacity=\"1.0\""), "opacity 应写成 1.0：{xml}");
         assert!(!xml.contains("opacity=\"1\""), "不该出现 Python 不会写的 \"1\"：{xml}");
     }
@@ -1713,7 +1803,7 @@ fn test_layer_attrs(
     #[test]
     fn stack_xml_matches_real_sample_layout() {
         let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(128, 128, None, None, false, None, &[test_layer_elem(layer)],
+        let xml = build_stack_xml(128, 128, None, None, false, None, Some(2.2), &[test_layer_elem(layer)],
             Some(&test_bg_attrs()),
         );
         assert!(
@@ -1763,7 +1853,7 @@ fn test_layer_attrs(
             "svg:src-over",
             Some("a <b> \"c\""),
         );
-        let xml = build_stack_xml(1, 1, None, None, false, None, &[test_layer_elem(layer)], None);
+        let xml = build_stack_xml(1, 1, None, None, false, None, Some(2.2), &[test_layer_elem(layer)], None);
         assert!(xml.contains("data/a&amp;b.png"));
         assert!(xml.contains("name=\"a &lt;b&gt; &quot;c&quot;\""));
     }
@@ -1772,7 +1862,7 @@ fn test_layer_attrs(
     fn stack_xml_omits_xres_when_zero() {
         let mk = |x: Option<u32>, y: Option<u32>| {
             let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-            build_stack_xml(1, 1, x, y, false, None, &[test_layer_elem(layer)], None)
+            build_stack_xml(1, 1, x, y, false, None, Some(2.2), &[test_layer_elem(layer)], None)
         };
         let xml = mk(Some(0), Some(0));
         assert!(!xml.contains("xres"), "xres=0 时不该写出（源码 `if xres and yres`）");
@@ -1800,6 +1890,7 @@ fn test_layer_attrs(
             Some(300),
             true,
             Some(ORA_JSON_SETTINGS_ZIP_PATH),
+            Some(2.2),
             &[test_layer_elem(layer)],
             Some(&test_bg_attrs()),
         );

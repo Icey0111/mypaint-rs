@@ -179,6 +179,10 @@ pub struct BrushPanel {
     pub new_group_focus: bool,
     /// 删除确认对话框的目标（`entries` 下标）。
     pub delete_confirm: Option<usize>,
+    /// 省略 `paint_mode` 的笔刷默认是否开颜料 ——
+    /// `BrushManager.set_pigment_by_default`（`brushmanager.py:609-643`）：
+    /// 2.x 兼容模式 true、1.x false。由 `PigmentApp::apply_compat` 维护。
+    pub pigment_by_default: bool,
 }
 
 impl BrushPanel {
@@ -209,6 +213,7 @@ impl BrushPanel {
             new_group: None,
             new_group_focus: false,
             delete_confirm: None,
+            pigment_by_default: true,
         };
         // `_init_default_brushkeys_and_history`（brushmanager.py:463-474）：
         // 空的历史槽位用启动分组的前 5 支补满（`group_i = i % len`）。
@@ -273,7 +278,7 @@ impl BrushPanel {
             .entries
             .get(self.selected)
             .ok_or_else(|| "笔刷库为空".to_string())?
-            .load()
+            .load_with_default(self.pigment_by_default)
             .map_err(|e| e.to_string())
     }
 
@@ -687,7 +692,7 @@ impl BrushPanel {
         let Some(entry) = self.library.entries.get(idx).cloned() else {
             return false;
         };
-        let Ok(mut brush) = entry.load() else {
+        let Ok(mut brush) = entry.load_with_default(self.pigment_by_default) else {
             eprintln!("克隆失败：{} 解析不了", entry.key);
             return false;
         };

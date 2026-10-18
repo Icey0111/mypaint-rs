@@ -164,8 +164,15 @@ impl BrushEntry {
     /// 了该键（显式写出的 19 支全是 1.0），所以这是绝大多数笔刷的默认手感。
     /// 见 `gui/compatconfig.py:36-48` + `gui/brushmanager.py:609-643`。
     pub fn load(&self) -> Result<Brush, BrushLoadError> {
+        self.load_with_default(true)
+    }
+
+    /// 同 [`BrushEntry::load`]，但可指定省略 `paint_mode` 时的默认 ——
+    /// `set_pigment_by_default`（`brushmanager.py:609-643`）。
+    pub fn load_with_default(&self, pigment_by_default: bool) -> Result<Brush, BrushLoadError> {
         let json = self.read_json()?;
-        parse_brush_json(&json).map_err(|e| BrushLoadError::Parse(e))
+        parse_brush_json_with_default(&json, pigment_by_default)
+            .map_err(|e| BrushLoadError::Parse(e))
     }
 
     /// 是否来自内嵌官方包。
@@ -1373,10 +1380,23 @@ pub fn input_display_name(cname: &str) -> &str {
 }
 /// 解析 `.myb` JSON 并恢复**显式写出**的设置（不把显式 0 当未定义）。
 pub fn parse_brush_json(json: &str) -> Result<Brush, String> {
+    parse_brush_json_with_default(json, true)
+}
+
+/// 同 [`parse_brush_json`]，但可指定"省略 `paint_mode` 时是否开颜料" ——
+/// `BrushManager.set_pigment_by_default`（`brushmanager.py:609-643`）：
+/// 1.x 兼容模式传 `false`，2.x 传 `true`。
+pub fn parse_brush_json_with_default(
+    json: &str,
+    pigment_by_default: bool,
+) -> Result<Brush, String> {
     let mut brush = myb::from_str(json).map_err(|e| e.to_string())?;
     apply_raw_settings(json, &mut brush);
     if !json_has_setting(json, "paint_mode") {
-        brush.set(BrushSetting::Paint, SettingValue::constant(1.0));
+        brush.set(
+            BrushSetting::Paint,
+            SettingValue::constant(if pigment_by_default { 1.0 } else { 0.0 }),
+        );
     }
     Ok(brush)
 }
@@ -1671,6 +1691,15 @@ mod tests {
             b.get(BrushSetting::Paint).base_value,
             1.0,
             "省略 paint_mode 的官方笔刷应以光谱 WGM 起手"
+        );
+        // 1.x 兼容模式：同一个省略键的笔刷默认 Normal
+        let b1x = lib.entries[i]
+            .load_with_default(false)
+            .expect("解析失败");
+        assert_eq!(
+            b1x.get(BrushSetting::Paint).base_value,
+            0.0,
+            "1.x 兼容模式应把省略 paint_mode 的笔刷默认成 Normal"
         );
 
         // 显式写 0.0 的笔刷必须保留 Normal，不能被默认覆盖

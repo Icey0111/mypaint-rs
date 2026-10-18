@@ -362,8 +362,6 @@ const R_PRESSURE: &str = "输入压力映射（gui/curve.py 的 CurveWidget + Ap
                           application.py:594-610）未移植";
 /// `input.device_mode`
 const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
-/// `display.colorspace`
-const R_COLORSPACE: &str = "色彩管理（lib/eotf.py + PNG/ORA 的色彩空间标签读写）未移植";
 /// `view.real_alpha_checks`
 const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未接 \
                              tileddrawwidget.py:1078-1081 的 _draw_real_alpha_checks";
@@ -371,9 +369,6 @@ const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未
 const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
 /// `ui.blink_layers`
 const R_BLINK: &str = "图层闪烁提示（layerswindow.py 的 blink）未移植";
-/// `default_compatibility_mode` / `compability_settings` /
-/// `compat_behavior_when_unknown` / `ui.file_compat_warning_*`
-const R_COMPAT: &str = "兼容模式子系统（gui/compatibility.py 的 CompatibilityPreferences + lib/eotf.py）未移植";
 
 /// 全部页面的全部控件（顺序 = glade 的 attach 顺序；同一页内自上而下）。
 pub(crate) static CONTROLS: &[ControlDef] = &[
@@ -561,15 +556,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `display_colorspace_srgb_radiobutton`（glade:625-639）；
     // 初值 preferenceswindow.py:214-219，写回 `:320-324`。
-    ControlDef::unported(
+    ControlDef::wired(
         4,
         Kind::Radio,
         "display_colorspace_srgb_radiobutton",
         "Convert to sRGB when loading; mark as sRGB when saving",
         Some("display.colorspace"),
         "glade:625-639",
-        R_COLORSPACE,
-    )
+        )
     .tip(
         "Images containing full colorspace information will be converted to sRGB when \
          they are loaded into MyPaint. When MyPaint saves an image, hints will be added \
@@ -581,15 +575,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     )
     .value("srgb"),
     // `display_colorspace_unknown_radiobutton`（glade:647-665）；写回 `:314-318`。
-    ControlDef::unported(
+    ControlDef::wired(
         4,
         Kind::Radio,
         "display_colorspace_unknown_radiobutton",
         "No automatic conversions or tagging",
         Some("display.colorspace"),
         "glade:647-665",
-        R_COLORSPACE,
-    )
+        )
     .tip(
         "No color conversions are performed when loading, and files are saved without \
          color management information.",
@@ -906,15 +899,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `compat_1_x_radiobutton`（glade:1666-1677）；写回
     // compatibility.py:400-401（`preferences[DEFAULT_COMPAT] = mode`）。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "compat_1_x_radiobutton",
         "1.x",
         Some("default_compatibility_mode"),
         "glade:1666-1677",
-        R_COMPAT,
-    )
+        )
     .tip(
         "When creating new documents, use the legacy 1.x compatibility mode by default. \
          In this mode 1.x .ora files will look the same as they did in older versions, \
@@ -922,15 +914,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     )
     .value("1.x"),
     // `compat_2_x_radiobutton`（glade:1685-1700）
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "compat_2_x_radiobutton",
         "2.x",
         Some("default_compatibility_mode"),
         "glade:1685-1700",
-        R_COMPAT,
-    )
+        )
     .tip(
         "When creating new documents, use the regular 2.x compatibility mode by default. \
          Old documents will often look different in this mode.",
@@ -953,15 +944,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `pigment_setting_switch_1_x`（glade:1520-1529）；写回
     // compatibility.py:407-409（`prefs[COMPAT_SETTINGS]["1.x"]["pigment_on_by_default"]`）。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Switch,
         "pigment_setting_switch_1_x",
         "",
         Some("compability_settings"),
         "glade:1520-1529",
-        R_COMPAT,
-    ),
+        ),
     ControlDef::text(
         7,
         Kind::RowLabel,
@@ -972,26 +962,24 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `def_new_layer_normal_1_x`（glade:1546-1559）—— 标签与提示由
     // compatibility.py:353-355 用 `MODE_STRINGS[CombineNormal]`（lib/modes.py）替换，
     // 即 "Normal" / "The top layer only, without blending colors."。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "def_new_layer_normal_1_x",
         "Normal",
         Some("compability_settings"),
         "glade:1546-1559",
-        R_COMPAT,
-    )
+        )
     .tip("The top layer only, without blending colors."),
     // `def_new_layer_pigment_1_x`（glade:1561-1575）—— `MODE_STRINGS[CombineSpectralWGM]`
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "def_new_layer_pigment_1_x",
         "Pigment",
         Some("compability_settings"),
         "glade:1561-1575",
-        R_COMPAT,
-    )
+        )
     .tip("Similar to mixing actual pigments by upsampling to 10 spectral channels."),
     // `<b>2.x Settings</b>`（glade:1494-1506）
     ControlDef::text(
@@ -1009,15 +997,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
         "glade:1591-1603",
     ),
     // `pigment_setting_switch_2_x`（glade:1650-1660）
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Switch,
         "pigment_setting_switch_2_x",
         "",
         Some("compability_settings"),
         "glade:1650-1660",
-        R_COMPAT,
-    ),
+        ),
     ControlDef::text(
         7,
         Kind::RowLabel,
@@ -1026,26 +1013,24 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
         "glade:1605-1618",
     ),
     // `def_new_layer_normal_2_x`（glade:1620-1633）
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "def_new_layer_normal_2_x",
         "Normal",
         Some("compability_settings"),
         "glade:1620-1633",
-        R_COMPAT,
-    )
+        )
     .tip("The top layer only, without blending colors."),
     // `def_new_layer_pigment_2_x`（glade:1635-1648）
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Radio,
         "def_new_layer_pigment_2_x",
         "Pigment",
         Some("compability_settings"),
         "glade:1635-1648",
-        R_COMPAT,
-    )
+        )
     .tip("Similar to mixing actual pigments by upsampling to 10 spectral channels."),
     // `<b>File loading</b>`（glade:1793-1807）
     ControlDef::text(
@@ -1070,15 +1055,14 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `compat_file_behavior_combobox`（glade:1779-1791）；选项见
     // compatibility.py:191-224，写回 `:244-246`。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Combo,
         "compat_file_behavior_combobox",
         "",
         Some("compat_behavior_when_unknown"),
         "glade:1779-1791",
-        R_COMPAT,
-    ),
+        ),
     ControlDef::text(
         7,
         Kind::RowLabel,
@@ -1089,26 +1073,24 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `file_compat_warning_mild`（glade:1721-1733）；键 `ui.file_compat_warning_mild`
     // 来自 compatibility.py:28-31 的 `FILE_WARNINGS`，初值 `:363-365`
     // （`.get(key, True)` —— 软键）。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Check,
         "file_compat_warning_mild",
         "Show warning for files that may be partially incompatible",
         Some("ui.file_compat_warning_mild"),
         "glade:1721-1733",
-        R_COMPAT,
-    )
+        )
     .default_bool(true),
     // `file_compat_warning_severe`（glade:1750-1762）；初值 `:366-368`。
-    ControlDef::unported(
+    ControlDef::wired(
         7,
         Kind::Check,
         "file_compat_warning_severe",
         "Show warning for files that may be fully incompatible",
         Some("ui.file_compat_warning_severe"),
         "glade:1750-1762",
-        R_COMPAT,
-    )
+        )
     .default_bool(true),
 ];
 
@@ -1195,6 +1177,18 @@ pub(crate) static COMPAT_FILE_BEHAVIORS: &[OptionDef] = &[
         label: "Open in 1.x mode unless file contains pigment layers",
     },
 ];
+
+/// `compability_settings` 的某个控件属于哪个模式（id 末尾 `_1_x` / `_2_x`）。
+fn compat_mode_control(id: &str) -> Option<pigment_engine::compat::CompatMode> {
+    use pigment_engine::compat::CompatMode;
+    if id.ends_with("_1_x") {
+        Some(CompatMode::C1X)
+    } else if id.ends_with("_2_x") {
+        Some(CompatMode::C2X)
+    } else {
+        None
+    }
+}
 
 /// 某个下拉框的选项表。
 ///
@@ -1549,6 +1543,22 @@ impl PigmentApp {
     /// 复选框 / 开关一行。
     fn prefs_check_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let key = c.key.unwrap_or_default();
+        // `compability_settings` 是**嵌套对象**：开关写的是某个模式下的
+        // `pigment_on_by_default`（`compatibility.py:407-409`），不是整条键。
+        if key == "compability_settings" {
+            if let Some(mode) = compat_mode_control(c.id) {
+                let enabled = self.control_enabled(c);
+                let mut value = self.compat_settings.mode(mode).pigment_on_by_default;
+                let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, c.label));
+                let resp = attach_tip(resp, c, enabled);
+                if enabled && resp.changed() {
+                    self.compat_settings.mode_mut(mode).pigment_on_by_default = value;
+                    self.compat_settings.store(&mut self.prefs);
+                    self.after_wired_change();
+                }
+                return;
+            }
+        }
         let mut value = self.prefs.bool_or(key, c.default_bool);
         let enabled = self.control_enabled(c);
         let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, c.label));
@@ -1567,6 +1577,17 @@ impl PigmentApp {
         let resp = attach_tip(resp, c, enabled);
         if enabled && resp.clicked() && !selected {
             if let (Some(key), Some(value)) = (c.key, c.value) {
+                if key == "compability_settings" {
+                    // 新层默认类型：写 `pigment_layer_is_default`
+                    // （`compatibility.py:403-405`）
+                    if let Some(mode) = compat_mode_control(c.id) {
+                        let want = c.id.contains("pigment");
+                        self.compat_settings.mode_mut(mode).pigment_layer_is_default = want;
+                        self.compat_settings.store(&mut self.prefs);
+                        self.after_wired_change();
+                    }
+                    return;
+                }
                 if key == pigment_engine::color::PREFS_KEY_WHEEL_TYPE {
                     // 色轮类型走管理器 —— `preferenceswindow.py:326-342` 的三个
                     // 回调调的都是 `cm.set_wheel_type(...)`；写偏好是
@@ -1586,6 +1607,14 @@ impl PigmentApp {
     fn radio_selected(&self, c: &ControlDef) -> bool {
         let Some(key) = c.key else { return false };
         let value = c.value.unwrap_or_default();
+        if key == "compability_settings" {
+            // `update_ui`（`compatibility.py:376-392`）读嵌套对象
+            if let Some(mode) = compat_mode_control(c.id) {
+                return self.compat_settings.mode(mode).pigment_layer_is_default
+                    == c.id.contains("pigment");
+            }
+            return false;
+        }
         if key == pigment_engine::color::PREFS_KEY_WHEEL_TYPE {
             self.color_manager.wheel_type_name() == value
         } else {
@@ -1969,11 +1998,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 16 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // 已接线的控件行 = 29 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 19);
-        assert_eq!(widgets - wired, 18, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 32);
+        assert_eq!(widgets - wired, 5, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2026,6 +2055,12 @@ mod tests {
                 "document.autosave_interval",      // 同上（夹在 5..300）
                 "saving.scrap_prefix",             // scrap_dir → Save/Next/Prev Scrap
                 "ui.toolbar_icon_size",            // toolbars::icon_size
+                "default_compatibility_mode",      // 新文档模式
+                "compability_settings",            // 两套模式设置（嵌套对象）
+                "compat_behavior_when_unknown",    // 打开无 EOTF 文件
+                "ui.file_compat_warning_mild",     // 兼容警告开关
+                "ui.file_compat_warning_severe",   // 同上
+                "display.colorspace",              // ORA 是否写 mypaint:eotf
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2049,14 +2084,8 @@ mod tests {
         let must_be_disabled = [
             "input.global_pressure_mapping", // Pressure 页的曲线
             "input.device_mode",             // Devices 页的编辑器
-            "display.colorspace",            // 色彩管理两个单选
             "view.real_alpha_checks",        // 棋盘格复选框
             "ui.blink_layers",               // 图层闪烁
-            "default_compatibility_mode",    // Compatibility 页
-            "compability_settings",
-            "compat_behavior_when_unknown",
-            "ui.file_compat_warning_mild",
-            "ui.file_compat_warning_severe",
             "lib.i18n.userlocale",           // 语言下拉
         ];
         for key in must_be_disabled {

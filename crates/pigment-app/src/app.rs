@@ -344,6 +344,14 @@ pub(crate) enum ConfirmAction {
     OpenScrap(std::path::PathBuf),
 }
 
+/// 文件兼容警告 —— `incompatible_ora_warning_dialog`（`compatibility.py:117-184`）。
+pub(crate) struct FileWarningState {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) level: pigment_engine::Compatibility,
+    /// "Don't show this warning again"（写回 `ui.file_compat_warning_*`）。
+    pub(crate) skip: bool,
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -477,6 +485,15 @@ pub struct PigmentApp {
     /// 最近一次打开/保存的 scrap（`filehandler.active_scrap_filename`，
     /// `filehandling.py:637-639`）。
     pub(crate) active_scrap: Option<std::path::PathBuf>,
+    /// 兼容模式（`app.compat_mode`，`compatibility.py:437-470`）。
+    pub(crate) compat_mode: pigment_engine::compat::CompatMode,
+    /// 两套模式设置（偏好 `compability_settings`）。
+    pub(crate) compat_settings: pigment_engine::compat::CompatSettings,
+    /// 打开旧/新版本文件时的兼容警告（`incompatible_ora_warning_dialog`，
+    /// `compatibility.py:117-184`）。
+    pub(crate) file_warning: Option<FileWarningState>,
+    /// 用户点了 "Open Anyway"：下一次 `open_from_path` 跳过警告检查。
+    pub(crate) skip_file_warning_once: bool,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -868,6 +885,9 @@ impl PigmentApp {
         let mode_prefs = ModePrefs::from_prefs(&prefs);
         // 自动备份的缓存目录（`application.py` 启动时建数据子目录的对应物）
         let autosave = AutosaveState::new(&prefs);
+        // 兼容模式（`compatconfig.py` 的 DEFAULT_COMPAT / COMPAT_SETTINGS）
+        let compat_settings = pigment_engine::compat::CompatSettings::from_prefs(&prefs);
+        let compat_mode = pigment_engine::compat::default_mode(&prefs);
         // 片段开关从偏好 `ui.toolbar_items` 读（`userconfig.py:76-85`）；
         // 在 `prefs` 被移进结构体之前算好。
         let toolbar_fragments = crate::shell::toolbars::fragments_from_prefs(&prefs);
@@ -958,6 +978,10 @@ impl PigmentApp {
             recovered_autosave: None,
             confirm: None,
             active_scrap: None,
+            compat_mode,
+            compat_settings,
+            file_warning: None,
+            skip_file_warning_once: false,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -1008,6 +1032,8 @@ impl PigmentApp {
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
         };
         app.derive_active();
+        // 兼容模式：文档默认层类型 / 笔刷默认颜料 / EOTF 标签
+        app.apply_compat_mode(app.compat_mode);
         // 桶旋转配置推给两条模式栈（源码是每事件现读偏好；见
         // `ModeStack::set_freehand_config`）。走 `apply_settings` 是为了让
         // 启动与偏好对话框 ACCEPT 用同一条路径（`application.py:487`/`:514-522`）。
@@ -1205,6 +1231,99 @@ impl PigmentApp {
         } else {
             self.confirm = Some(state);
         }
+    }
+
+    /// 打开前的兼容警告 —— `incompatible_ora_warning_dialog`
+    /// （`compatibility.py:117-184`）。返回 true 表示已弹窗、调用方应中止。
+    fn warn_for_file(&mut self, path: &std::path::Path) -> bool {
+        if !path
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("ora"))
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        let Ok(meta) = pigment_engine::fileio::peek_ora(path) else {
+            return false; // 结构问题交给真正的 load 报错
+        };
+        let Some(level) = meta.compatibility else {
+            return false;
+        };
+        let (key, default) = match level {
+            pigment_engine::Compatibility::Partially => ("ui.file_compat_warning_mild", true),
+            pigment_engine::Compatibility::Incompatible => {
+                ("ui.file_compat_warning_severe", true)
+            }
+            pigment_engine::Compatibility::Fully => return false,
+        };
+        if !self.prefs.bool_or(key, default) {
+            return false;
+        }
+        self.file_warning = Some(FileWarningState {
+            path: path.to_path_buf(),
+            level,
+            skip: false,
+        });
+        true
+    }
+
+    /// 兼容警告对话框。
+    pub(crate) fn file_warning_dialog(&mut self, ctx: &egui::Context, now: f64) {
+        let Some(mut state) = self.file_warning.take() else {
+            return;
+        };
+        let mut open_anyway = false;
+        let mut cancel = false;
+        let key = match state.level {
+            pigment_engine::Compatibility::Partially => "ui.file_compat_warning_mild",
+            _ => "ui.file_compat_warning_severe",
+        };
+        egui::Modal::new(egui::Id::unique("pigment_file_compat_warning")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.heading("This file may be incompatible");
+            let msg = match state.level {
+                pigment_engine::Compatibility::Partially => format!(
+                    "“{}” may not be fully compatible with MyPaint {}.",
+                    state.path.file_name().unwrap_or_default().to_string_lossy(),
+                    pigment_engine::fileio::MYPAINT_VERSION,
+                ),
+                _ => format!(
+                    "“{}” was created with a newer version of MyPaint. \
+                     It may be incompatible with MyPaint {}.",
+                    state.path.file_name().unwrap_or_default().to_string_lossy(),
+                    pigment_engine::fileio::MYPAINT_VERSION,
+                ),
+            };
+            ui.label(msg);
+            ui.label("Do you want to open this file anyway?");
+            ui.checkbox(&mut state.skip, "Don't show this warning again");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Open Anyway").clicked() {
+                        open_anyway = true;
+                    }
+                });
+            });
+        });
+        if cancel {
+            self.set_status("已取消".to_string(), now);
+            return;
+        }
+        if !open_anyway {
+            self.file_warning = Some(state);
+            return;
+        }
+        if state.skip {
+            self.prefs.set_bool(key, false);
+            let _ = self.prefs.save();
+        }
+        self.skip_file_warning_once = true;
+        let path = state.path;
+        self.open_from_path(&path, now);
     }
 
     /// 每帧推一次自动备份 —— `Document._cache_updater_cb` + 倒计时
@@ -1481,6 +1600,9 @@ impl PigmentApp {
         self.scratch.modes.set_freehand_config(cfg);
         // 视图复位缩放（`document.py:339-340` 读偏好）
         self.scratch.default_zoom = self.prefs.f64_or("view.default_zoom", 1.0) as f32;
+        // 兼容设置（`compability_settings` 改了要重读；当前模式不变）
+        self.compat_settings = pigment_engine::compat::CompatSettings::from_prefs(&self.prefs);
+        self.apply_compat_mode(self.compat_mode);
         // 自动备份（`_apply_autosave_settings`，`application.py:514-522`）
         self.autosave.enabled = self.prefs.bool_or("document.autosave_backups", true);
         self.autosave.interval = self
@@ -1491,8 +1613,22 @@ impl PigmentApp {
         self.appearance_dirty = true;
     }
 
-    /// 套用 egui 主题 —— 对应 GTK 的 `ui.dark_theme_variant`
-    /// （`preferenceswindow.py:302-304` 只写偏好，GTK 换肤要重启；
+    /// 切换兼容模式 —— `set_compat_mode`（`compatibility.py:437-470`）的
+    /// 三件副作用：EOTF、新层默认类型、笔刷默认颜料。
+    ///
+    /// 记账：EOTF 只影响写进文件的 `mypaint:eotf` 标签；合成仍用
+    /// `pigment_surface::color::EOTF = 2.2`（见引擎 `compat` 模块文档）。
+    pub(crate) fn apply_compat_mode(&mut self, mode: pigment_engine::compat::CompatMode) {
+        self.compat_mode = mode;
+        let settings = self.compat_settings.mode(mode);
+        self.doc.default_layer_pigment = settings.pigment_layer_is_default;
+        self.brushes.pigment_by_default = settings.pigment_on_by_default;
+        // `display.colorspace == "unknown"`：不做转换也不打标签
+        let srgb = self.prefs.str_or("display.colorspace", "srgb") == "srgb";
+        self.doc.save_eotf = if srgb { Some(mode.eotf()) } else { None };
+    }
+
+    /// 套用 egui 主题 —— 对应 GTK 的 `ui.dark_theme_variant`    /// （`preferenceswindow.py:302-304` 只写偏好，GTK 换肤要重启；
     /// egui 的 `Visuals` 可以立即换，属技术栈适配）。
     pub(crate) fn apply_appearance(&mut self, ctx: &egui::Context) {
         if !self.appearance_dirty {
@@ -1810,6 +1946,9 @@ impl PigmentApp {
         self.current_file = None;
         self.force_resync = true; // 表面换了 → 显存全丢重传
         self.view = View::default();
+        // 新文档用偏好 `default_compatibility_mode`（`compatibility.py:400-401`）
+        let mode = pigment_engine::compat::default_mode(&self.prefs);
+        self.apply_compat_mode(mode);
         self.set_status("新建文档".to_string(), now);
     }
 
@@ -1872,6 +2011,11 @@ impl PigmentApp {
 
     /// 打开文件（`gui/filehandling.py:890` 的 `open_file`）。
     fn open_from_path(&mut self, path: &std::path::Path, now: f64) {
+        if self.skip_file_warning_once {
+            self.skip_file_warning_once = false;
+        } else if self.warn_for_file(path) {
+            return;
+        }
         self.flush_pending_stroke();
         // 先记下旧状态：载入失败时不该把用户的画弄丢（源码会弹错并保留文档）。
         // B2-3 起文档是图层栈，整栈 COW 克隆（tile 共享 Arc，代价低）。
@@ -1885,12 +2029,27 @@ impl PigmentApp {
                 self.force_resync = true;
                 self.view = View::default();
                 self.record_recent(path);
+                // 兼容模式：有 EOTF 以文件为准，没有才看偏好
+                // （`ora_compat_handler`，`compatibility.py:412-434`）
+                if let pigment_engine::LoadOutcome::Ora { eotf, .. } = &outcome {
+                    let has_pigment =
+                        pigment_engine::compat::layers_have_pigment(self.doc.layers());
+                    let behavior = pigment_engine::compat::FileBehavior::from_str(
+                        self.prefs
+                            .str_or("compat_behavior_when_unknown", "unless-pigment-layer-1.x"),
+                    );
+                    let default = pigment_engine::compat::default_mode(&self.prefs);
+                    let mode =
+                        pigment_engine::compat::mode_for_file(*eotf, has_pigment, behavior, default);
+                    self.apply_compat_mode(mode);
+                }
                 let msg = match outcome {
                     pigment_engine::LoadOutcome::Ora {
                         bbox,
                         layer_count,
                         mypaint_version,
                         compatibility,
+                        ..
                     } => {
                         let compat = match compatibility {
                             Some(pigment_engine::Compatibility::Partially) => {
@@ -3311,6 +3470,8 @@ fn layout_ink_buttons(
         match id {
             // ---- 文档 I/O ----
             "New" | "Open" | "Save" | "SaveAs" | "Export" => true,
+            // `OpenLast`（resources.xml:82-88，F3）
+            "OpenLast" => true,
             // `RecoverAutosavedBackup`（resources.xml:172-177）恒可用
             "RecoverAutosavedBackup" => true,
             // Scrap 三个动作（resources.xml:145-170）恒可用
@@ -3500,6 +3661,12 @@ fn layout_ink_buttons(
             "Open" => {
                 let prompt = self.new_file_prompt(FileAction::Open, None);
                 self.file_prompt = Some(prompt);
+            }
+            // `open_last_cb`（`filehandling.py:1552-1562`）：打开最近列表第一条
+            "OpenLast" => {
+                if let Some(p) = self.recent_files.first().cloned() {
+                    self.open_from_path(std::path::Path::new(&p), now);
+                }
             }
             "Save" => {
                 self.save_command(now);
@@ -4223,6 +4390,7 @@ impl eframe::App for PigmentApp {
         self.popup_menu(&ctx, now);
         self.recovery_window(&ctx);
         self.confirm_dialog(&ctx, now);
+        self.file_warning_dialog(&ctx, now);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();

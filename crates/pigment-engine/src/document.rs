@@ -133,6 +133,12 @@ pub struct Document {
     /// 文档级设置字典（`:452` 的 `settings`）：随 `.ora` 往返，可放任意
     /// JSON 值。MyPaint 用它给扩展留位（默认空）。
     pub settings: BTreeMap<String, serde_json::Value>,
+    /// 保存时写进 `mypaint:eotf` 的值 —— `None` 表示"不做转换也不打标签"
+    /// （偏好 `display.colorspace == "unknown"`，`lib/eotf.py`）。
+    pub save_eotf: Option<f32>,
+    /// 新建绘画层的默认混合模式是否 Pigment ——
+    /// `compability_settings[mode].pigment_layer_is_default`（`compatibility.py:473-482`）。
+    pub default_layer_pigment: bool,
     /// 命名可见性视图（`lib/layervis.py`；设置键 `layervis`）。
     pub views: LayerViews,
     /// 「最后作画位置」——`tdw.set_last_painting_pos`（`tileddrawwidget.py:303`）。
@@ -169,6 +175,8 @@ impl Document {
             xres: None,
             yres: None,
             settings: BTreeMap::new(),
+            save_eotf: Some(crate::compat::EOTF_2X),
+            default_layer_pigment: true,
             views: LayerViews::default(),
             last_painting_pos: None,
         }
@@ -281,7 +289,17 @@ impl Document {
     /// `add_layer(path=current_path)`，新层落在当前层的同父同索引）。
     pub fn add_layer(&mut self) -> bool {
         let path = self.layers.current_path().to_vec();
-        self.add_layer_at(path, Layer::new(), false)
+        let mut layer = Layer::new();
+        // `set_default_mode`（`compatibility.py:473-482`）：2.x 默认 Pigment，
+        // 1.x 默认 Normal。
+        layer.set_mode(pigment_surface::layer::LayerMode::Standard(
+            if self.default_layer_pigment {
+                pigment_surface::combine::CombineMode::SpectralWGM
+            } else {
+                pigment_surface::combine::CombineMode::Normal
+            },
+        ));
+        self.add_layer_at(path, layer, false)
     }
 
     /// 在**当前层位置**新建组（`NewLayerGroupAbove`：`layer_class=LayerStack`）。
@@ -1013,6 +1031,7 @@ impl Document {
                     yres: self.yres,
                     frame_active: self.frame_enabled,
                     settings_json: Some(self.settings_json()),
+                    eotf: self.save_eotf,
                 };
                 // `save_ora` 传的是 `get_user_bbox()`（`document.py:1778`）：
                 // 画框启用时就是画框本身，否则才是内容外接框。
@@ -1084,6 +1103,7 @@ impl Document {
                     layer_count: self.layers.len(),
                     mypaint_version: loaded.mypaint_version,
                     compatibility: loaded.compatibility,
+                    eotf: loaded.eotf,
                 }
             }
             Some(Format::Png) => {
@@ -1162,6 +1182,8 @@ pub enum LoadOutcome {
         layer_count: usize,
         mypaint_version: Option<String>,
         compatibility: Option<fileio::Compatibility>,
+        /// 文件里的 `mypaint:eotf`（缺失为 `None`）—— 兼容模式判定用。
+        eotf: Option<f32>,
     },
     Png {
         bbox: (i32, i32, i32, i32),
@@ -1845,5 +1867,42 @@ mod tests {
         assert!(doc.pick_color(f32::NAN, 0.0).is_none());
         assert!(doc.pick_color(0.0, f32::INFINITY).is_none());
         assert!(doc.pick_color(f32::NEG_INFINITY, 0.0).is_none());
+    }
+
+    /// 兼容模式的两个落点：新层默认混合模式、保存时的 EOTF 标签。
+    #[test]
+    fn default_layer_mode_and_saved_eotf_follow_compat() {
+        use pigment_surface::combine::CombineMode;
+        let mut doc = Document::new();
+        doc.default_layer_pigment = false;
+        doc.add_layer();
+        assert_eq!(
+            doc.layers().current().mode,
+            LayerMode::Standard(CombineMode::Normal),
+            "1.x 新层应为 Normal"
+        );
+        doc.default_layer_pigment = true;
+        doc.add_layer();
+        assert_eq!(
+            doc.layers().current().mode,
+            LayerMode::Standard(CombineMode::SpectralWGM),
+            "2.x 新层应为 Pigment"
+        );
+
+        // 1.x 保存写 mypaint:eotf="1.0"，peek 能读回
+        let path = std::env::temp_dir().join(format!(
+            "pigment-compat-save-{}.ora",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        doc.save_eotf = Some(1.0);
+        doc.save(&path, None).unwrap();
+        let meta = crate::fileio::peek_ora(&path).unwrap();
+        assert_eq!(meta.eotf, Some(1.0));
+        // unknown：不写标签
+        doc.save_eotf = None;
+        doc.save(&path, None).unwrap();
+        assert_eq!(crate::fileio::peek_ora(&path).unwrap().eotf, None);
+        let _ = std::fs::remove_file(&path);
     }
 }

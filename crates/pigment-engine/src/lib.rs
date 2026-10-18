@@ -10,6 +10,7 @@ pub mod autosave;
 pub mod brushlib;
 pub mod color;
 pub mod command;
+pub mod compat;
 pub mod document;
 pub mod fileio;
 pub mod layer_views;
