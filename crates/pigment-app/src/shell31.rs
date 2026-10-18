@@ -124,6 +124,38 @@ fn mouse_button(button: &ButtonSource) -> Option<PointerButton> {
     }
 }
 
+/// egui 的 `ColorImage` → 系统剪贴板的 RGBA8。
+fn color_image_to_clipboard(image: &egui::ColorImage) -> Option<arboard::ImageData<'static>> {
+    if image.size[0] == 0 || image.size[1] == 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(image.pixels.len() * 4);
+    for c in &image.pixels {
+        bytes.extend_from_slice(&[c.r(), c.g(), c.b(), c.a()]);
+    }
+    Some(arboard::ImageData {
+        width: image.size[0],
+        height: image.size[1],
+        bytes: std::borrow::Cow::Owned(bytes),
+    })
+}
+
+/// 系统剪贴板的 RGBA8 → egui 的 `ColorImage`。
+fn clipboard_to_color_image(
+    width: usize,
+    height: usize,
+    bytes: &[u8],
+) -> Option<egui::ColorImage> {
+    if width == 0 || height == 0 || bytes.len() != width * height * 4 {
+        return None;
+    }
+    let pixels = bytes
+        .chunks_exact(4)
+        .map(|p| egui::Color32::from_rgba_unmultiplied(p[0], p[1], p[2], p[3]))
+        .collect();
+    Some(egui::ColorImage::new([width, height], pixels))
+}
+
 /// 剪贴板快捷键（Ctrl+C/X/V）的字符；其他键返回 None。
 fn clipboard_shortcut(key: &WinitKey) -> Option<char> {
     match key {
@@ -412,14 +444,28 @@ impl ApplicationHandler for Shell {
                             return;
                         }
                         Some('v') => {
-                            if let Some(text) = st
+                            let text = st
                                 .clipboard
                                 .as_mut()
-                                .and_then(|c| c.get_text().ok())
-                            {
+                                .and_then(|c| c.get_text().ok());
+                            if let Some(text) = text {
                                 let text = normalize_paste(&text);
                                 if !text.is_empty() {
                                     st.raw.events.push(Event::Paste(text));
+                                }
+                            } else if let Some(image) = st
+                                .clipboard
+                                .as_mut()
+                                .and_then(|c| c.get_image().ok())
+                            {
+                                if let Some(ci) = clipboard_to_color_image(
+                                    image.width,
+                                    image.height,
+                                    &image.bytes,
+                                ) {
+                                    st.raw
+                                        .events
+                                        .push(Event::PasteImage(std::sync::Arc::new(ci)));
                                 }
                             }
                             st.window.request_redraw();
@@ -545,10 +591,20 @@ fn render_frame(st: &mut State) {
     }
     // 把 egui 的复制命令写进系统剪贴板（Cut/Copy 的事件路径）。
     for cmd in &output.platform_output.commands {
-        if let egui::OutputCommand::CopyText(text) = cmd {
-            if let Some(cb) = st.clipboard.as_mut() {
-                let _ = cb.set_text(text.clone());
+        match cmd {
+            egui::OutputCommand::CopyText(text) => {
+                if let Some(cb) = st.clipboard.as_mut() {
+                    let _ = cb.set_text(text.clone());
+                }
             }
+            egui::OutputCommand::CopyImage(image) => {
+                if let (Some(cb), Some(data)) =
+                    (st.clipboard.as_mut(), color_image_to_clipboard(image))
+                {
+                    let _ = cb.set_image(data);
+                }
+            }
+            _ => {}
         }
     }
     // 面板的自动备份需要 1Hz 帧；egui 的 repaint_delay 已经包含它。
@@ -645,6 +701,25 @@ fn render_frame(st: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_image_roundtrips_rgba() {
+        let img = egui::ColorImage::new(
+            [2, 1],
+            vec![
+                egui::Color32::from_rgba_unmultiplied(10, 20, 30, 255),
+                egui::Color32::from_rgba_unmultiplied(200, 100, 50, 255),
+            ],
+        );
+        let data = color_image_to_clipboard(&img).unwrap();
+        assert_eq!((data.width, data.height), (2, 1));
+        let back = clipboard_to_color_image(data.width, data.height, &data.bytes).unwrap();
+        assert_eq!(back.size, [2, 1]);
+        assert_eq!(back.pixels[0], img.pixels[0]);
+        assert_eq!(back.pixels[1], img.pixels[1]);
+        // 尺寸不匹配时拒绝
+        assert!(clipboard_to_color_image(2, 2, &data.bytes).is_none());
+    }
 
     #[test]
     fn clipboard_shortcuts_and_newlines_are_normalized() {
