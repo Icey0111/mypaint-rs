@@ -5338,6 +5338,10 @@ mod tests {
         assert!(saved_window_fullscreen(&prefs));
         store_window_fullscreen(&mut prefs, false);
         assert!(!saved_window_fullscreen(&prefs));
+        store_autohide(&mut prefs, false);
+        assert!(!saved_autohide(&prefs));
+        store_autohide(&mut prefs, true);
+        assert!(saved_autohide(&prefs));
     }
 
     #[test]
