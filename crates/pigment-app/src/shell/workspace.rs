@@ -1524,6 +1524,7 @@ impl PigmentApp {
             && !view_gesture
             && !mapped_mode_active
             && !self.primary_action_active
+            && self.tablet_allows_painting()
         {
             // 本帧是否已经按"拖拽"语义喂过事件（见下面的 click 分支）
             let mut dispatched_drag = false;

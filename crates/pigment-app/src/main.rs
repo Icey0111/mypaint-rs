@@ -8,6 +8,7 @@ mod app;
 mod brushes;
 mod color;
 mod convert;
+mod device;
 mod dump;
 mod editor;
 mod gpu;

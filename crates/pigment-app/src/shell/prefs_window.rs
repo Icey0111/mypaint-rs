@@ -72,8 +72,10 @@
 //! - **Esc 关窗**：`Gtk.Dialog` 的 Esc 走 `GTK_RESPONSE_DELETE_EVENT` →
 //!   隐藏（等价于点 X，**不回退**）。egui 的 `Window` 没有这个默认键，这里没做
 //!   —— 否则要和捕获对话框的 Esc（`accelmap.py:471-480` 的取消）抢事件。
-//! - **页面外壳**：`Devices` 页的 `MyPaintDeviceSettingsEditor`、`Pressure` 页的
-//!   `CurveWidget` 仍是自绘控件占位区（尺寸取 glade 的 `width_request`/
+//! - **页面外壳**：`Devices` 页已接线为「数位板工具策略」（`input.tablet_usage`：
+//!   Any / Ignore / Non-painting / Navigation only）；winit 0.31 不暴露设备名，
+//!   所以策略作用于所有数位板工具，不按设备分组。`Pressure` 页的
+//!   `CurveWidget` 是自绘曲线（已接线 `input.global_pressure_mapping`）；
 //!   `height_request`）；`Buttons` 页的 `ButtonMappingEditor` 已移植
 //!   （[`crate::shell::buttonmap_editor`]），列表/Add/Remove/动作下拉/
 //!   鼠标捕获对话框都在。
@@ -358,7 +360,6 @@ impl ControlDef {
 // ---- 未接线原因（每条都指到"缺哪个子系统"）----
 
 /// `input.device_mode`
-const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSettingsEditor 与设备策略）未移植";
 /// `lib.i18n.userlocale`
 
 /// 全部页面的全部控件（顺序 = glade 的 attach 顺序；同一页内自上而下）。
@@ -378,14 +379,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `MyPaintDeviceSettingsEditor`（glade:286-291，450×350）；`input.device_mode`
     // 的写回函数 `input_mode_combobox_changed_cb`（preferenceswindow.py:268-271）
     // 在 glade 里已经没有对应控件了（只剩 `input_mode_liststore`，glade:1840-1861）。
-    ControlDef::unported(
+    ControlDef::wired(
         1,
         Kind::DeviceEditor,
         "devicesettingseditor1",
         "",
-        Some("input.device_mode"),
+        Some("input.tablet_usage"),
         "glade:286-291",
-        R_DEVICES,
     ),
     ControlDef::text(
         1,
@@ -1302,6 +1302,10 @@ pub(crate) static SOFT_KEYS: &[(&str, &str)] = &[
         "ui.file_compat_warning_severe",
         "compatibility.py:367 的 .get(key, True)",
     ),
+    (
+        "input.tablet_usage",
+        "本移植新增：gui/device.py AllowedUsage 的全局子集（winit 无设备名）",
+    ),
 ];
 
 // ---------------------------------------------------------------------------
@@ -1509,7 +1513,7 @@ impl PigmentApp {
                 self.keys_editor_page(ui);
             }
             Kind::Curve => self.prefs_curve_row(ui, c),
-            Kind::DeviceEditor => editor_placeholder(ui, c, egui::vec2(450.0, 350.0)),
+            Kind::DeviceEditor => self.device_editor_page(ui),
             Kind::ButtonEditor => self.button_editor_page(ui),
             Kind::Check | Kind::Switch => self.prefs_check_row(ui, c),
             Kind::Radio => self.prefs_radio_row(ui, c),
@@ -1520,6 +1524,53 @@ impl PigmentApp {
         ui.add_space(4.0);
     }
 
+    /// Devices 页：数位板工具策略（`gui/device.py::AllowedUsage` 的全局子集）。
+    ///
+    /// winit 0.31 的 `TabletToolData` 没有设备名/轴范围，无法做 MyPaint 的
+    /// 逐设备分组；这里按“所有数位板工具”共享一条策略，鼠标不受影响。
+    fn device_editor_page(&mut self, ui: &mut egui::Ui) {
+        use crate::device::TabletUsage;
+        let before = self.tablet_usage();
+        let mut usage = before;
+        egui::Frame::group(ui.style()).show(ui, |ui| {
+            ui.set_min_size(egui::vec2(450.0, 120.0));
+            ui.heading("Tablet tool policy");
+            ui.label(
+                "All tablet tools (pen and eraser end) share this policy. \
+                 The mouse is never affected.",
+            );
+            egui::ComboBox::from_id_salt("tablet_usage")
+                .selected_text(usage.label())
+                .show_ui(ui, |ui| {
+                    for u in TabletUsage::VALUES {
+                        ui.selectable_value(&mut usage, u, u.label());
+                    }
+                });
+            if ui.button("Reset to Any Task").clicked() {
+                usage = TabletUsage::Any;
+            }
+        });
+        if usage != before {
+            self.prefs
+                .set_str("input.tablet_usage", usage.as_str());
+        }
+        ui.add_space(4.0);
+        let current = if self.tablet.active {
+            if self.tablet.is_eraser() {
+                "tablet: eraser end"
+            } else {
+                "tablet: pen"
+            }
+        } else {
+            "mouse / no tablet input yet"
+        };
+        ui.monospace(format!("Current input: {current}"));
+        ui.label(
+            "Device name and axis ranges are not exposed by the windowing backend, \
+             so per-device profiles are not available; this policy applies to all \
+             tablet tools.",
+        );
+    }
     /// 控件在当前设置下是否可编辑。
     ///
     /// 照源码的 `set_sensitive` 联动：
@@ -1841,41 +1892,6 @@ fn attach_tip(resp: egui::Response, c: &ControlDef, enabled: bool) -> egui::Resp
     }
 }
 
-/// 禁用占位区（自绘控件的替身）：一块灰底 + 居中说明 + 悬停原因。
-///
-/// **注意**：占位区不是 egui 的"禁用控件"（它是手工 `allocate` 出来的图元），
-/// 所以悬停说明用 `on_hover_text` 而不是 `on_disabled_hover_text`。
-fn placeholder(ui: &mut egui::Ui, rect_size: egui::Vec2, text: &str, tip: String) {
-    let size = egui::vec2(rect_size.x.min(ui.available_width()).max(1.0), rect_size.y);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let visuals = ui.visuals();
-    ui.painter().rect_filled(rect, 4.0, visuals.faint_bg_color);
-    ui.painter().rect_stroke(
-        rect,
-        4.0,
-        egui::Stroke::new(1.0, visuals.widgets.noninteractive.bg_stroke.color),
-        egui::StrokeKind::Inside,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        text,
-        egui::FontId::proportional(12.0),
-        visuals.weak_text_color(),
-    );
-    let _ = resp.on_hover_text(tip);
-}
-
-/// 自绘编辑器的禁用占位区（尺寸取 glade 的 `width_request`/`height_request`）。
-fn editor_placeholder(ui: &mut egui::Ui, c: &ControlDef, size: egui::Vec2) {
-    placeholder(
-        ui,
-        size,
-        &format!("{}（{}）", NOT_PORTED, c.id),
-        format!("{NOT_PORTED}\n未移植：{}", c.reason),
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 测试
 // ---------------------------------------------------------------------------
@@ -2012,8 +2028,8 @@ mod tests {
         // 已接线的控件行 = 30 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 36);
-        assert_eq!(widgets - wired, 1, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 37);
+        assert_eq!(widgets - wired, 0, "不应再有不接线的控件行");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2076,6 +2092,7 @@ mod tests {
                 "ui.blink_layers",                 // 图层闪烁（LayerStack preview）
                 "view.real_alpha_checks",          // 透明棋盘格 + GPU alpha 混合
                 "lib.i18n.userlocale",             // 菜单/动作文案语言
+                "input.tablet_usage",              // Devices 页：数位板工具策略
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2096,12 +2113,8 @@ mod tests {
             .filter(|c| !c.wired)
             .filter_map(|c| c.key)
             .collect();
-        let must_be_disabled = [
-            "input.device_mode",             // Devices 页的编辑器
-        ];
-        for key in must_be_disabled {
-            assert!(disabled.contains(key), "{key} 应标成未接线");
-        }
+        // Devices 页已接线（input.tablet_usage），不应再有禁用控件。
+        assert!(disabled.is_empty(), "仍有禁用控件：{disabled:?}");
         // 没有控件代表的未接键（B6-1 清单里的其余部分）—— 记账，不是遗漏
         let no_control = [
             "workspace.layout",

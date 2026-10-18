@@ -2014,6 +2014,18 @@ impl PigmentApp {
         }
     }
 
+    /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
+    pub(crate) fn tablet_usage(&self) -> crate::device::TabletUsage {
+        crate::device::TabletUsage::from_str(
+            self.prefs.str_or("input.tablet_usage", "any"),
+        )
+    }
+
+    /// 数位板当前是否允许落笔；鼠标/触摸不受这条策略影响。
+    pub(crate) fn tablet_allows_painting(&self) -> bool {
+        !self.tablet.active || self.tablet_usage().allows_painting()
+    }
+
     /// 笔尾橡皮端生效时临时把 `eraser` 打开，抬起后恢复用户原来的开关
     /// （`gui/device.py`/`document.py` 的设备橡皮语义；恢复值在首次按下时记下）。
     pub(crate) fn apply_tablet_eraser(&mut self, active: bool) {
