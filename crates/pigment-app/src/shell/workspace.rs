@@ -947,6 +947,47 @@ impl PigmentApp {
 
         // ---- 公共设置（mode.py:591-601）----
         let mut changed = false;
+        // ---- 直线/曲线压力（`LineModeOptionsWidget`，linemode.py:39-85/814）----
+        if matches!(
+            options_name.as_str(),
+            "Lines and Curves" | "Connected Lines" | "Ellipses and Circles"
+        ) {
+            ui.separator();
+            ui.label(egui::RichText::new("Line pressures").strong());
+            let mut s = self.line_settings;
+            let mut line_changed = false;
+            line_changed |= value_slider(
+                ui,
+                "Entrance Pressure:",
+                &mut s.entry_pressure,
+                0.0001..=1.0,
+            );
+            line_changed |= value_slider(
+                ui,
+                "Midpoint Pressure:",
+                &mut s.midpoint_pressure,
+                0.0001..=1.0,
+            );
+            line_changed |= value_slider(
+                ui,
+                "Exit Pressure:",
+                &mut s.exit_pressure,
+                0.0001..=1.0,
+            );
+            line_changed |= value_slider(ui, "Head:", &mut s.head, 0.0001..=1.0);
+            line_changed |= value_slider(ui, "Tail:", &mut s.tail, 0.0001..=1.0);
+            if line_changed {
+                self.line_settings = s;
+                self.prefs.set_f64("linemode.entry_pressure", s.entry_pressure as f64);
+                self.prefs.set_f64("linemode.midpoint_pressure", s.midpoint_pressure as f64);
+                self.prefs.set_f64("linemode.exit_pressure", s.exit_pressure as f64);
+                self.prefs.set_f64("linemode.line_head", s.head as f64);
+                self.prefs.set_f64("linemode.line_tail", s.tail as f64);
+                self.modes.set_line_settings(s);
+                self.scratch.modes.set_line_settings(s);
+                changed = true;
+            }
+        }
         // Size 滑条绑定**当前有效半径**（`app.brush_adjustment["radius_logarithmic"]`，
         // `document.py:1571-1590`）：`BrushResizeMode` 与 `f`/`d` 都是改这个值。
         // 本应用把"笔刷被改过尺寸"记在 `radius_override` 上，所以这里写覆盖值，
@@ -1027,47 +1068,6 @@ impl PigmentApp {
             );
         }
 
-        // ---- 直线/曲线压力（`LineModeOptionsWidget`，linemode.py:39-85/814）----
-        if matches!(
-            options_name.as_str(),
-            "Lines and Curves" | "Connected Lines" | "Ellipses and Circles"
-        ) {
-            ui.separator();
-            ui.label(egui::RichText::new("Line pressures").strong());
-            let mut s = self.line_settings;
-            let mut line_changed = false;
-            line_changed |= value_slider(
-                ui,
-                "Entrance Pressure:",
-                &mut s.entry_pressure,
-                0.0001..=1.0,
-            );
-            line_changed |= value_slider(
-                ui,
-                "Midpoint Pressure:",
-                &mut s.midpoint_pressure,
-                0.0001..=1.0,
-            );
-            line_changed |= value_slider(
-                ui,
-                "Exit Pressure:",
-                &mut s.exit_pressure,
-                0.0001..=1.0,
-            );
-            line_changed |= value_slider(ui, "Head:", &mut s.head, 0.0001..=1.0);
-            line_changed |= value_slider(ui, "Tail:", &mut s.tail, 0.0001..=1.0);
-            if line_changed {
-                self.line_settings = s;
-                self.prefs.set_f64("linemode.entry_pressure", s.entry_pressure as f64);
-                self.prefs.set_f64("linemode.midpoint_pressure", s.midpoint_pressure as f64);
-                self.prefs.set_f64("linemode.exit_pressure", s.exit_pressure as f64);
-                self.prefs.set_f64("linemode.line_head", s.head as f64);
-                self.prefs.set_f64("linemode.line_tail", s.tail as f64);
-                self.modes.set_line_settings(s);
-                self.scratch.modes.set_line_settings(s);
-                changed = true;
-            }
-        }
         if changed {
             self.derive_active();
             // 让下一帧的笔迹生效（无需重建模式栈：mode_inputs 每事件都读缓存）
