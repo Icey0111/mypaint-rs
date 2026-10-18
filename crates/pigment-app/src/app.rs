@@ -746,6 +746,8 @@ pub struct PigmentApp {
     /// 源码里遮罩挂在 `MaskableWheelMixin` 实例上（`hcywheel.py:70-71` 的
     /// `__mask` 与 `mask_toggle`），egui 没有控件对象，只能由应用持有。
     pub(crate) hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState,
+    /// 上次写回偏好的 HCY 遮罩签名（扁平形状 + active），避免每帧写。
+    hcy_mask_saved: Option<(Vec<Vec<String>>, bool)>,
     // ---- 工具条（S4）----
     /// 图标纹理缓存（`shell::toolbars::IconCache`）。
     pub(crate) icon_cache: crate::shell::toolbars::IconCache,
@@ -1249,6 +1251,7 @@ impl PigmentApp {
             color_page: crate::shell::color_panel::PAGE_COMPONENT_SLIDERS,
             wheel_pages: crate::shell::wheel_pages::WheelPagesState::new(),
             hcy_wheel: crate::shell::hcy_wheel_page::HcyWheelState::new(),
+            hcy_mask_saved: None,
         };
         app.derive_active();
         // 兼容模式：文档默认层类型 / 笔刷默认颜料 / EOTF 标签
@@ -1839,6 +1842,43 @@ impl PigmentApp {
             .clamp(5, 300) as u64;
         // 主题变体（`ui.dark_theme_variant`）由下一帧的 `apply_appearance` 套用
         self.appearance_dirty = true;
+        // HCY 遮罩（`colors.hcywheel.mask.*`）
+        self.load_hcy_mask();
+    }
+
+    /// 从偏好读回 HCY 遮罩（`hcywheel.py:99-112` 的 `set_color_manager`）。
+    pub(crate) fn load_hcy_mask(&mut self) {
+        use pigment_engine::color::{mask_from_flat, PREFS_ACTIVE_KEY, PREFS_MASK_KEY};
+        let flat: Vec<Vec<String>> = self
+            .prefs
+            .get(PREFS_MASK_KEY)
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        self.hcy_wheel.mask = mask_from_flat(&flat);
+        self.hcy_wheel.mask_active = self.prefs.bool_or(PREFS_ACTIVE_KEY, false);
+        self.hcy_mask_saved = Some((flat, self.hcy_wheel.mask_active));
+    }
+
+    /// 把 HCY 遮罩写回偏好（`hcywheel.py:162-174` 的 `set_mask` 写键）。
+    ///
+    /// 每帧比对签名，只有变化时才写，避免立即模式每帧落 JSON。
+    pub(crate) fn persist_hcy_mask(&mut self) {
+        use pigment_engine::color::{mask_to_flat, PREFS_ACTIVE_KEY, PREFS_MASK_KEY};
+        let flat = mask_to_flat(&self.hcy_wheel.mask);
+        let active = self.hcy_wheel.mask_active;
+        if self.hcy_mask_saved.as_ref() == Some(&(flat.clone(), active)) {
+            return;
+        }
+        if flat.is_empty() {
+            self.prefs
+                .set(PREFS_MASK_KEY, serde_json::Value::Null);
+        } else {
+            self.prefs
+                .set(PREFS_MASK_KEY, serde_json::json!(flat));
+        }
+        self.prefs.set_bool(PREFS_ACTIVE_KEY, active);
+        self.hcy_mask_saved = Some((flat, active));
     }
 
     /// 切换兼容模式 —— `set_compat_mode`（`compatibility.py:437-470`）的
@@ -4926,6 +4966,7 @@ impl PigmentApp {
         if self.file_prompt.is_some() {
             ctx.request_repaint();
         }
+        self.persist_hcy_mask();
         // 自动备份：每帧推一次（`Document._cache_updater_cb` 的等价物）
         let painting = ctx.input(|i| i.pointer.any_down());
         self.autosave_tick(now, painting);

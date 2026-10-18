@@ -133,7 +133,7 @@ pub use hcywheel::{
     colors_to_mask_void, convex_hull, editor_luma_y, hcy_luma_slider_samples,
     hcy_wheel_center_rgb, hcy_wheel_color_at_polar, hcy_wheel_color_at_position,
     hcy_wheel_polar_for_color, hcy_wheel_position_for_color, hcy_wheel_scroll, hcy_wheel_slice_rgb,
-    mask_from_palette, mask_to_palette, mask_templates, mask_voids, masked_color_at_position, nearest_point_in_segment, pairwise,
+    mask_from_flat, mask_from_palette, mask_to_flat, mask_to_palette, mask_templates, mask_voids, masked_color_at_position, nearest_point_in_segment, pairwise,
     point_in_convex_poly, poly_area, rotate_mask, template_mask, visible_mask_voids, void_size,
     MaskShape,
     MaskTemplate, Point, EDITOR_CTRLPOINT_GRAB_RADIUS, EDITOR_CTRLPOINT_RADIUS, EDITOR_MAX_LUMA,

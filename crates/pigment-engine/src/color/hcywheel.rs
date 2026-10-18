@@ -65,7 +65,7 @@
 //!   （`:113-127`）的 prefs 序列化未移植。
 //! - **`get_prefs()`**（`adjbases.py:414-419`）：偏好系统属 B6。
 
-use super::model::{Color, HcyColor, UIColor};
+use super::model::{Color, HcyColor, RgbColor, UIColor};
 use super::palette::Palette;
 use super::tools::{clamp, ScrollDirection, SCROLL_DELTA};
 use super::wheels::{distort_hue, undistort_hue, HueRange, WheelGeometry, SAT_GAMMA};
@@ -113,6 +113,27 @@ pub const EDITOR_CTRLPOINT_RADIUS: f64 = 2.5;
 
 /// 编辑器的控制点抓取半径 —— `hcywheel.py:395` `__ctrlpoint_grab_radius = 10`。
 pub const EDITOR_CTRLPOINT_GRAB_RADIUS: f64 = 10.0;
+
+/// 把遮罩扁平化成偏好里的「列表的列表」—— `hcywheel.py:113-119` 的
+/// `_flatten_mask`：每个颜色用 `to_hex_str()`。
+pub fn mask_to_flat(mask: &[MaskShape]) -> Vec<Vec<String>> {
+    mask.iter()
+        .map(|shape| shape.iter().map(Color::to_hex_str).collect())
+        .collect()
+}
+
+/// 从偏好的「列表的列表」还原遮罩 —— `hcywheel.py:121-127` 的
+/// `_unflatten_mask`：逐个 `RGBColor.new_from_hex_str()`。
+pub fn mask_from_flat(flat: &[Vec<String>]) -> Vec<MaskShape> {
+    flat.iter()
+        .map(|shape| {
+            shape
+                .iter()
+                .map(|s| Color::Rgb(RgbColor::new_from_hex_str(s)))
+                .collect()
+        })
+        .collect()
+}
 
 /// 一个遮罩最多几个形状 —— `hcywheel.py:396` `__max_num_shapes = 6`。
 pub const EDITOR_MAX_NUM_SHAPES: usize = 6;
@@ -991,6 +1012,24 @@ mod tests {
 
     fn close(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn mask_flat_roundtrip_uses_hex_strings() {
+        let mask = vec![
+            vec![
+                Color::Rgb(RgbColor::new(1.0, 0.0, 0.0)),
+                Color::Rgb(RgbColor::new(0.0, 1.0, 0.0)),
+            ],
+            vec![Color::Rgb(RgbColor::new(0.0, 0.0, 1.0))],
+        ];
+        let flat = mask_to_flat(&mask);
+        assert_eq!(flat[0][0], "#ff0000");
+        assert_eq!(flat[1][0], "#0000ff");
+        let back = mask_from_flat(&flat);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].len(), 2);
+        assert_eq!(back[0][0].to_hex_str(), "#ff0000");
     }
 
     #[test]
