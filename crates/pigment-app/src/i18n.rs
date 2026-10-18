@@ -78,10 +78,26 @@ fn translate(locale: Locale, msgid: &str) -> &str {
     }
 }
 
+/// 本项目自有的界面串（不在官方 po 里）的中文译文。
+const ZH_LOCAL: &[(&str, &str)] = &[
+    ("Revert to Saved", "回退到已保存"),
+    ("Global Pressure Mapping", "全局压力映射"),
+    ("Brush Pressure", "笔刷压力"),
+    ("Brush Pressure 1", "笔刷压力 1"),
+    ("Input Pressure", "输入压力"),
+];
+
 /// 解析后的官方中文表（只包含非空、非 fuzzy 的条目）。
 fn catalog() -> &'static HashMap<&'static str, &'static str> {
     static TABLE: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
-    TABLE.get_or_init(|| parse_po(include_str!("../assets/i18n/zh_CN.po")))
+    TABLE.get_or_init(|| {
+        let mut table = parse_po(include_str!("../assets/i18n/zh_CN.po"));
+        // 本地补充串优先级更高（官方 po 里没有这些键）
+        for (k, v) in ZH_LOCAL {
+            table.insert(k, v);
+        }
+        table
+    })
 }
 
 /// 极简 `.po` 解析：`msgid` / `msgstr` + 多行引号续行，跳过 fuzzy。
@@ -214,6 +230,15 @@ mod tests {
         // 没有译文的 msgid 回退原文
         let unknown = "definitely not in the catalog";
         assert_eq!(translate(Locale::Chinese, unknown), unknown);
+        // 本项目自有串（官方 po 没有）由本地表补上
+        assert_eq!(
+            translate(Locale::Chinese, "Revert to Saved"),
+            "回退到已保存"
+        );
+        assert_eq!(
+            translate(Locale::Chinese, "Global Pressure Mapping"),
+            "全局压力映射"
+        );
     }
 
     #[test]

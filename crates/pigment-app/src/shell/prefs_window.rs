@@ -1550,7 +1550,7 @@ impl PigmentApp {
         // 轴标签照 glade（`preferenceswindow.glade:145-217`）：竖排的 y 轴标签
         // 在 egui 里改为横排放上方（只有版式差异）。
         ui.label(
-            egui::RichText::new(format!("{AXIS_BRUSH_PRESSURE} ↑"))
+            egui::RichText::new(format!("{} ↑", crate::i18n::tr(AXIS_BRUSH_PRESSURE)))
                 .weak()
                 .small(),
         );
@@ -1567,7 +1567,7 @@ impl PigmentApp {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("0.0").weak().small());
             ui.add_space(40.0);
-            ui.label(egui::RichText::new(AXIS_INPUT_PRESSURE).weak().small());
+            ui.label(egui::RichText::new(crate::i18n::tr(AXIS_INPUT_PRESSURE)).weak().small());
             ui.add_space(40.0);
             ui.label(egui::RichText::new("1.0").weak().small());
         });
