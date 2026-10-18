@@ -494,6 +494,9 @@ pub struct PigmentApp {
     pub(crate) file_warning: Option<FileWarningState>,
     /// 用户点了 "Open Anyway"：下一次 `open_from_path` 跳过警告检查。
     pub(crate) skip_file_warning_once: bool,
+    /// 图层闪烁的结束时间（`State.autoleave_timeout = 0.800`，
+    /// `gui/stategroup.py:59`）；`None` = 不在闪烁。
+    pub(crate) blink_until: Option<f64>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -982,6 +985,7 @@ impl PigmentApp {
             compat_settings,
             file_warning: None,
             skip_file_warning_once: false,
+            blink_until: None,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -1603,6 +1607,11 @@ impl PigmentApp {
         // 兼容设置（`compability_settings` 改了要重读；当前模式不变）
         self.compat_settings = pigment_engine::compat::CompatSettings::from_prefs(&self.prefs);
         self.apply_compat_mode(self.compat_mode);
+        // 关掉图层闪烁时立刻清掉进行中的预览
+        if !self.prefs.bool_or("ui.blink_layers", true) {
+            self.blink_until = None;
+            self.doc.layers_mut().set_preview_path(None);
+        }
         // 自动备份（`_apply_autosave_settings`，`application.py:514-522`）
         self.autosave.enabled = self.prefs.bool_or("document.autosave_backups", true);
         self.autosave.interval = self
@@ -1626,6 +1635,45 @@ impl PigmentApp {
         // `display.colorspace == "unknown"`：不做转换也不打标签
         let srgb = self.prefs.str_or("display.colorspace", "srgb") == "srgb";
         self.doc.save_eotf = if srgb { Some(mode.eotf()) } else { None };
+    }
+
+    /// 选中图层并触发闪烁 —— `layerswindow.py:146/387-388`：
+    /// `current_layer_changed` → `app.doc.blink_layer()`。
+    pub(crate) fn select_layer_and_blink(&mut self, path: &[usize], now: f64) {
+        self.doc.select_layer(path);
+        self.blink_current_layer(now);
+    }
+
+    /// 启动一次图层闪烁 —— `gui/document.py:1082-1086` 的 `blink_layer()`。
+    ///
+    /// 源码由 `StateGroup` 在 0.8s 后自动退出（`stategroup.py:59`）；egui 没有
+    /// 状态机，用 `blink_until` 记截止时间，`blink_tick` 每帧清理。
+    pub(crate) fn blink_current_layer(&mut self, now: f64) {
+        if !self.prefs.bool_or("ui.blink_layers", true) {
+            return;
+        }
+        let path = self.doc.current_path().to_vec();
+        self.blink_until = Some(now + 0.8);
+        self.doc.layers_mut().set_preview_path(Some(path));
+        self.force_resync = true;
+    }
+
+    /// 每帧推进/结束图层闪烁。
+    pub(crate) fn blink_tick(&mut self, now: f64, ctx: &egui::Context) {
+        let Some(until) = self.blink_until else {
+            return;
+        };
+        if now >= until {
+            self.blink_until = None;
+            self.doc.layers_mut().set_preview_path(None);
+            self.force_resync = true;
+            return;
+        }
+        // 闪烁期间当前层可能变（连点两下），每帧同步预览路径
+        let path = self.doc.current_path().to_vec();
+        self.doc.layers_mut().set_preview_path(Some(path));
+        self.force_resync = true;
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
     /// 套用 egui 主题 —— 对应 GTK 的 `ui.dark_theme_variant`    /// （`preferenceswindow.py:302-304` 只写偏好，GTK 换肤要重启；
@@ -2556,7 +2604,7 @@ impl PigmentApp {
             return;
         };
         let changed = path.as_slice() != self.doc.current_path();
-        self.doc.select_layer(&path);
+        self.select_layer_and_blink(&path, now);
 
         // 取该层最近一笔覆盖该点的笔迹，恢复笔刷设置与颜色
         let stroke = self
@@ -2618,7 +2666,7 @@ impl PigmentApp {
             self.set_status("Pick Layer：这里没有可拾取的图层".to_string(), now);
             return;
         };
-        self.doc.select_layer(&path);
+        self.select_layer_and_blink(&path, now);
         self.set_status(format!("Pick Layer：{}", path_label(&path)), now);
     }
 
@@ -3832,11 +3880,13 @@ fn layout_ink_buttons(
             // ---- 图层（`layerswindow` 的动作回调；B2-5）----
             "NewPaintingLayerAbove" => {
                 self.doc.add_layer();
+                self.blink_current_layer(now);
                 ctx.request_repaint();
             }
             // `NewLayerGroupAbove` → `AddLayer(layer_class=LayerStack)`（layerswindow）
             "NewLayerGroupAbove" => {
                 self.doc.add_group();
+                self.blink_current_layer(now);
                 ctx.request_repaint();
             }
             "RemoveLayer" => {
@@ -3853,6 +3903,7 @@ fn layout_ink_buttons(
             }
             "DuplicateLayer" => {
                 self.doc.duplicate_layer();
+                self.blink_current_layer(now);
                 ctx.request_repaint();
             }
             "MergeLayerDown" => {
@@ -4365,6 +4416,9 @@ impl eframe::App for PigmentApp {
         let ctx = ui.ctx().clone();
         self.apply_appearance(&ctx);
         self.handle_keys(&ctx);
+        // 图层闪烁（0.8s 后自动清预览；期间每帧同步当前层）
+        let blink_now = ctx.input(|i| i.time);
+        self.blink_tick(blink_now, &ctx);
 
         // ── 顶栏 ── `MyPaintTopBar`：菜单栏 + toolbar1 + toolbar2
         self.topbar(ui);

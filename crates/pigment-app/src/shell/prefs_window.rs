@@ -364,8 +364,6 @@ const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未
                              tileddrawwidget.py:1078-1081 的 _draw_real_alpha_checks";
 /// `lib.i18n.userlocale`
 const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
-/// `ui.blink_layers`
-const R_BLINK: &str = "图层闪烁提示（layerswindow.py 的 blink）未移植";
 
 /// 全部页面的全部控件（顺序 = glade 的 attach 顺序；同一页内自上而下）。
 pub(crate) static CONTROLS: &[ControlDef] = &[
@@ -803,14 +801,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `blink_layers_checkbutton`（glade:1191-1202）；初值
     // preferenceswindow.py:192-195（`.get("ui.blink_layers", True)` —— 软键），
     // 写回 `:408-410`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Check,
         "blink_layers_checkbutton",
         "Enabled",
         Some("ui.blink_layers"),
         "glade:1191-1202",
-        R_BLINK,
     )
     .tip("When a layer is created or selected, show only that layer for a short time period.")
     .default_bool(true),
@@ -2007,8 +2004,8 @@ mod tests {
         // 已接线的控件行 = 30 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 33);
-        assert_eq!(widgets - wired, 4, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 34);
+        assert_eq!(widgets - wired, 3, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2068,6 +2065,7 @@ mod tests {
                 "ui.file_compat_warning_severe",   // 同上
                 "display.colorspace",              // ORA 是否写 mypaint:eotf
                 "input.global_pressure_mapping",   // 压力曲线编辑器
+                "ui.blink_layers",                 // 图层闪烁（LayerStack preview）
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2091,7 +2089,6 @@ mod tests {
         let must_be_disabled = [
             "input.device_mode",             // Devices 页的编辑器
             "view.real_alpha_checks",        // 棋盘格复选框
-            "ui.blink_layers",               // 图层闪烁
             "lib.i18n.userlocale",           // 语言下拉
         ];
         for key in must_be_disabled {

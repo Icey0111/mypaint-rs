@@ -484,7 +484,8 @@ impl PigmentApp {
                         };
                         let resp = ui.selectable_label(row.is_cur, label);
                         if resp.clicked() {
-                            self.doc.select_layer(&path);
+                            let now = ctx.input(|i| i.time);
+                            self.select_layer_and_blink(&path, now);
                             ctx.request_repaint();
                         }
                         if resp.double_clicked() {
@@ -613,7 +614,8 @@ impl PigmentApp {
             self.layer_drag = Some(path.to_vec());
         }
         if resp.on_hover_text(hover).clicked() {
-            self.doc.select_layer(path);
+            let now = ctx.input(|i| i.time);
+            self.select_layer_and_blink(path, now);
             ctx.request_repaint();
         }
     }

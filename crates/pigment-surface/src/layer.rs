@@ -662,6 +662,9 @@ pub struct LayerStack {
     /// 合成版本号：栈结构/背景/图层属性变化时 +1（tile 内容变化由各层
     /// `surface.clock()` 独立计数，见 [`LayerStack::composite_revision`]）。
     rev: u64,
+    /// 图层闪烁预览（`tree.py:1172-1193` 的 `current_layer_previewing`）：
+    /// `Some(path)` 时只合成该层/组，并**反转**背景可见性。
+    preview: Option<Vec<usize>>,
 }
 
 impl Default for LayerStack {
@@ -680,6 +683,7 @@ impl Clone for LayerStack {
             background_image: self.background_image.clone(),
             background_visible: self.background_visible,
             rev: self.rev,
+            preview: self.preview.clone(),
         }
     }
 }
@@ -699,6 +703,7 @@ impl LayerStack {
             background_image: None,
             background_visible: true,
             rev: 0,
+            preview: None,
         }
     }
 
@@ -732,6 +737,7 @@ impl LayerStack {
             background_image: None,
             background_visible: true,
             rev: 0,
+            preview: None,
         }
     }
 
@@ -1395,13 +1401,52 @@ impl LayerStack {
         true
     }
 
+    /// 图层闪烁预览的路径（`tree.py:1172` 的 `current_layer_previewing`）。
+    pub fn preview_path(&self) -> Option<&[usize]> {
+        self.preview.as_deref()
+    }
+
+    /// 开关图层闪烁预览；变化时抬高合成版本号。
+    pub fn set_preview_path(&mut self, path: Option<Vec<usize>>) {
+        if self.preview != path {
+            self.preview = path;
+            self.touch();
+        }
+    }
+
+    /// 只合成闪烁预览层（+ 反转后的背景）——`tree.py:288-306/320-323`。
+    fn composite_preview(&self, tx: i32, ty: i32, dst: &mut [u16]) -> bool {
+        debug_assert_eq!(dst.len(), TILE_CHANNELS);
+        dst.fill(0);
+        // `_get_render_background`：previewing 时**反转**背景可见性
+        let show_bg = !self.background_visible;
+        let mut content = false;
+        if show_bg {
+            let bg = self.background_tile_at(tx, ty);
+            dst.copy_from_slice(bg.as_flattened().as_flattened());
+            content = true;
+        }
+        let Some(path) = self.preview.as_deref() else {
+            return content;
+        };
+        let Some(layer) = self.layer_at(path) else {
+            return content;
+        };
+        let mut pool: Vec<Vec<u16>> = Vec::new();
+        content |= composite_layer(layer, tx, ty, dst, true, false, 0, &mut pool);
+        content
+    }
+
     /// 把 `(tx, ty)` 处的栈合成结果写入 `dst`（fix15 预乘，长度 = tile 通道数）。
     ///
     /// 返回 `true` 表示结果非空透明块：背景可见，或该坐标存在任一层的内容。
     /// 语义照 `tree.py:796-811` 的 op 流（背景 BLIT → 子层自底向上）与
     /// `group.py:424-432` 的 PUSH/POP（组的隔离缓冲/直通决定），透明源规则见
-    /// `tiledsurface.py:440-457`。
+    /// `tiledsurface.py:440-457`。若处于图层闪烁预览，只合成当前层。
     pub fn composite_tile(&self, tx: i32, ty: i32, dst: &mut [u16]) -> bool {
+        if self.preview.is_some() {
+            return self.composite_preview(tx, ty, dst);
+        }
         self.composite_tile_with_background(tx, ty, dst, true)
     }
 
@@ -1475,7 +1520,8 @@ impl LayerStack {
     /// 纸色上——与现渲染管线的"CPU 预合成、无混合"模型一致。坐标无内容时
     /// 返回 `None`（调用方据此从显存剔除）。
     pub fn composite_tile_rgba8(&self, tx: i32, ty: i32) -> Option<Box<[u8; TILE_RGBA8_BYTES]>> {
-        if !self.has_content_at(tx, ty) {
+        // 预览时即使当前层是空的也要输出（否则旧 tile 会留在显存里）
+        if self.preview.is_none() && !self.has_content_at(tx, ty) {
             return None;
         }
         let mut scratch = vec![0u16; TILE_CHANNELS];
@@ -2126,6 +2172,41 @@ mod tests {
         st.set_background_color([10, 20, 30]);
         assert!(!st.background_is_image());
         assert_eq!(st.background_color(), [10, 20, 30]);
+    }
+
+    /// 闪烁预览：只画当前层，并反转背景可见性（`tree.py:288-306/320-323`）。
+    #[test]
+    fn previewing_isolates_current_layer_and_inverts_background() {
+        let mut st = LayerStack::new();
+        let mut red = vec![0u8; 64 * 64 * 4];
+        for px in red.chunks_exact_mut(4) {
+            px.copy_from_slice(&[255, 0, 0, 255]);
+        }
+        st.layer_mut(0)
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&red, 0, 0, 64, 64);
+        st.set_background_color([0, 0, 255]);
+        let mut dst = vec![0u16; TILE_CHANNELS];
+
+        // 背景可见 + 预览当前层 → 背景被反转成隐藏，只剩红层
+        st.set_preview_path(Some(vec![0]));
+        st.composite_tile(0, 0, &mut dst);
+        assert!(dst[0] > 30_000, "预览应只有红层");
+        assert!(dst[1] < 1_000 && dst[2] < 1_000, "背景应被隐藏");
+
+        // 在红层上面插一个空层：预览空层时只剩透明（背景仍被反转隐藏）
+        st.insert(0, Layer::new());
+        st.set_preview_path(Some(vec![0]));
+        st.composite_tile(0, 0, &mut dst);
+        assert_eq!(&dst[..4], &[0, 0, 0, 0]);
+
+        // 背景本来隐藏 → 预览把它显示出来
+        st.set_background_visible(false);
+        st.composite_tile(0, 0, &mut dst);
+        assert!(dst[2] > 30_000, "背景隐藏时预览应显示背景");
+
+        st.set_preview_path(None);
     }
 }
 
