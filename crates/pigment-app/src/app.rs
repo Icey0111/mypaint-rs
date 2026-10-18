@@ -1129,49 +1129,71 @@ impl PigmentApp {
                                 .entry(entry.path.clone())
                                 .or_insert_with(|| load_autosave_thumb(ctx, &entry.thumbnail_path))
                                 .clone();
-                            ui.horizontal(|ui| {
-                                let (rect, _) = ui.allocate_exact_size(
-                                    egui::vec2(96.0, 96.0),
-                                    egui::Sense::hover(),
+                            // 整行可点：源码是 GtkTreeView 的整行选择，不是只点文字
+                            // （`autorecover.glade:141-180` 的 treeview）。
+                            let (row_rect, row_resp) = ui.allocate_exact_size(
+                                egui::vec2(ui.available_width(), 96.0),
+                                egui::Sense::click(),
+                            );
+                            if row_resp.clicked() {
+                                state.selected = Some(i);
+                            }
+                            ui.scope_builder(
+                                egui::UiBuilder::new().max_rect(row_rect),
+                                |ui| {
+                                    ui.horizontal(|ui| {
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(96.0, 96.0),
+                                            egui::Sense::hover(),
+                                        );
+                                        match tex {
+                                            Some(t) => {
+                                                ui.painter().image(
+                                                    t.id(),
+                                                    rect,
+                                                    egui::Rect::from_min_max(
+                                                        egui::pos2(0.0, 0.0),
+                                                        egui::pos2(1.0, 1.0),
+                                                    ),
+                                                    egui::Color32::WHITE,
+                                                );
+                                            }
+                                            None => {
+                                                ui.painter().rect_filled(
+                                                    rect,
+                                                    2.0,
+                                                    ui.visuals().faint_bg_color,
+                                                );
+                                            }
+                                        }
+                                        let desc = entry.description(system_now);
+                                        let _ = ui.selectable_label(
+                                            selected,
+                                            egui::RichText::new(desc).monospace(),
+                                        );
+                                        if entry.cache_in_use {
+                                            ui.label(
+                                                egui::RichText::new(
+                                                    "（仍可能被另一个实例占用）",
+                                                )
+                                                .weak()
+                                                .small(),
+                                            );
+                                        }
+                                    });
+                                },
+                            );
+                            if selected {
+                                ui.painter().rect_stroke(
+                                    row_rect,
+                                    2.0,
+                                    egui::Stroke::new(
+                                        1.0,
+                                        ui.visuals().selection.stroke.color,
+                                    ),
+                                    egui::StrokeKind::Inside,
                                 );
-                                match tex {
-                                    Some(t) => {
-                                        ui.painter().image(
-                                            t.id(),
-                                            rect,
-                                            egui::Rect::from_min_max(
-                                                egui::pos2(0.0, 0.0),
-                                                egui::pos2(1.0, 1.0),
-                                            ),
-                                            egui::Color32::WHITE,
-                                        );
-                                    }
-                                    None => {
-                                        ui.painter().rect_filled(
-                                            rect,
-                                            2.0,
-                                            ui.visuals().faint_bg_color,
-                                        );
-                                    }
-                                }
-                                let desc = entry.description(system_now);
-                                if ui
-                                    .selectable_label(
-                                        selected,
-                                        egui::RichText::new(desc).monospace(),
-                                    )
-                                    .clicked()
-                                {
-                                    state.selected = Some(i);
-                                }
-                                if entry.cache_in_use {
-                                    ui.label(
-                                        egui::RichText::new("（仍可能被另一个实例占用）")
-                                            .weak()
-                                            .small(),
-                                    );
-                                }
-                            });
+                            }
                             ui.separator();
                         }
                     });
