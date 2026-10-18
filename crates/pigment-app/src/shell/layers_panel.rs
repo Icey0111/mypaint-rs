@@ -576,7 +576,7 @@ fn layer_drop_path(row_path: &[usize], pos_y: f32, rect: egui::Rect) -> Vec<usiz
     ///    绘画层 `mypaint-layer-painting-symbolic`，组 `mypaint-layer-group-symbolic`。
     fn layer_preview_cell(&mut self, ui: &mut egui::Ui, path: &[usize], row: &RowData) {
         let size = egui::vec2(PREVIEW_PX as f32, PREVIEW_PX as f32);
-        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let ctx = ui.ctx().clone();
 
         if let Some(tex) = self.layer_thumbnail(&ctx, path, row.id) {
