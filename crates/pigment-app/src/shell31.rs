@@ -119,6 +119,13 @@ fn mouse_button(button: &ButtonSource) -> Option<PointerButton> {
     }
 }
 
+/// winit 的 preedit 范围是 UTF-8 字节索引 → egui 的字符索引。
+fn preedit_range(text: &str, start: usize, end: usize) -> Option<std::ops::Range<usize>> {
+    let start_chars = text.get(..start)?.chars().count();
+    let middle_chars = text.get(start..end)?.chars().count();
+    Some(start_chars..start_chars + middle_chars)
+}
+
 /// 显式装一个 CJK 字体（egui 自带字体不含汉字）。系统字体回退是异步的，
 /// 裸外壳不能依赖它第一帧就绪。
 fn install_cjk_font(ctx: &egui::Context) {
@@ -158,6 +165,10 @@ impl Shell {
             }
         };
         let size = window.surface_size();
+        // winit 0.31 的新接口是 `request_ime_update`；这里沿用旧入口，
+        // 它内部会转成同一个 ImeRequest::Enable。
+        #[allow(deprecated)]
+        window.set_ime_allowed(true);
         let instance = wgpu::Instance::new(
             wgpu::InstanceDescriptor::new_without_display_handle(),
         );
@@ -412,6 +423,33 @@ impl ApplicationHandler for Shell {
             WindowEvent::RedrawRequested => {
                 render_frame(st);
             }
+            WindowEvent::Ime(ime) => {
+                // 照 egui-winit 0.37 的映射（`:770-828`）：winit 的 preedit 范围是
+                // 字节索引，egui 要字符索引。
+                match ime {
+                    winit::event::Ime::Preedit(text, range) => {
+                        let active_range_chars = range.and_then(|(start, end)| {
+                            preedit_range(&text, start, end)
+                        });
+                        st.raw
+                            .events
+                            .push(Event::Ime(egui::ImeEvent::Preedit {
+                                text,
+                                active_range_chars,
+                            }));
+                    }
+                    winit::event::Ime::Commit(text) => {
+                        st.raw
+                            .events
+                            .push(Event::Ime(egui::ImeEvent::Commit(text)));
+                    }
+                    winit::event::Ime::Enabled
+                    | winit::event::Ime::Disabled
+                    | winit::event::Ime::DeleteSurrounding { .. } => {}
+                    _ => {}
+                }
+                st.window.request_redraw();
+            }
             _ => {}
         }
     }
@@ -528,4 +566,18 @@ fn render_frame(st: &mut State) {
         st.renderer.free_texture(id);
     }
     textures.clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preedit_range_converts_utf8_bytes_to_chars() {
+        // "你a"：你 3 字节，a 1 字节
+        assert_eq!(preedit_range("你a", 0, 3), Some(0..1));
+        assert_eq!(preedit_range("你a", 3, 4), Some(1..2));
+        // 非法边界回退 None（winit 偶尔会给越界范围）
+        assert_eq!(preedit_range("你a", 2, 4), None);
+    }
 }
