@@ -497,6 +497,13 @@ pub struct PigmentApp {
     /// 图层闪烁的结束时间（`State.autoleave_timeout = 0.800`，
     /// `gui/stategroup.py:59`）；`None` = 不在闪烁。
     pub(crate) blink_until: Option<f64>,
+    /// 待确认的笔刷包（`readme.txt` 存在时先展示再导入）。
+    pub(crate) brushpack_pending: Option<(
+        std::path::PathBuf,
+        pigment_engine::brushpack::Brushpack,
+    )>,
+    /// 笔刷包 readme 对话框：`(文件名, 正文)`。
+    pub(crate) brushpack_readme: Option<(String, String)>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -677,6 +684,8 @@ impl ModePrefs {
         PaletteOpen,
         /// 调色板 `.gpl` 导出（`palette.py:198-222`）
         PaletteSaveAs,
+        /// 笔刷包 `.zip` 导入（`brushmanager.py:647-812`）
+        BrushpackOpen,
     }
 
     pub(crate) struct FilePrompt {
@@ -724,6 +733,7 @@ impl ModePrefs {
                 FileAction::ScratchpadSaveAs => "暂存页另存为（Export Scratchpad As…）",
                 FileAction::PaletteOpen => "导入调色板 .gpl",
                 FileAction::PaletteSaveAs => "导出调色板 .gpl",
+                FileAction::BrushpackOpen => "导入笔刷包（.zip）",
             }
         }
     }
@@ -755,6 +765,7 @@ fn action_extension(action: FileAction, doc_ext: &'static str) -> &'static str {
     match action {
         FileAction::Export => ".png",
         FileAction::PaletteOpen | FileAction::PaletteSaveAs => ".gpl",
+        FileAction::BrushpackOpen => ".zip",
         _ => doc_ext,
     }
 }
@@ -986,6 +997,8 @@ impl PigmentApp {
             file_warning: None,
             skip_file_warning_once: false,
             blink_until: None,
+            brushpack_pending: None,
+            brushpack_readme: None,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -1676,6 +1689,92 @@ impl PigmentApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
     }
 
+    // ---- 笔刷包导入（`brushmanager.py:647-812`）----
+
+    /// 读取笔刷包；有 readme 先弹确认，否则直接安装。
+    pub(crate) fn start_brushpack_import(&mut self, path: &std::path::Path, now: f64) {
+        match pigment_engine::brushpack::read_brushpack(path) {
+            Ok(pack) => {
+                if let Some(readme) = pack.readme.clone().filter(|r| !r.trim().is_empty()) {
+                    self.brushpack_pending = Some((path.to_path_buf(), pack));
+                    self.brushpack_readme = Some((
+                        path.file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                        readme,
+                    ));
+                } else {
+                    self.install_brushpack(path, pack, now);
+                }
+            }
+            Err(e) => self.set_status(format!("笔刷包导入失败：{e}"), now),
+        }
+    }
+
+    fn install_brushpack(
+        &mut self,
+        _path: &std::path::Path,
+        pack: pigment_engine::brushpack::Brushpack,
+        now: f64,
+    ) {
+        match self.brushes.import_pack(&pack) {
+            Ok(report) => {
+                if self.brushes.selected >= self.brushes.library.entries.len() {
+                    self.brushes.selected = 0;
+                }
+                let mut msg = format!(
+                    "已导入 {} 支笔刷（{} 组）",
+                    report.brushes.len(),
+                    report.groups.len()
+                );
+                if !report.renames.is_empty() {
+                    msg.push_str(&format!("，{} 项因重名已改名", report.renames.len()));
+                }
+                self.set_status(msg, now);
+            }
+            Err(e) => self.set_status(format!("笔刷包导入失败：{e}"), now),
+        }
+    }
+
+    /// 笔刷包 readme 确认框（`dialogs.confirm_brushpack_import`）。
+    pub(crate) fn brushpack_readme_dialog(&mut self, ctx: &egui::Context, now: f64) {
+        let Some((name, readme)) = self.brushpack_readme.take() else {
+            return;
+        };
+        let mut import = false;
+        let mut cancel = false;
+        egui::Modal::new(egui::Id::unique("pigment_brushpack_readme")).show(ctx, |ui| {
+            ui.set_width(520.0);
+            ui.heading(format!("Import brush pack “{name}”?"));
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                ui.label(egui::RichText::new(&readme).monospace());
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    cancel = true;
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Import").clicked() {
+                        import = true;
+                    }
+                });
+            });
+        });
+        if cancel {
+            self.brushpack_pending = None;
+            self.set_status("已取消笔刷包导入".to_string(), now);
+            return;
+        }
+        if import {
+            if let Some((path, pack)) = self.brushpack_pending.take() {
+                self.install_brushpack(&path, pack, now);
+            }
+            return;
+        }
+        self.brushpack_readme = Some((name, readme));
+    }
+
     /// 套用 egui 主题 —— 对应 GTK 的 `ui.dark_theme_variant`    /// （`preferenceswindow.py:302-304` 只写偏好，GTK 换肤要重启；
     /// egui 的 `Visuals` 可以立即换，属技术栈适配）。
     pub(crate) fn apply_appearance(&mut self, ctx: &egui::Context) {
@@ -2236,6 +2335,16 @@ impl PigmentApp {
                     Err(e) => self.set_status(format!("暂存页保存失败：{e}"), now),
                 }
             }
+            FileAction::BrushpackOpen => {
+                if !path.is_file() {
+                    self.file_prompt = Some(FilePrompt {
+                        error: Some(format!("文件不存在：{}", path.display())),
+                        ..prompt
+                    });
+                    return;
+                }
+                self.start_brushpack_import(&path, now);
+            }
             FileAction::PaletteOpen => {
                 if !path.is_file() {
                     self.file_prompt = Some(FilePrompt {
@@ -2336,6 +2445,7 @@ impl PigmentApp {
                 FileAction::ScratchpadSaveAs => "暂存页另存的路径（不带后缀时按 .ora 处理）：",
                 FileAction::PaletteOpen => "要导入的 GIMP 调色板路径（.gpl）：",
                 FileAction::PaletteSaveAs => "导出调色板的路径（不带后缀时按 .gpl 处理）：",
+                FileAction::BrushpackOpen => "要导入的笔刷包路径（.zip）：",
             });
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut prompt.path)
@@ -3524,6 +3634,8 @@ fn layout_ink_buttons(
             "RecoverAutosavedBackup" => true,
             // Scrap 三个动作（resources.xml:145-170）恒可用
             "SaveScrap" | "PrevScrap" | "NextScrap" => true,
+            // 笔刷包导入/下载（resources.xml:1212-1224）
+            "ImportBrushPack" | "DownloadBrushPack" => true,
             // ---- 撤销栈（动态 sensitivity）----
             "Undo" => self.doc.command_stack.undo_len() > 0,
             "Redo" => self.doc.command_stack.redo_len() > 0,
@@ -3531,6 +3643,10 @@ fn layout_ink_buttons(
             // 尺寸/不透明度四个动作改的是**笔刷设置**（`document.py:1571-1590`），
             // 颜色六个动作改的是**绘画颜色**（`document.py:1592-1644`）。
             "Bigger" | "Smaller" | "MoreOpaque" | "LessOpaque" => true,
+            // `BrushReload`（resources.xml:358-363，反斜杠）
+            "BrushReload" => true,
+            // 图层可见/锁定切换（resources.xml:649-661）
+            "LayerVisibleToggle" | "LayerLockedToggle" => true,
             // 取色/弹层/子窗口（A.3 收尾）：都有处理器
             "PickContext" | "PickLayer" | "ColorDetailsDialog" | "ColorHistoryPopup"
             | "BrushChooserPopup" | "ColorChooserPopup" | "ColorChooserPopupFastSubset"
@@ -3646,6 +3762,10 @@ fn layout_ink_buttons(
     pub(crate) fn toggle_state(&self, id: &str) -> Option<bool> {
         match id {
             "ShowBackgroundToggle" => Some(self.doc.layers().background_visible()),
+            // `layer_lock_toggle_cb` / `layer_visible_toggle_cb`
+            // （`gui/document.py:1496-1506`）：active = 当前层标志。
+            "LayerVisibleToggle" => Some(self.doc.layers().current().visible),
+            "LayerLockedToggle" => Some(self.doc.layers().current().locked),
             "BackgroundWindow" => Some(self.background_window.open),
             "Fullscreen" => Some(self.fullscreen),
             "BlendModeNormal" => Some(!self.eraser),
@@ -3738,6 +3858,24 @@ fn layout_ink_buttons(
                 // `autorecover_cb`：手动打开恢复对话框
                 self.open_recovery(now);
             }
+            // ---- 笔刷包（`brushmanager.py:647-812` / `:814-900`）----
+            "ImportBrushPack" => {
+                let prompt = FilePrompt::new(FileAction::BrushpackOpen, None, ".zip");
+                self.file_prompt = Some(prompt);
+            }
+            "DownloadBrushPack" => {
+                // `download_brush_packs_cb`：用系统浏览器打开 wiki 页面
+                const URL: &str = "https://github.com/mypaint/mypaint/wiki/Brush-Packages";
+                #[cfg(windows)]
+                let spawned = std::process::Command::new("cmd")
+                    .args(["/C", "start", "", URL])
+                    .spawn();
+                #[cfg(not(windows))]
+                let spawned = std::process::Command::new("xdg-open").arg(URL).spawn();
+                if let Err(e) = spawned {
+                    self.set_status(format!("打开笔刷包页面失败：{e}"), now);
+                }
+            }
             // ---- Scrap（`filehandling.py:1339-1567`）----
             "SaveScrap" => {
                 self.save_scrap(now);
@@ -3761,6 +3899,11 @@ fn layout_ink_buttons(
             // （`gui/application.py:563-570`），所以半径夹在 [-2, 6]、不透明度夹在
             // [0, 2]。步长/系数与夹取规则都在引擎里（`ColorManager` 的同族
             // `BrushStep`），这里只负责把结果写回笔刷的两个落点。
+            "BrushReload" => {
+                // `brush_reload_cb`（`gui/document.py:1668-1670`）
+                self.reload_selected_brush();
+                ctx.request_repaint();
+            }
             "Bigger" | "Smaller" | "MoreOpaque" | "LessOpaque" => {
                 let step = BrushStep::from_action_name(id)
                     .expect("这四个动作都在 BrushStep 里");
@@ -3916,6 +4059,19 @@ fn layout_ink_buttons(
             "ShowBackgroundToggle" => {
                 let v = !self.doc.layers().background_visible();
                 self.doc.layers_mut().set_background_visible(v);
+                ctx.request_repaint();
+            }
+            // `LayerLockedToggle` / `LayerVisibleToggle`（`document.py:1496-1506`）
+            "LayerLockedToggle" => {
+                let path = self.doc.current_path().to_vec();
+                let locked = self.doc.layers().current().locked;
+                self.doc.set_layer_locked(&path, !locked);
+                ctx.request_repaint();
+            }
+            "LayerVisibleToggle" => {
+                let path = self.doc.current_path().to_vec();
+                let visible = self.doc.layers().current().visible;
+                self.doc.set_layer_visible(&path, !visible);
                 ctx.request_repaint();
             }
             // ---- 对称开关（B3-5：`symmetry_active_toggled_cb`，
@@ -4445,6 +4601,7 @@ impl eframe::App for PigmentApp {
         self.recovery_window(&ctx);
         self.confirm_dialog(&ctx, now);
         self.file_warning_dialog(&ctx, now);
+        self.brushpack_readme_dialog(&ctx, now);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();

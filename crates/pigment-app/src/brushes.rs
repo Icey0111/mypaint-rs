@@ -282,6 +282,38 @@ impl BrushPanel {
             .map_err(|e| e.to_string())
     }
 
+    /// 把已解析/校验过的笔刷包落盘并重新入库
+    /// （`BrushManager.import_brushpack`，`brushmanager.py:647-812` 的 app 侧）。
+    pub fn import_pack(
+        &mut self,
+        pack: &pigment_engine::brushpack::Brushpack,
+    ) -> Result<pigment_engine::brushpack::ImportReport, String> {
+        let existing_keys: std::collections::HashSet<String> =
+            self.library.entries.iter().map(|e| e.key.clone()).collect();
+        let existing_groups: std::collections::HashSet<String> =
+            self.library.groups.iter().map(|g| g.id.clone()).collect();
+        let user_dir = self.library.user_brush_dir();
+        let report = pigment_engine::brushpack::install_brushpack(
+            pack,
+            &user_dir,
+            &existing_keys,
+            &existing_groups,
+        )
+        .map_err(|e| format!("写入笔刷失败：{e}"))?;
+        self.library.scan_dir(&user_dir);
+        let _ = self.library.save_order_conf();
+        self.after_brushpack_import();
+        Ok(report)
+    }
+
+    /// 笔刷包导入后的缓存刷新（缩略图/预览/可见列表）。
+    pub fn after_brushpack_import(&mut self) {
+        self.thumbnails.clear();
+        self.header_icons.clear();
+        self.previews.clear();
+        self.rebuild_visible();
+    }
+
     /// 记录一笔用过的笔刷 —— `BrushManager._input_stroke_ended_cb`
     /// （`brushmanager.py:1064-1100`）。
     ///
@@ -1466,5 +1498,41 @@ mod tests {
                 assert!(!lib.group_members(id).is_empty(), "{id} 不应为空组");
             }
         }
+    }
+
+    /// 笔刷包安装后能被 `scan_dir` 扫进库并挂到新分组
+    /// （`import_brushpack` 的 app 侧链路）。
+    #[test]
+    fn installed_brushpack_is_scanned_into_the_library() {
+        use std::collections::HashSet;
+        let dir = std::env::temp_dir().join(format!(
+            "pigment-app-brushpack-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("user")).unwrap();
+        let zip = dir.join("pack.zip");
+        let mut z = pigment_engine::zip::ZipWriter::create(&zip).unwrap();
+        z.add_stored("order.conf", b"Group: TestPack\nTestPack/pencil\n")
+            .unwrap();
+        z.add_stored("TestPack/pencil.myb", br#"{"version":3,"settings":{}}"#)
+            .unwrap();
+        z.add_stored("TestPack/pencil_prev.png", b"png").unwrap();
+        z.finish().unwrap();
+
+        let pack = pigment_engine::brushpack::read_brushpack(&zip).unwrap();
+        let user = dir.join("user");
+        pigment_engine::brushpack::install_brushpack(
+            &pack,
+            &user,
+            &HashSet::new(),
+            &HashSet::new(),
+        )
+        .unwrap();
+        let mut lib = pigment_engine::brushlib::BrushLibrary::embedded();
+        lib.scan_dir(&user);
+        assert!(lib.find("TestPack/pencil").is_some());
+        assert!(lib.groups.iter().any(|g| g.id == "TestPack"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

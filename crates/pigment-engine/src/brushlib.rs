@@ -815,7 +815,7 @@ impl BrushLibrary {
     // ---- 落盘：`.myb` + `_prev.png`（`ManagedBrush.save`，brushmanager.py:1460-1484）----
 
     /// 用户可写笔刷目录（`user_brushpath`）：优先取 order.conf 所在目录。
-    fn user_brush_dir(&self) -> PathBuf {
+    pub fn user_brush_dir(&self) -> PathBuf {
         self.order_conf_path
             .as_ref()
             .and_then(|p| p.parent())

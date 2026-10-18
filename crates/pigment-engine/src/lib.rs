@@ -8,6 +8,7 @@
 pub mod accelmap;
 pub mod autosave;
 pub mod brushlib;
+pub mod brushpack;
 pub mod color;
 pub mod command;
 pub mod compat;
