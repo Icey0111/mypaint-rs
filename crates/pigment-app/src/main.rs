@@ -19,8 +19,11 @@ mod thumb;
 mod view;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Plan A 外壳（winit 0.31 + egui-wgpu）；默认仍是 eframe。
-    if std::env::args().any(|a| a == "--shell31") {
+    // 默认走 Plan A 外壳（winit 0.31 + egui-wgpu），它支持数位板压感/倾斜/
+    // 橡皮端与 IME；`--eframe` 保留旧的 eframe 路径做回退/对照。
+    let args: Vec<String> = std::env::args().collect();
+    let eframe_fallback = args.iter().any(|a| a == "--eframe");
+    if !eframe_fallback {
         shell31::run()?;
         return Ok(());
     }
