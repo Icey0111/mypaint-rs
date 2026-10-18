@@ -19,6 +19,7 @@
 use std::sync::{Arc, Mutex};
 
 use eframe::egui;
+use pigment_engine::color::UIColor;
 
 use pigment_engine::hokusai::tile::TILE_SIZE;
 use pigment_engine::hokusai::{Brush, BrushSetting};
@@ -1704,6 +1705,30 @@ impl PigmentApp {
                 state,
                 overlay_style,
             );
+        }
+
+        // ---- 取色预览方块（`ColorPickPreviewOverlay`，`colorpicker.py:253-364`）----
+        //
+        // 只在取色模式的按键/快捷键按住期间显示（源码刻意避免闪烁）。
+        let pick_mode = self
+            .modes
+            .top()
+            .action_name()
+            .map(|n| n.starts_with("ColorPickMode") || n.starts_with("FlipColorPickMode"))
+            .unwrap_or(false);
+        if pick_mode && ui.input(|i| i.pointer.primary_down()) {
+            // 拖拽时 `response.hover_pos()` 可能为 None（指针被模式 grab），
+            // 用输入层的最近位置；仍限定在画布内。
+            let pos = ui.input(|i| i.pointer.interact_pos());
+            if let Some(pos) = pos.filter(|p| rect.contains(*p)) {
+                let rgb = self.color_manager.get_color().get_rgb();
+                crate::shell::overlays::paint_pick_preview(
+                    &ui.painter().with_clip_rect(rect),
+                    rect,
+                    pos,
+                    crate::shell::color_panel::rgb32(rgb),
+                );
+            }
         }
 
         // ---- 笔刷光标（`gui/cursor.py`）----

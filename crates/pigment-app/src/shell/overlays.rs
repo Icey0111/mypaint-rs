@@ -870,6 +870,62 @@ fn arc_points(center: egui::Pos2, r: f32, a1: f32, a2: f32) -> Vec<egui::Pos2> {
         .collect()
 }
 
+/// 取色预览方块的几何 —— `ColorPickPreviewOverlay._get_area()`
+/// （`gui/colorpicker.py:305-345`）。
+///
+/// 70×70、圆角 10、描边 3；根据指针在画布四条边的位置选 N/W/E/S 方向偏移，
+/// 指针不在画布内时返回 `None`。
+pub(crate) fn pick_preview_area(canvas: egui::Rect, pointer: egui::Pos2) -> Option<egui::Rect> {
+    const SIZE: f32 = 70.0;
+    let mut x = pointer.x - canvas.left();
+    let mut y = pointer.y - canvas.top();
+    if x < 0.0 || y < 0.0 || x > canvas.width() || y > canvas.height() {
+        return None;
+    }
+    let offset = SIZE / 2.0;
+    if y + SIZE > canvas.height() - offset {
+        x -= offset;
+        y -= SIZE + offset;
+    } else if x < offset {
+        x += offset;
+        y -= offset;
+    } else if x > canvas.width() - offset {
+        x -= SIZE + offset;
+        y -= offset;
+    } else {
+        x -= offset;
+        y += offset;
+    }
+    Some(egui::Rect::from_min_size(
+        canvas.min + egui::vec2(x, y),
+        egui::vec2(SIZE, SIZE),
+    ))
+}
+
+/// 画取色预览方块 —— `ColorPickPreviewOverlay.paint()`（`colorpicker.py:347-364`）。
+pub(crate) fn paint_pick_preview(
+    painter: &egui::Painter,
+    canvas: egui::Rect,
+    pointer: egui::Pos2,
+    color: egui::Color32,
+) -> bool {
+    const OUTLINE: f32 = 3.0;
+    let Some(area) = pick_preview_area(canvas, pointer) else {
+        return false;
+    };
+    let painter = painter.with_clip_rect(canvas);
+    let inset = OUTLINE * 0.5 + 1.5;
+    let fill = area.shrink(inset);
+    painter.rect_filled(fill, 10.0, color);
+    painter.rect_stroke(
+        fill,
+        10.0,
+        egui::Stroke::new(OUTLINE, egui::Color32::BLACK),
+        egui::StrokeKind::Middle,
+    );
+    true
+}
+
 /// 画笔刷光标 —— `gui/cursor.py:get_brush_cursor()` / `draw_brush_cursor()`。
 ///
 /// 源码把光标渲染成一张 pixbuf 交给 `Gdk.Window.set_cursor()`；egui 没有
@@ -963,6 +1019,27 @@ pub(crate) fn cursor_is_crosshair(prefs: &Prefs) -> bool {
 mod tests {
     use super::*;
     use pigment_engine::Document;
+
+    #[test]
+    fn pick_preview_offsets_to_the_inside_of_the_canvas() {
+        let canvas = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(1000.0, 800.0));
+        // 默认：向下偏移（N 方向在源码里是 y += offset）
+        let a = pick_preview_area(canvas, egui::pos2(510.0, 420.0)).unwrap();
+        assert_eq!(a.min, egui::pos2(10.0 + 465.0, 20.0 + 435.0));
+        assert_eq!(a.size(), egui::vec2(70.0, 70.0));
+        // 底边：向上翻
+        let b = pick_preview_area(canvas, egui::pos2(510.0, 800.0)).unwrap();
+        assert_eq!(b.min.y, 20.0 + 780.0 - 70.0 - 35.0);
+        // 左边：向右翻
+        let c = pick_preview_area(canvas, egui::pos2(20.0, 420.0)).unwrap();
+        assert_eq!(c.min.x, 10.0 + 10.0 + 35.0);
+        // 右边：向左翻
+        let d = pick_preview_area(canvas, egui::pos2(1000.0, 420.0)).unwrap();
+        assert_eq!(d.min.x, 10.0 + 990.0 - 70.0 - 35.0);
+        // 画布外：不画
+        assert!(pick_preview_area(canvas, egui::pos2(5.0, 420.0)).is_none());
+        assert!(pick_preview_area(canvas, egui::pos2(510.0, 900.0)).is_none());
+    }
 
     /// 一个 800×600 的视口，模型坐标与画布局部坐标 1:1（zoom=1、offset=0）。
     fn unit_view() -> (egui::Rect, View) {
