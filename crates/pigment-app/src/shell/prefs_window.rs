@@ -1556,8 +1556,9 @@ impl PigmentApp {
         }
         ui.add_space(4.0);
         // 当前数位板设备的单独覆盖（winit DeviceId 的原始 i64）。
-        if let Some(id) = self.tablet.device_id {
+        if let Some(id) = self.tablet.device_id.clone() {
             let key = format!("input.device_usage.{id}");
+            let label = crate::device::device_label(&id);
             let before_specific = self
                 .prefs
                 .get(&key)
@@ -1566,7 +1567,7 @@ impl PigmentApp {
             let mut specific = before_specific;
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_min_size(egui::vec2(450.0, 80.0));
-                ui.heading(format!("Device #{id}"));
+                ui.heading(format!("Device {label}"));
                 ui.label(
                     "Per-device override for the current tablet tool. \
                      Unset uses the global policy above.",

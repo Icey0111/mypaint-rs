@@ -380,7 +380,7 @@ pub(crate) struct FileWarningState {
 ///
 /// 压感/倾斜是**设备坐标**归一化后的 0..1 / -1..1（winit
 /// `TabletToolData::force.normalized`、`tilt` 的角度换算由外壳做）。
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TabletInput {
     /// 当前事件来自数位板工具（笔/橡皮）而非鼠标。
     pub(crate) active: bool,
@@ -391,7 +391,7 @@ pub(crate) struct TabletInput {
     /// 笔尾橡皮端。
     pub(crate) eraser: bool,
     /// winit `DeviceId::into_raw()`；用于逐设备策略/切换检测。
-    pub(crate) device_id: Option<i64>,
+    pub(crate) device_id: Option<String>,
 }
 
 impl Default for TabletInput {
@@ -417,7 +417,7 @@ impl TabletInput {
     }
 
     /// 记录当前数位板设备 id（winit 0.31 的 `DeviceId` 是不透明 i64）。
-    pub(crate) fn set_device(&mut self, device_id: Option<i64>) {
+    pub(crate) fn set_device(&mut self, device_id: Option<String>) {
         self.device_id = device_id;
     }
 
@@ -589,7 +589,7 @@ pub struct PigmentApp {
     /// 笔尾橡皮生效前用户的 `eraser` 开关（`None` = 笔尾未按下）。
     pub(crate) tablet_eraser_prev: Option<bool>,
     /// 上一帧的输入设备类别（设备切换时重置笔刷状态）。
-    pub(crate) last_input_device: Option<(u8, Option<i64>)>,
+    pub(crate) last_input_device: Option<(u8, Option<String>)>,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
     /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
@@ -2040,7 +2040,7 @@ impl PigmentApp {
 
     /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
     pub(crate) fn tablet_usage(&self) -> crate::device::TabletUsage {
-        let specific = self.tablet.device_id.and_then(|id| {
+        let specific = self.tablet.device_id.as_ref().and_then(|id| {
             self.prefs
                 .get(&format!("input.device_usage.{id}"))
                 .and_then(|v| v.as_str())
@@ -2061,9 +2061,9 @@ impl PigmentApp {
     pub(crate) fn note_input_device(&mut self) {
         let key = (
             input_device_class(self.tablet.active, self.tablet.is_eraser()),
-            self.tablet.device_id,
+            self.tablet.device_id.clone(),
         );
-        if self.last_input_device != Some(key) {
+        if self.last_input_device.as_ref() != Some(&key) {
             if self.last_input_device.is_some() {
                 self.stroke_state = pigment_engine::hokusai::BrushState::default();
             }

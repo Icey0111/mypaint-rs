@@ -55,6 +55,11 @@ impl TabletUsage {
     }
 }
 
+/// 设备 id 的短标签：Windows HID 路径取最后一段，其它原样。
+pub(crate) fn device_label(id: &str) -> String {
+    id.rsplit('#').next().unwrap_or(id).to_string()
+}
+
 /// 逐设备覆盖优先，缺失时回落到全局策略。
 pub(crate) fn resolve_usage(specific: Option<&str>, global: &str) -> TabletUsage {
     specific
@@ -74,6 +79,15 @@ mod tests {
         assert_eq!(TabletUsage::from_str("navonly"), TabletUsage::NavOnly);
         assert_eq!(TabletUsage::from_str("garbage"), TabletUsage::Any);
         assert_eq!(TabletUsage::default(), TabletUsage::Any);
+    }
+
+    #[test]
+    fn device_labels_shorten_windows_paths() {
+        assert_eq!(
+            device_label(r"\\?\HID#VID_1234&PID_5678#abc"),
+            "abc"
+        );
+        assert_eq!(device_label("#42"), "42");
     }
 
     #[test]

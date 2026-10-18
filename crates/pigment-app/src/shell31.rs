@@ -209,6 +209,24 @@ fn map_cursor(icon: egui::CursorIcon) -> winit::cursor::CursorIcon {
     }
 }
 
+/// winit 设备 id → 稳定的字符串键。
+///
+/// Windows 上优先用 `DeviceIdExtWindows::persistent_identifier()`（HID 接口路径，
+/// 跨会话稳定）；其它平台/失败时回退到 `DeviceId` 原始整数。
+fn device_key(id: Option<winit::event::DeviceId>) -> Option<String> {
+    let id = id?;
+    #[cfg(windows)]
+    {
+        use winit::platform::windows::DeviceIdExtWindows as _;
+        if let Some(p) = id.persistent_identifier() {
+            if !p.is_empty() {
+                return Some(p);
+            }
+        }
+    }
+    Some(format!("#{}", id.into_raw()))
+}
+
 /// 剪贴板快捷键（Ctrl+C/X/V）的字符；其他键返回 None。
 fn clipboard_shortcut(key: &WinitKey) -> Option<char> {
     match key {
@@ -429,7 +447,7 @@ impl ApplicationHandler for Shell {
                 if let PointerSource::TabletTool { kind, data } = source {
                     st.app
                         .tablet
-                        .set_device(device_id.map(|d| d.into_raw()));
+                        .set_device(device_key(device_id));
                     let pressure =
                         data.force.map(|f| f.normalized(None) as f32).unwrap_or(1.0);
                     let tilt = data
@@ -469,7 +487,7 @@ impl ApplicationHandler for Shell {
                     if let ButtonSource::TabletTool { kind, data, .. } = button {
                         st.app
                             .tablet
-                            .set_device(device_id.map(|d| d.into_raw()));
+                            .set_device(device_key(device_id));
                         let pressure =
                             data.force.map(|f| f.normalized(None) as f32).unwrap_or(1.0);
                         let tilt = data
