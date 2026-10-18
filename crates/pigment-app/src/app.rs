@@ -1077,10 +1077,19 @@ impl PigmentApp {
                     panels: vec![crate::shell::dock::PanelId::BrushGroups],
                     active: 0,
                 }],
-                right: vec![crate::shell::dock::Group {
-                    panels: vec![crate::shell::dock::PanelId::BrushEditor],
-                    active: 0,
-                }],
+                right: vec![
+                    crate::shell::dock::Group {
+                        panels: vec![crate::shell::dock::PanelId::BrushEditor],
+                        active: 0,
+                    },
+                    // 颜色器（`ComponentSlidersTool`）：源码默认停靠布局里
+                    // 右侧同时有笔刷设置与颜色页签；没有这一组时 HCY/HSV/
+                    // 调色板页签在界面上不可达。
+                    crate::shell::dock::Group {
+                        panels: vec![crate::shell::dock::PanelId::ComponentSlidersTool],
+                        active: 0,
+                    },
+                ],
                 ..Default::default()
             },
             // 默认打开分量滑条页（B4-3 先落地的那一页）
