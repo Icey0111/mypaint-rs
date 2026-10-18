@@ -397,6 +397,7 @@ impl DockState {
         };
         obj.insert("left_groups".into(), serde_json::json!(groups(&self.left)));
         obj.insert("right_groups".into(), serde_json::json!(groups(&self.right)));
+        obj.insert("floating_groups".into(), serde_json::json!(groups(&self.floating)));
         obj.insert("left_heights".into(), serde_json::json!(self.left_heights));
         obj.insert("right_heights".into(), serde_json::json!(self.right_heights));
     }
@@ -422,6 +423,11 @@ impl DockState {
         };
         let left = read_groups("left_groups")?;
         let right = read_groups("right_groups")?;
+        let floating = if obj.contains_key("floating_groups") {
+            read_groups("floating_groups")?
+        } else {
+            Vec::new()
+        };
         let heights = |key: &str| -> Vec<Option<f32>> {
             obj.get(key)
                 .and_then(|v| v.as_array())
@@ -431,7 +437,7 @@ impl DockState {
         let mut d = DockState {
             left,
             right,
-            floating: Vec::new(),
+            floating,
             left_heights: heights("left_heights"),
             right_heights: heights("right_heights"),
         };
@@ -706,7 +712,7 @@ mod tests {
                     active: 0,
                 },
             ],
-            floating: Vec::new(),
+            floating: vec![Group { panels: vec![PanelId::HistoryPanel], active: 0 }],
             left_heights: vec![Some(120.0)],
             right_heights: vec![Some(300.0), None],
         };
@@ -718,7 +724,7 @@ mod tests {
         assert_eq!(back.right, d.right);
         assert_eq!(back.left_heights, d.left_heights);
         assert_eq!(back.right_heights, d.right_heights);
-        assert!(back.floating.is_empty());
+        assert_eq!(back.floating, d.floating);
     }
 
     #[test]
