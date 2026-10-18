@@ -6,6 +6,7 @@
 //! 文档 I/O（.ora / .png，lib/document.py 的 save/load）、tooth 纹理沉积等。
 
 pub mod accelmap;
+pub mod autosave;
 pub mod brushlib;
 pub mod color;
 pub mod command;

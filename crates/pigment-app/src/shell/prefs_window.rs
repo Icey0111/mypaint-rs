@@ -365,12 +365,8 @@ const R_DEVICES: &str = "输入设备子系统（gui/device.py 的 DeviceSetting
 /// `saving.scrap_prefix`
 const R_SCRAP_PREFIX: &str = "碎片（scrap）库与文件浏览器未移植（filehandling.py:1420-1451）；\
                               暂存区目录走 get_scratchpad_prefix（:1431-1438），与本键无关";
-/// `document.autosave_backups` / `document.autosave_interval`
-const R_AUTOSAVE: &str = "自动备份子系统（lib/document.py 的 autosave + gui/autorecover.py）未移植";
 /// `display.colorspace`
 const R_COLORSPACE: &str = "色彩管理（lib/eotf.py + PNG/ORA 的色彩空间标签读写）未移植";
-/// `view.default_zoom`
-const R_ZOOM: &str = "视图复位缩放未接线（scratch.rs:180-189 的记账：源码在 document.py:339-340 读它）";
 /// `view.real_alpha_checks`
 const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未接 \
                              tileddrawwidget.py:1078-1081 的 _draw_real_alpha_checks";
@@ -378,14 +374,6 @@ const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未
 const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
 /// `ui.toolbar_icon_size`
 const R_ICON_SIZE: &str = "图标在构建期按 24×24 栅格化（pigment-app/build.rs），运行期不再按该键换尺寸";
-/// `cursor.freehand.style`
-const R_CURSOR_STYLE: &str = "笔刷光标绘制（gui/cursor.py）未移植，画布上不画任何笔刷光标";
-/// `cursor.dynamic_crosshair` / `cursor.dynamic_crosshair_threshold`
-const R_CROSSHAIR: &str = "笔刷光标绘制（gui/cursor.py 的十字线随半径淡出）未移植";
-/// `ui.dark_theme_variant`
-const R_DARK: &str = "主题变体未接（egui 的 Visuals 与 GTK 主题不是一套，换肤是另一件事）";
-/// `ui.support_smooth_scrolling`
-const R_SMOOTH: &str = "平滑滚动事件的处理（tileddrawwidget 的 scroll 事件分类）未移植";
 /// `ui.blink_layers`
 const R_BLINK: &str = "图层闪烁提示（layerswindow.py 的 blink）未移植";
 /// `default_compatibility_mode` / `compability_settings` /
@@ -527,14 +515,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
         "glade:691-706",
     ),
     // `autosave_backups_switch`（glade:743-759）；写回 preferenceswindow.py:391-394。
-    ControlDef::unported(
+    ControlDef::wired(
         4,
         Kind::Switch,
         "autosave_backups_switch",
         "",
         Some("document.autosave_backups"),
         "glade:743-759",
-        R_AUTOSAVE,
     )
     .tip(
         "Backs up work incrementally in the background to MyPaint's disk cache. \
@@ -552,14 +539,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `autosave_interval_adjustment`（glade:6-13：lower=5 upper=300 step=1 page=10
     // value=10）；写回 preferenceswindow.py:396-398；源码只在备份开启时可编辑
     // （`:256` 的 `set_sensitive(autosave)`）。单位文字是 `label37`（glade:726-741）。
-    ControlDef::unported(
+    ControlDef::wired(
         4,
         Kind::Spin,
         "autosave_interval_spinbutton",
         "seconds of inactivity",
         Some("document.autosave_interval"),
         "glade:708-724",
-        R_AUTOSAVE,
     )
     .range(5.0, 300.0)
     .default_num(10.0),
@@ -631,14 +617,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `default_zoom_combobox`（glade:833-854，模型 glade:36-61）；
     // 初值 preferenceswindow.py:165-169（`"%0.2f" % zoom`），写回 `:287-290`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Combo,
         "default_zoom_combobox",
         "",
         Some("view.default_zoom"),
         "glade:833-854",
-        R_ZOOM,
     )
     .default_num(1.0),
     ControlDef::text(
@@ -720,14 +705,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `freehand_cursor_combobox`（glade:1089-1103，模型 glade:62-87）；
     // 初值 preferenceswindow.py:228-231，写回 `:344-380`（同时按预设改
     // `cursor.freehand.*` 六个键）。`cursor.freehand.style` 是软键（`.get(..., "thin")`）。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Combo,
         "freehand_cursor_combobox",
         "",
         Some("cursor.freehand.style"),
         "glade:1089-1103",
-        R_CURSOR_STYLE,
     ),
     // `hide_cursor_while_painting_checkbutton`（glade:1111-1119）；初值
     // preferenceswindow.py:201-204（`.get(key, False)`），写回 `:404-406`。
@@ -743,14 +727,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `show_crosshair_checkbutton`（glade:1131-1138）；初值
     // preferenceswindow.py:102-106（`.get("cursor.dynamic_crosshair", False)`），
     // 写回 `:385-389`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Check,
         "show_crosshair_checkbutton",
         "Show crosshair for small brush cursors",
         Some("cursor.dynamic_crosshair"),
         "glade:1131-1138",
-        R_CROSSHAIR,
     ),
     ControlDef::text(
         5,
@@ -764,14 +747,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // 下界 `1 + p.get("cursor.freehand.min_size", 4) // 2` = 3，上界是 GDK 的最大
     // 光标尺寸 —— 这里没有 GDK，上界取源码的 `Gtk.Adjustment` 语义（不设），
     // 写回 `:382-383`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Spin,
         "dynamic_crosshair_threshold_spinbutton",
         "",
         Some("cursor.dynamic_crosshair_threshold"),
         "glade:1159-1175",
-        R_CROSSHAIR,
     )
     .tip(
         "Lines will be shown when the brush circle radius is smaller than this value.",
@@ -787,14 +769,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     ),
     // `dark_theme_checkbutton`（glade:920-936）；初值 preferenceswindow.py:182-185，
     // 写回 `:302-304`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Check,
         "dark_theme_checkbutton",
         "If available in GTK3 theme (needs restart)",
         Some("ui.dark_theme_variant"),
         "glade:920-936",
-        R_DARK,
     )
     .tip(
         "Use a light-on-dark theme variant, when it's supported by the GTK theme. \
@@ -811,14 +792,13 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
     // `smooth_scrolling_checkbutton`（glade:1060-1081）；初值
     // preferenceswindow.py:187-190（`.get("ui.support_smooth_scrolling", True)` ——
     // 软键，默认表里没有），写回 `:400-402`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Check,
         "smooth_scrolling_checkbutton",
         "When devices send them (needs restart)",
         Some("ui.support_smooth_scrolling"),
         "glade:1060-1081",
-        R_SMOOTH,
     )
     .tip(
         "Smooth scrolling support makes scroll gestures and scrollwheel events from \
@@ -1243,6 +1223,46 @@ pub(crate) fn zoom_id(zoom: f64) -> String {
     format!("{zoom:.2}")
 }
 
+/// 应用一个自由手绘光标预设 —— `preferenceswindow.py:344-380`。
+///
+/// `thin` 是出厂预设：删掉六个键，让读取处回落到默认值；`medium`/`thick`
+/// 写入各自的尺寸与颜色；`crosshair` 只改 `cursor.freehand.style`
+/// （源码的 `if/elif` 没有 crosshair 分支）。
+pub(crate) fn apply_cursor_preset(prefs: &mut Prefs, cname: &str) {
+    const KEYS: [&str; 6] = [
+        "cursor.freehand.min_size",
+        "cursor.freehand.outer_line_width",
+        "cursor.freehand.inner_line_width",
+        "cursor.freehand.inner_line_inset",
+        "cursor.freehand.outer_line_color",
+        "cursor.freehand.inner_line_color",
+    ];
+    match cname {
+        "thin" => {
+            for k in KEYS {
+                prefs.remove(k);
+            }
+        }
+        "medium" => {
+            prefs.set_i64(KEYS[0], 5);
+            prefs.set_f64(KEYS[1], 2.666);
+            prefs.set_f64(KEYS[2], 1.333);
+            prefs.set_i64(KEYS[3], 2);
+            prefs.set_f64_array(KEYS[4], &[0.0, 0.0, 0.0, 1.0]);
+            prefs.set_f64_array(KEYS[5], &[1.0, 1.0, 1.0, 1.0]);
+        }
+        "thick" => {
+            prefs.set_i64(KEYS[0], 7);
+            prefs.set_f64(KEYS[1], 3.75);
+            prefs.set_f64(KEYS[2], 2.25);
+            prefs.set_i64(KEYS[3], 3);
+            prefs.set_f64_array(KEYS[4], &[0.0, 0.0, 0.0, 1.0]);
+            prefs.set_f64_array(KEYS[5], &[1.0, 1.0, 1.0, 1.0]);
+        }
+        _ => {}
+    }
+}
+
 /// 默认表里**没有**、只能从源码读出默认值的键（"软键"）。
 ///
 /// 判定一条控件的键"是否合法"用：键在 `Prefs` 的默认表里，或在
@@ -1509,13 +1529,37 @@ impl PigmentApp {
         ui.add_space(4.0);
     }
 
+    /// 控件在当前设置下是否可编辑。
+    ///
+    /// 照源码的 `set_sensitive` 联动：
+    /// - 自动备份间隔只在"备份开启"时可编辑（`preferenceswindow.py:256`）；
+    /// - `crosshair` 光标预设下动态十字线不可用（`:352-356`）；
+    /// - 阈值滑条只在"圆环光标 + 十字线开启"时可编辑（`:349-356`）。
+    fn control_enabled(&self, c: &ControlDef) -> bool {
+        if !c.wired {
+            return false;
+        }
+        let circle = self.prefs.str_or("cursor.freehand.style", "thin") != "crosshair";
+        match c.id {
+            "autosave_interval_spinbutton" => {
+                self.prefs.bool_or("document.autosave_backups", true)
+            }
+            "show_crosshair_checkbutton" => circle,
+            "dynamic_crosshair_threshold_spinbutton" => {
+                circle && self.prefs.bool_or("cursor.dynamic_crosshair", false)
+            }
+            _ => true,
+        }
+    }
+
     /// 复选框 / 开关一行。
     fn prefs_check_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let key = c.key.unwrap_or_default();
         let mut value = self.prefs.bool_or(key, c.default_bool);
-        let resp = ui.add_enabled(c.wired, egui::Checkbox::new(&mut value, c.label));
-        let resp = attach_tip(resp, c);
-        if c.wired && resp.changed() {
+        let enabled = self.control_enabled(c);
+        let resp = ui.add_enabled(enabled, egui::Checkbox::new(&mut value, c.label));
+        let resp = attach_tip(resp, c, enabled);
+        if enabled && resp.changed() {
             self.prefs.set_bool(key, value);
             self.after_wired_change();
         }
@@ -1524,9 +1568,10 @@ impl PigmentApp {
     /// 单选按钮一行。
     fn prefs_radio_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let selected = self.radio_selected(c);
-        let resp = ui.add_enabled(c.wired, egui::RadioButton::new(selected, c.label));
-        let resp = attach_tip(resp, c);
-        if c.wired && resp.clicked() && !selected {
+        let enabled = self.control_enabled(c);
+        let resp = ui.add_enabled(enabled, egui::RadioButton::new(selected, c.label));
+        let resp = attach_tip(resp, c, enabled);
+        if enabled && resp.clicked() && !selected {
             if let (Some(key), Some(value)) = (c.key, c.value) {
                 if key == pigment_engine::color::PREFS_KEY_WHEEL_TYPE {
                     // 色轮类型走管理器 —— `preferenceswindow.py:326-342` 的三个
@@ -1565,7 +1610,8 @@ impl PigmentApp {
             .map(|o| o.label)
             .unwrap_or(NOT_PORTED);
         let mut chosen: Option<&'static str> = None;
-        let inner = ui.add_enabled_ui(c.wired, |ui| {
+        let enabled = self.control_enabled(c);
+        let inner = ui.add_enabled_ui(enabled, |ui| {
             egui::ComboBox::from_id_salt(c.id)
                 .selected_text(current_label)
                 .width(300.0)
@@ -1580,10 +1626,26 @@ impl PigmentApp {
         // 悬停说明挂在**组合框自身**的响应上：`on_disabled_hover_text` 要求
         // 响应的 `enabled` 为 false（`Tooltip::for_disabled`），而外层 scope 的
         // 响应不保证带这个旗标。
-        attach_tip(inner.inner.response, c);
-        if let (true, Some(value)) = (c.wired, chosen) {
+        attach_tip(inner.inner.response, c, enabled);
+        if let (true, Some(value)) = (enabled, chosen) {
             if let Some(key) = c.key {
-                self.prefs.set_str(key, value);
+                match c.id {
+                    // 偏好里是浮点，组合框的 id 是字符串（`preferenceswindow.py:287-290`）
+                    "default_zoom_combobox" => {
+                        if let Ok(z) = value.parse::<f64>() {
+                            self.prefs.set_f64(key, z);
+                        }
+                    }
+                    // 四个预设会顺带改写六个 `cursor.freehand.*` 键
+                    // （`preferenceswindow.py:344-380`）
+                    "freehand_cursor_combobox" => {
+                        self.prefs.set_str(key, value);
+                        apply_cursor_preset(&mut self.prefs, value);
+                    }
+                    _ => {
+                        self.prefs.set_str(key, value);
+                    }
+                }
                 self.after_wired_change();
             }
         }
@@ -1604,14 +1666,15 @@ impl PigmentApp {
     fn prefs_entry_row(&mut self, ui: &mut egui::Ui, c: &ControlDef) {
         let key = c.key.unwrap_or_default();
         let mut text = self.prefs.str_or(key, "").to_string();
+        let enabled = self.control_enabled(c);
         let resp = ui.add_enabled(
-            c.wired,
+            enabled,
             egui::TextEdit::singleline(&mut text)
                 .desired_width(320.0)
                 .hint_text(NOT_PORTED),
         );
-        let resp = attach_tip(resp, c);
-        if c.wired && resp.changed() {
+        let resp = attach_tip(resp, c, enabled);
+        if enabled && resp.changed() {
             self.prefs.set_str(key, &text);
             self.after_wired_change();
         }
@@ -1622,8 +1685,9 @@ impl PigmentApp {
         let key = c.key.unwrap_or_default();
         let mut value = self.prefs.i64_or(key, c.default_num as i64) as f64;
         let (lower, upper) = c.range.unwrap_or((0.0, f64::INFINITY));
+        let enabled = self.control_enabled(c);
         let resp = ui.add_enabled(
-            c.wired,
+            enabled,
             egui::DragValue::new(&mut value)
                 .range(lower..=upper)
                 .speed(1.0),
@@ -1631,8 +1695,8 @@ impl PigmentApp {
         if !c.label.is_empty() {
             ui.label(c.label);
         }
-        let resp = attach_tip(resp, c);
-        if c.wired && resp.changed() {
+        let resp = attach_tip(resp, c, enabled);
+        if enabled && resp.changed() {
             self.prefs.set_i64(key, value.round() as i64);
             self.after_wired_change();
         }
@@ -1686,14 +1750,22 @@ fn button_row_reserve(ui: &egui::Ui) -> f32 {
 
 /// 给一行控件挂悬停说明。
 ///
-/// 未接线的控件用 `on_disabled_hover_text` —— egui 的 `on_hover_text` 对禁用
-/// 控件不弹（`color_panel.rs` 的页签条注过同一件事）。
-fn attach_tip(resp: egui::Response, c: &ControlDef) -> egui::Response {
-    if c.wired {
+/// `enabled` 是控件**当前**是否可编辑（已接线但在当前设置下被联动禁用时
+/// 为 false）。未接线控件用 `on_disabled_hover_text` —— egui 的
+/// `on_hover_text` 对禁用控件不弹（`color_panel.rs` 的页签条注过同一件事）。
+fn attach_tip(resp: egui::Response, c: &ControlDef, enabled: bool) -> egui::Response {
+    if enabled {
         match c.tip {
             Some(tip) => resp.on_hover_text(tip),
             None => resp,
         }
+    } else if c.wired {
+        // 已接线但被联动禁用（自动备份间隔 / crosshair 预设下的十字线）
+        let text = c
+            .tip
+            .map(|t| format!("{t}\n当前设置下不可用"))
+            .unwrap_or_else(|| "当前设置下不可用".to_string());
+        resp.on_disabled_hover_text(text)
     } else {
         let mut text = String::new();
         if let Some(tip) = c.tip {
@@ -1903,11 +1975,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 5 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // 已接线的控件行 = 13 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 8);
-        assert_eq!(widgets - wired, 29, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 16);
+        assert_eq!(widgets - wired, 21, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -1950,6 +2022,14 @@ mod tests {
                 "keyboard.disable_fallbacks",      // B6-2：AccelMap::lookup
                 "colors.wheels.type",              // B4-4b：ColorManager
                 "input.button_mapping",            // Buttons 页：编辑器 + 指针分派
+                "view.default_zoom",               // ResetView/ResetZoom + 暂存区复位
+                "cursor.freehand.style",           // 光标预设（画布自绘）
+                "cursor.dynamic_crosshair",        // 自绘十字线
+                "cursor.dynamic_crosshair_threshold", // 自绘十字线阈值
+                "ui.dark_theme_variant",           // apply_appearance（egui Visuals）
+                "ui.support_smooth_scrolling",     // 画布滚轮增量来源
+                "document.autosave_backups",       // AutosaveState + autosave_tick
+                "document.autosave_interval",      // 同上（夹在 5..300）
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -1974,17 +2054,9 @@ mod tests {
             "input.global_pressure_mapping", // Pressure 页的曲线
             "input.device_mode",             // Devices 页的编辑器
             "saving.scrap_prefix",           // Load & Save 页的输入框
-            "document.autosave_backups",     // 自动备份开关
-            "document.autosave_interval",    // 自动备份间隔
             "display.colorspace",            // 色彩管理两个单选
-            "view.default_zoom",             // View 页的缩放下拉
             "view.real_alpha_checks",        // 棋盘格复选框
             "ui.toolbar_icon_size",          // 图标尺寸两个单选
-            "ui.dark_theme_variant",         // 暗色主题复选框
-            "cursor.freehand.style",         // 光标类型下拉
-            "cursor.dynamic_crosshair",      // 十字线复选框
-            "cursor.dynamic_crosshair_threshold", // 十字线半径阈值
-            "ui.support_smooth_scrolling",   // 平滑滚动
             "ui.blink_layers",               // 图层闪烁
             "default_compatibility_mode",    // Compatibility 页
             "compability_settings",
@@ -2110,6 +2182,46 @@ mod tests {
             let zoom: f64 = option.id.parse().unwrap();
             assert_eq!(&zoom_id(zoom), option.id);
         }
+    }
+
+    #[test]
+    fn cursor_presets_write_and_remove_the_six_keys_like_the_source() {
+        // preferenceswindow.py:344-380
+        let mut prefs = fresh_prefs("cursor-preset");
+        prefs.set_str("cursor.freehand.style", "medium");
+        apply_cursor_preset(&mut prefs, "medium");
+        assert_eq!(prefs.i64_or("cursor.freehand.min_size", 0), 5);
+        assert!((prefs.f64_or("cursor.freehand.outer_line_width", 0.0) - 2.666).abs() < 1e-9);
+        assert!((prefs.f64_or("cursor.freehand.inner_line_width", 0.0) - 1.333).abs() < 1e-9);
+        assert_eq!(prefs.i64_or("cursor.freehand.inner_line_inset", 0), 2);
+        assert_eq!(
+            prefs.get_array("cursor.freehand.inner_line_color").unwrap()[3]
+                .as_f64()
+                .unwrap(),
+            1.0
+        );
+
+        apply_cursor_preset(&mut prefs, "thick");
+        assert_eq!(prefs.i64_or("cursor.freehand.min_size", 0), 7);
+        assert!((prefs.f64_or("cursor.freehand.outer_line_width", 0.0) - 3.75).abs() < 1e-9);
+        assert_eq!(prefs.i64_or("cursor.freehand.inner_line_inset", 0), 3);
+
+        // thin 是出厂预设：删掉六个键（读取处回落到默认值）
+        apply_cursor_preset(&mut prefs, "thin");
+        for key in [
+            "cursor.freehand.min_size",
+            "cursor.freehand.outer_line_width",
+            "cursor.freehand.inner_line_width",
+            "cursor.freehand.inner_line_inset",
+            "cursor.freehand.outer_line_color",
+            "cursor.freehand.inner_line_color",
+        ] {
+            assert!(prefs.get(key).is_none(), "{key} 应被删除");
+        }
+        // crosshair 只改 style，不动其余键（源码没有 crosshair 分支）
+        apply_cursor_preset(&mut prefs, "crosshair");
+        assert!(prefs.get("cursor.freehand.min_size").is_none());
+        let _ = std::fs::remove_file(prefs.path());
     }
 
     #[test]

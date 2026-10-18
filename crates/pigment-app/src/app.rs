@@ -267,6 +267,64 @@ pub(crate) struct SubwindowsSnapshot {
     pub quick_choice: bool,
 }
 
+/// 自动备份的运行时状态 —— `lib/document.py` 的 `_autosave_*` 字段
+/// （`:326-331`）加上 `cache_dir` / `active` 金丝雀（`:386-523`）。
+///
+/// 源码用 GLib 定时器做"空闲 N 秒后写、分块低优先级"；egui 每帧推一次，
+/// 判据是"内容版本变了就脏、脏了且静止 `interval` 秒就写"（见
+/// `pigment_engine::autosave` 的模块文档）。
+pub(crate) struct AutosaveState {
+    /// 本工作文档的缓存目录（`Document.cache_dir`）。
+    pub(crate) cache_dir: Option<std::path::PathBuf>,
+    /// `document.autosave_backups`。
+    pub(crate) enabled: bool,
+    /// `document.autosave_interval`（秒，源码夹在 5..300）。
+    pub(crate) interval: u64,
+    /// 内容或结构变过、还没写进备份（`_autosave_dirty`）。
+    pub(crate) dirty: bool,
+    /// 上次写备份的 `egui` 时间。
+    pub(crate) last_backup: f64,
+    /// 上次 touch `active` 的 `egui` 时间。
+    pub(crate) last_activity: f64,
+    /// 上次看到的合成版本号（判"变脏"用）。
+    pub(crate) last_rev: u64,
+    /// 上次写备份的错误（状态栏用）。
+    pub(crate) error: Option<String>,
+}
+
+impl AutosaveState {
+    pub(crate) fn new(prefs: &Prefs) -> Self {
+        let cache_dir = match pigment_engine::autosave::create_doc_cache_dir() {
+            Ok(d) => Some(d),
+            Err(e) => {
+                eprintln!("自动备份缓存目录建不出来：{e}");
+                None
+            }
+        };
+        Self {
+            cache_dir,
+            enabled: prefs.bool_or("document.autosave_backups", true),
+            interval: prefs.i64_or("document.autosave_interval", 10).clamp(5, 300) as u64,
+            dirty: false,
+            last_backup: 0.0,
+            last_activity: 0.0,
+            last_rev: 0,
+            error: None,
+        }
+    }
+}
+
+/// 恢复对话框 —— `gui/autorecover.py` 的 `Presenter` 状态。
+pub(crate) struct RecoveryState {
+    pub(crate) entries: Vec<pigment_engine::autosave::AutosaveInfo>,
+    pub(crate) selected: Option<usize>,
+    /// 偏好 `autorecovery.check_at_startup`（软键，默认 true）。
+    pub(crate) check_at_startup: bool,
+    /// 缩略图缓存（按备份目录）。
+    pub(crate) thumbs:
+        std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -388,6 +446,13 @@ pub struct PigmentApp {
     pub(crate) file_prompt: Option<FilePrompt>,
     /// 最近打开/保存的文件（`Gtk.RecentManager` 的替代，持久化在偏好）。
     pub(crate) recent_files: Vec<String>,
+    /// 自动备份（`lib/document.py` 的 `_autosave_*` + 缓存目录）。
+    pub(crate) autosave: AutosaveState,
+    /// 恢复对话框（`gui/autorecover.py`）。
+    pub(crate) recovery: Option<RecoveryState>,
+    /// 从哪份自动备份恢复的：存盘成功或退出时删掉它
+    /// （源码在关闭文档时清理缓存目录，`document.py:412-430`）。
+    pub(crate) recovered_autosave: Option<std::path::PathBuf>,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -439,6 +504,9 @@ pub struct PigmentApp {
     pub(crate) pending_uploads: usize,
     pub(crate) stroke_dirty: bool,
     pub(crate) fullscreen: bool,
+    /// 下一帧重套 egui 主题（`ui.dark_theme_variant` 改了；源码要重启，
+    /// 这里立即生效，属技术栈适配）。
+    pub(crate) appearance_dirty: bool,
     // ---- 停靠面板系统（S6）----
     /// 工作区停靠状态（左/右/浮动组）。默认布局 = 左 BrushGroupTool、
     /// 右 BrushEditor（差异记账见 shell/dock.rs 模块文档）。
@@ -669,6 +737,58 @@ fn default_document_path(ext: &str) -> String {
         .unwrap_or_else(|_| format!("untitled.{ext}"))
 }
 
+/// 读备份缩略图并上传成纹理（恢复对话框用）。
+///
+/// 缩略图由 `pigment_engine::autosave::write_backup` 写成 PNG；读不出来就
+/// 返回 `None`，对话框画一块空占位（对应源码 `image-missing` 图标）。
+fn load_autosave_thumb(
+    ctx: &egui::Context,
+    path: &std::path::Path,
+) -> Option<egui::TextureHandle> {
+    let bytes = std::fs::read(path).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let size = [img.width() as usize, img.height() as usize];
+    let pixels = img.into_raw();
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, &pixels);
+    Some(ctx.load_texture(
+        format!("autosave-thumb-{}", path.display()),
+        color,
+        egui::TextureOptions::LINEAR,
+    ))
+}
+
+/// `time.strftime("%Y-%m-%d %H%M%S")` 的 UTC 版（恢复文件名用）。
+///
+/// 标准库没有本地时区/日期格式化；源码用的是本地时间，这里退回 UTC 并在
+/// 文档里记账（恢复后的文件名只差时区偏移，不影响数据）。
+fn format_timestamp_utc(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let days = (secs / 86400) as i64;
+    let rem = (secs % 86400) as u32;
+    let (y, m, d) = civil_from_days(days);
+    let hh = rem / 3600;
+    let mm = (rem % 3600) / 60;
+    let ss = rem % 60;
+    format!("{y:04}-{m:02}-{d:02} {hh:02}{mm:02}{ss:02}")
+}
+
+/// Howard Hinnant 的 `civil_from_days`（days since 1970-01-01 → 年月日）。
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
 /// 模式调用的共享输入（笔刷 / 笔刷名 / 假输入 / 当前色）。
 ///
 /// 主画布（[`PigmentApp::with_mode`]）与暂存区
@@ -722,6 +842,8 @@ impl PigmentApp {
         }
         let prefs = Prefs::load(config_path);
         let mode_prefs = ModePrefs::from_prefs(&prefs);
+        // 自动备份的缓存目录（`application.py` 启动时建数据子目录的对应物）
+        let autosave = AutosaveState::new(&prefs);
         // 片段开关从偏好 `ui.toolbar_items` 读（`userconfig.py:76-85`）；
         // 在 `prefs` 被移进结构体之前算好。
         let toolbar_fragments = crate::shell::toolbars::fragments_from_prefs(&prefs);
@@ -807,6 +929,9 @@ impl PigmentApp {
             current_file: None,
             file_prompt: None,
             recent_files,
+            autosave,
+            recovery: None,
+            recovered_autosave: None,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -829,6 +954,7 @@ impl PigmentApp {
             pending_uploads: 0,
             stroke_dirty: false,
             fullscreen: false,
+            appearance_dirty: true,
             icon_cache: Default::default(),
             toolbar_fragments,
             layer_thumbs: std::collections::HashMap::new(),
@@ -868,7 +994,295 @@ impl PigmentApp {
         app.scratch.startup_page(&mut app.prefs);
         let cfg = pigment_engine::prefs::config_dir();
         app.doc.reset_background_from(Some(&cfg));
+        // 启动时检查可恢复的备份（`application.py` 的 autorecover Presenter）
+        app.maybe_startup_recovery();
         app
+    }
+
+    /// 启动时检查备份 —— `gui/autorecover.py:121-143` 的 `run(startup=True)`。
+    ///
+    /// 偏好 `autorecovery.check_at_startup` 关掉就直接返回；没有可恢复项时
+    /// 静默（源码在启动时不弹 "No backups" 错误框）。
+    pub(crate) fn maybe_startup_recovery(&mut self) {
+        let check = self
+            .prefs
+            .bool_or("autorecovery.check_at_startup", true);
+        if !check {
+            return;
+        }
+        let entries = self.recoverable_backups();
+        if entries.is_empty() {
+            return;
+        }
+        self.recovery = Some(RecoveryState {
+            entries,
+            selected: None,
+            check_at_startup: check,
+            thumbs: Default::default(),
+        });
+    }
+
+    /// 可恢复的备份：跳过本进程正在用的缓存目录与其它实例的
+    /// （`autorecover.py:78-101`）。
+    fn recoverable_backups(&self) -> Vec<pigment_engine::autosave::AutosaveInfo> {
+        let current = self.autosave.cache_dir.as_deref();
+        pigment_engine::autosave::available_autosaves()
+            .into_iter()
+            .filter(|i| !i.cache_in_use)
+            .filter(|i| i.path.parent() != current)
+            .collect()
+    }
+
+    /// 手动打开恢复对话框 —— 动作 `RecoverAutosavedBackup`
+    /// （`resources.xml:172-177` 的 `autorecover_cb`）。
+    pub(crate) fn open_recovery(&mut self, now: f64) {
+        let entries = self.recoverable_backups();
+        if entries.is_empty() {
+            // `autorecover.py:133-143` 的 "No backups were found in the cache."
+            self.set_status("No backups were found in the cache.".to_string(), now);
+            return;
+        }
+        self.recovery = Some(RecoveryState {
+            entries,
+            selected: None,
+            check_at_startup: self.prefs.bool_or("autorecovery.check_at_startup", true),
+            thumbs: Default::default(),
+        });
+    }
+
+    /// 每帧推一次自动备份 —— `Document._cache_updater_cb` + 倒计时
+    /// （`lib/document.py:515-597`）。
+    ///
+    /// `painting` 为真（指针按着）时先不写，避免一次备份卡住正在画的笔。
+    pub(crate) fn autosave_tick(&mut self, now: f64, painting: bool) {
+        let Some(dir) = self.autosave.cache_dir.clone() else {
+            return;
+        };
+        // `active` 金丝雀：每 `CACHE_UPDATE_INTERVAL` 秒 touch 一次（`:515-523`）
+        if now - self.autosave.last_activity >= pigment_engine::autosave::CACHE_UPDATE_INTERVAL as f64
+        {
+            let _ = pigment_engine::autosave::touch_activity(&dir);
+            self.autosave.last_activity = now;
+        }
+        // 内容/结构变化 → 脏（源码由图层与命令栈的信号标记，`:780-787`）
+        let rev = self.doc.layers().composite_revision();
+        if self.autosave.last_rev == 0 {
+            self.autosave.last_rev = rev;
+        } else if rev != self.autosave.last_rev {
+            self.autosave.last_rev = rev;
+            self.autosave.dirty = true;
+            self.autosave.last_backup = now;
+        }
+        if !self.autosave.enabled || !self.autosave.dirty || painting {
+            return;
+        }
+        if now - self.autosave.last_backup < self.autosave.interval as f64 {
+            return;
+        }
+        let unsaved = self.doc.unsaved_painting_time;
+        match pigment_engine::autosave::write_backup(&mut self.doc, &dir, unsaved) {
+            Ok(_) => {
+                self.autosave.dirty = false;
+                self.autosave.last_backup = now;
+                self.autosave.error = None;
+            }
+            Err(e) => {
+                let msg = format!("自动备份失败：{e}");
+                eprintln!("{msg}");
+                self.autosave.error = Some(msg);
+            }
+        }
+    }
+
+    /// 恢复对话框 —— `gui/autorecover.py:121-230` 的 `Presenter.run`。
+    pub(crate) fn recovery_window(&mut self, ctx: &egui::Context) {
+        let Some(mut state) = self.recovery.take() else {
+            return;
+        };
+        let now = ctx.input(|i| i.time);
+        let system_now = std::time::SystemTime::now();
+        let mut recover: Option<usize> = None;
+        let mut delete: Option<usize> = None;
+        let mut close = false;
+        let mut open = true;
+        egui::Window::new("Recover interrupted work?")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(640.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                ui.label(
+                    "MyPaint crashed with unsaved work, but it makes rolling backups. \
+                     You can recover a working file from one of these automated backups now. \
+                     You’ll be asked where to save it before continuing.",
+                );
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .max_height(280.0)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        for (i, entry) in state.entries.iter().enumerate() {
+                            let selected = state.selected == Some(i);
+                            let tex = state
+                                .thumbs
+                                .entry(entry.path.clone())
+                                .or_insert_with(|| load_autosave_thumb(ctx, &entry.thumbnail_path))
+                                .clone();
+                            ui.horizontal(|ui| {
+                                let (rect, _) = ui.allocate_exact_size(
+                                    egui::vec2(96.0, 96.0),
+                                    egui::Sense::hover(),
+                                );
+                                match tex {
+                                    Some(t) => {
+                                        ui.painter().image(
+                                            t.id(),
+                                            rect,
+                                            egui::Rect::from_min_max(
+                                                egui::pos2(0.0, 0.0),
+                                                egui::pos2(1.0, 1.0),
+                                            ),
+                                            egui::Color32::WHITE,
+                                        );
+                                    }
+                                    None => {
+                                        ui.painter().rect_filled(
+                                            rect,
+                                            2.0,
+                                            ui.visuals().faint_bg_color,
+                                        );
+                                    }
+                                }
+                                let desc = entry.description(system_now);
+                                if ui
+                                    .selectable_label(
+                                        selected,
+                                        egui::RichText::new(desc).monospace(),
+                                    )
+                                    .clicked()
+                                {
+                                    state.selected = Some(i);
+                                }
+                                if entry.cache_in_use {
+                                    ui.label(
+                                        egui::RichText::new("（仍可能被另一个实例占用）")
+                                            .weak()
+                                            .small(),
+                                    );
+                                }
+                            });
+                            ui.separator();
+                        }
+                    });
+                ui.checkbox(
+                    &mut state.check_at_startup,
+                    "Look for backups at startup",
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can = state
+                        .selected
+                        .map(|i| !state.entries[i].cache_in_use)
+                        .unwrap_or(false);
+                    if ui
+                        .add_enabled(can, egui::Button::new("Delete…"))
+                        .on_hover_text("Delete this backup from the disk.")
+                        .clicked()
+                    {
+                        delete = state.selected;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add_enabled(can, egui::Button::new("Recover & Save…"))
+                            .on_hover_text(
+                                "Save this backup to disk, then continue working on it.",
+                            )
+                            .clicked()
+                        {
+                            recover = state.selected;
+                        }
+                        if ui
+                            .button("Decide Later")
+                            .on_hover_text(
+                                "Start work on a new canvas. These backups will be retained.",
+                            )
+                            .clicked()
+                        {
+                            close = true;
+                        }
+                    });
+                });
+            });
+        if !open {
+            close = true;
+        }
+        // 勾选状态立即写回偏好（`autorecover.py:232-233`）
+        if state.check_at_startup
+            != self.prefs.bool_or("autorecovery.check_at_startup", true)
+        {
+            self.prefs
+                .set_bool("autorecovery.check_at_startup", state.check_at_startup);
+            let _ = self.prefs.save();
+        }
+        if let Some(i) = delete {
+            if let Some(entry) = state.entries.get(i) {
+                if let Err(e) = pigment_engine::autosave::delete_autosave(entry) {
+                    self.set_status(format!("删除备份失败：{e}"), now);
+                } else {
+                    self.set_status("已删除备份".to_string(), now);
+                }
+            }
+            state.entries = self.recoverable_backups();
+            state.selected = None;
+        }
+        if let Some(i) = recover {
+            if let Some(entry) = state.entries.get(i).cloned() {
+                self.recover_from(&entry, now);
+                close = true;
+            }
+        }
+        if close {
+            self.recovery = None;
+        } else {
+            self.recovery = Some(state);
+        }
+    }
+
+    /// 从一份备份恢复 —— `Document.resume_from_autosave` +
+    /// `autorecover.py:154-184`（恢复后立刻弹"另存为"）。
+    fn recover_from(&mut self, info: &pigment_engine::autosave::AutosaveInfo, now: f64) {
+        match self.doc.load(&info.ora_path) {
+            Ok(_) => {
+                self.current_file = None;
+                self.recovered_autosave = Some(info.path.clone());
+                self.force_resync = true;
+                self.view = View::default();
+                // 建议文件名：`Recovered file from %Y-%m-%d %H%M%S.ora`
+                let suggested = format!(
+                    "Recovered file from {}.ora",
+                    format_timestamp_utc(info.last_modified)
+                );
+                let mut prompt = self.new_file_prompt(FileAction::SaveAs, None);
+                prompt.path = suggested;
+                self.file_prompt = Some(prompt);
+                self.set_status(
+                    format!("已从备份恢复：{}", info.ora_path.display()),
+                    now,
+                );
+            }
+            Err(e) => self.set_status(format!("恢复备份失败：{e}"), now),
+        }
+    }
+
+    /// 退出时清理本进程的缓存目录 —— `Document._cleanup_cache_dir`
+    /// （`lib/document.py:412-430`）。
+    pub(crate) fn cleanup_autosave_cache(&mut self) {
+        if let Some(dir) = self.autosave.cache_dir.take() {
+            pigment_engine::autosave::cleanup_doc_cache_dir(&dir);
+        }
+        // 从备份恢复来的那份，若还没存盘就留着（下次启动还能再恢复）；
+        // 存过盘的话 `save_to_path` 已经删掉了。
     }
 
     /// 应用当前偏好 —— `Application.apply_settings()`（`gui/application.py:514-522`）
@@ -886,6 +1300,32 @@ impl PigmentApp {
         let cfg = FreehandConfig::from_prefs(&self.prefs);
         self.modes.set_freehand_config(cfg.clone());
         self.scratch.modes.set_freehand_config(cfg);
+        // 视图复位缩放（`document.py:339-340` 读偏好）
+        self.scratch.default_zoom = self.prefs.f64_or("view.default_zoom", 1.0) as f32;
+        // 自动备份（`_apply_autosave_settings`，`application.py:514-522`）
+        self.autosave.enabled = self.prefs.bool_or("document.autosave_backups", true);
+        self.autosave.interval = self
+            .prefs
+            .i64_or("document.autosave_interval", 10)
+            .clamp(5, 300) as u64;
+        // 主题变体（`ui.dark_theme_variant`）由下一帧的 `apply_appearance` 套用
+        self.appearance_dirty = true;
+    }
+
+    /// 套用 egui 主题 —— 对应 GTK 的 `ui.dark_theme_variant`
+    /// （`preferenceswindow.py:302-304` 只写偏好，GTK 换肤要重启；
+    /// egui 的 `Visuals` 可以立即换，属技术栈适配）。
+    pub(crate) fn apply_appearance(&mut self, ctx: &egui::Context) {
+        if !self.appearance_dirty {
+            return;
+        }
+        self.appearance_dirty = false;
+        let dark = self.prefs.bool_or("ui.dark_theme_variant", true);
+        ctx.set_visuals(if dark {
+            egui::Visuals::dark()
+        } else {
+            egui::Visuals::light()
+        });
     }
 
     /// 保存配置 —— `Application.save_gui_config()`（`gui/application.py:624-628`）。
@@ -1202,6 +1642,10 @@ impl PigmentApp {
             Ok(_) => {
                 if !export {
                     self.current_file = Some(path.to_path_buf());
+                    // 从备份恢复的文件已经真正存盘了：那份备份可以清掉
+                    if let Some(dir) = self.recovered_autosave.take() {
+                        let _ = std::fs::remove_dir_all(dir);
+                    }
                 }
                 self.record_recent(path);
                 let verb = if export { "已导出" } else { "已保存" };
@@ -2675,6 +3119,8 @@ fn layout_ink_buttons(
         match id {
             // ---- 文档 I/O ----
             "New" | "Open" | "Save" | "SaveAs" | "Export" => true,
+            // `RecoverAutosavedBackup`（resources.xml:172-177）恒可用
+            "RecoverAutosavedBackup" => true,
             // ---- 撤销栈（动态 sensitivity）----
             "Undo" => self.doc.command_stack.undo_len() > 0,
             "Redo" => self.doc.command_stack.redo_len() > 0,
@@ -2878,6 +3324,10 @@ fn layout_ink_buttons(
                     .map(|p| p.with_extension("png"));
                 let prompt = self.new_file_prompt(FileAction::Export, seed.as_deref());
                 self.file_prompt = Some(prompt);
+            }
+            "RecoverAutosavedBackup" => {
+                // `autorecover_cb`：手动打开恢复对话框
+                self.open_recovery(now);
             }
             // ---- 撤销栈（`gui/document.py:552-558`）----
             "Undo" => {
@@ -3546,6 +3996,7 @@ impl eframe::App for PigmentApp {
     /// 出来的，先声明的先占。
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.apply_appearance(&ctx);
         self.handle_keys(&ctx);
 
         // ── 顶栏 ── `MyPaintTopBar`：菜单栏 + toolbar1 + toolbar2
@@ -3570,10 +4021,14 @@ impl eframe::App for PigmentApp {
         self.color_history_popup(&ctx);
         self.color_details_dialog(&ctx);
         self.popup_menu(&ctx, now);
+        self.recovery_window(&ctx);
         self.show_file_prompt(&ctx, now);
         if self.file_prompt.is_some() {
             ctx.request_repaint();
         }
+        // 自动备份：每帧推一次（`Document._cache_updater_cb` 的等价物）
+        let painting = ctx.input(|i| i.pointer.any_down());
+        self.autosave_tick(now, painting);
     }
 
     /// 退出时保存配置 —— `quit_cb` 里的 `app.save_gui_config()`
@@ -3583,6 +4038,8 @@ impl eframe::App for PigmentApp {
     /// 也写盘；eframe 侧 `on_exit` 在窗口真正关闭时调用一次，语义相当。
     fn on_exit(&mut self) {
         self.save_gui_config();
+        // 正常退出：删掉本进程的缓存目录（崩溃时不会走到这里 → 备份留下）
+        self.cleanup_autosave_cache();
     }
 }
 // 测试：偏好接线的纯函数侧（B6-1）。PigmentApp 本体要 GPU，构造不了；
@@ -3777,5 +4234,20 @@ mod tests {
             egui::vec2(100.0, 100.0),
         );
         assert!((v.rotation - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+    }
+
+    #[test]
+    fn recovered_filename_timestamp_is_utc_and_zero_padded() {
+        // 1970-01-01 00:00:00 UTC
+        assert_eq!(
+            format_timestamp_utc(std::time::UNIX_EPOCH),
+            "1970-01-01 000000"
+        );
+        // 2020-02-29 12:34:56 UTC（闰日，验证 civil_from_days）
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_582_979_696);
+        assert_eq!(format_timestamp_utc(t), "2020-02-29 123456");
+        // 建议文件名与源码模板同形：Recovered file from %Y-%m-%d %H%M%S.ora
+        let name = format!("Recovered file from {}.ora", format_timestamp_utc(t));
+        assert_eq!(name, "Recovered file from 2020-02-29 123456.ora");
     }
 }

@@ -1352,7 +1352,20 @@ impl PigmentApp {
         // ---- 滚轮（`ScrollableModeMixin.scroll_cb`）----
         // 默认缩放、Ctrl/Alt 反转平移；Shift 走阶梯/离散步进。
         if response.hovered() {
-            let (delta, imods) = ui.input(|i| (i.smooth_scroll_delta, i.modifiers));
+            // `ui.support_smooth_scrolling`（`preferenceswindow.py:400-402`）：
+            // 关掉时源码按"离散步进"处理滚轮（`tileddrawwidget` 的事件分类），
+            // egui 侧对应 `raw_scroll_delta`（一格 50 点）而不是平滑增量。
+            let smooth = self.prefs.bool_or("ui.support_smooth_scrolling", true);
+            let (delta, imods) = ui.input(|i| {
+                (
+                    if smooth {
+                        i.smooth_scroll_delta
+                    } else {
+                        stepwise_wheel(&i.raw.events, i.content_rect().height())
+                    },
+                    i.modifiers,
+                )
+            });
             if delta != egui::Vec2::ZERO {
                 if let Some(pos) = response.hover_pos() {
                     self.apply_canvas_wheel(rect, pos, imods, delta);
@@ -1700,20 +1713,32 @@ impl PigmentApp {
             let hide_now = painting && self.mode_prefs.hide_cursor_while_painting;
             if !hide_now {
                 if let Some(pos) = response.hover_pos() {
-                    let base_r = self.brush.get(BrushSetting::Radius).base_value;
-                    let by_random = self.brush.get(BrushSetting::OffsetByRandom).base_value;
-                    let visual = base_r.exp() * (1.0 + 2.0 * by_random);
-                    crate::shell::overlays::paint_brush_cursor(
-                        &ui.painter().with_clip_rect(rect),
-                        rect,
-                        pos,
-                        visual * self.view.zoom,
-                        &overlay_style,
-                        &self.prefs,
-                    );
+                    // `tileddrawwidget.py:586-588`：crosshair 预设用系统十字光标，
+                    // 不画圆环；其余三个预设都是自绘圆环（宽度/颜色由偏好定）。
+                    if crate::shell::overlays::cursor_is_crosshair(&self.prefs) {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
+                    } else {
+                        let base_r = self.brush.get(BrushSetting::Radius).base_value;
+                        let by_random = self.brush.get(BrushSetting::OffsetByRandom).base_value;
+                        let visual = base_r.exp() * (1.0 + 2.0 * by_random);
+                        // `tileddrawwidget.py:606`：`r = visual_radius * scale + 0.5`
+                        let cursor_style =
+                            crate::shell::overlays::CursorStyle::from_brush(&self.brush, self.eraser);
+                        crate::shell::overlays::paint_brush_cursor(
+                            &ui.painter().with_clip_rect(rect),
+                            rect,
+                            pos,
+                            visual * self.view.zoom + 0.5,
+                            &overlay_style,
+                            cursor_style,
+                            &self.prefs,
+                        );
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+                    }
                 }
+            } else {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::None);
             }
-            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
 
         // ---- Inking ADJUST 节点（`inktool.py:1074-1116`）----
@@ -1785,24 +1810,6 @@ impl PigmentApp {
             _ => {}
         }
 
-        // ---- 笔刷光标预览：放在 callback 之后，保证压在 tile 之上可见 ----
-        if let Some(pos) = response.hover_pos() {
-            let r = self
-                .brush
-                .get(BrushSetting::Radius)
-                .base_value
-                .exp()
-                .max(0.5)
-                * self.view.zoom;
-            let color = if self.eraser {
-                egui::Color32::from_rgb(200, 80, 80)
-            } else {
-                egui::Color32::from_gray(110)
-            };
-            ui.painter()
-                .circle_stroke(pos, r.max(1.0), egui::Stroke::new(1.0, color));
-        }
-
         // 绘制中持续重绘（dab 沿笔画插值）；上传有欠账（命中每帧上限）时也要继续，
         // 否则剩下的 tile 会一直停在旧状态
         let backlog = self.pending_uploads >= crate::gpu::MAX_UPLOADS_PER_FRAME;
@@ -1811,6 +1818,27 @@ impl PigmentApp {
             ui.ctx().request_repaint();
         }
     }
+}
+
+/// 离散步进滚轮增量 —— `ui.support_smooth_scrolling` 关闭时的取值。
+///
+/// egui 0.37 的 `InputState` 不再暴露 `raw_scroll_delta`，但 `raw.events` 里
+/// 仍有后端发来的 `MouseWheel`（单位 Point/Line/Page）。这里按 egui 自己的
+/// 换算规则折成"点"：1 行 = 50 点（`InputOptions::line_scroll_speed` 的出厂值），
+/// 1 页 = 视口高度。关闭平滑滚动时用它，滚轮就回到整格步进。
+fn stepwise_wheel(events: &[egui::Event], page_height: f32) -> egui::Vec2 {
+    let mut out = egui::Vec2::ZERO;
+    for event in events {
+        if let egui::Event::MouseWheel { unit, delta, .. } = event {
+            let scale = match unit {
+                egui::MouseWheelUnit::Point => 1.0,
+                egui::MouseWheelUnit::Line => 50.0,
+                egui::MouseWheelUnit::Page => page_height,
+            };
+            out += *delta * scale;
+        }
+    }
+    out
 }
 
 /// 对称类型在选项面板里的显示名（`symmetry.py:368` 的 `Symmetry Type` 条目）。
@@ -1825,3 +1853,43 @@ fn symmetry_label(t: pigment_surface::symmetry::SymmetryType) -> &'static str {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn wheel(unit: egui::MouseWheelUnit, dx: f32, dy: f32) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit,
+            delta: egui::vec2(dx, dy),
+            phase: egui::TouchPhase::Move,
+            source: egui::MouseWheelSource::Wheel,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn stepwise_wheel_converts_units_to_points() {
+        // Point 原样；Line 按 50 点/行；Page 按视口高度
+        let events = [
+            wheel(egui::MouseWheelUnit::Point, 10.0, -20.0),
+            wheel(egui::MouseWheelUnit::Line, 1.0, 2.0),
+            wheel(egui::MouseWheelUnit::Page, 0.0, 1.0),
+        ];
+        let d = stepwise_wheel(&events, 600.0);
+        assert_eq!(d, egui::vec2(10.0 + 50.0, -20.0 + 100.0 + 600.0));
+        // 没有滚轮事件 → 零（关闭平滑滚动不会凭空产生位移）
+        assert_eq!(stepwise_wheel(&[], 600.0), egui::Vec2::ZERO);
+        // 非滚轮事件被忽略
+        assert_eq!(
+            stepwise_wheel(&[egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }], 600.0),
+            egui::Vec2::ZERO
+        );
+    }
+}

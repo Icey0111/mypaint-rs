@@ -12,6 +12,7 @@ hokusai = "=0.3.0"
 pigment-surface = { path = "../pigment-surface" }
 # 仅用于扫描用户笔刷目录时读 description/notes（已在依赖图内，无新增下载）
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 # 文档 I/O：PNG（照搬 lib/document.py 的 save_png/load_png）
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # 文档 I/O：OpenRaster 是 zip 容器。**不依赖 `zip` crate** —— 该 crate 在

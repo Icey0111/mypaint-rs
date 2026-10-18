@@ -110,6 +110,10 @@ pub(crate) struct Scratchpad {
     pub(crate) stroke_state: BrushState,
     /// 独立视图（`app.scratchpad_doc.tdw`）：缩放/平移与主画布无关。
     pub(crate) view: View,
+    /// 视图复位缩放（偏好 `view.default_zoom`，`document.py:339-340`）。
+    ///
+    /// 由 `PigmentApp::apply_settings` 从偏好推过来；暂存区自己不读偏好。
+    pub(crate) default_zoom: f32,
     /// 暂存区目录（`filehandler.get_scratchpad_prefix()`）。
     pub(crate) dir: PathBuf,
     /// 当前暂存页的路径（`app.scratchpad_filename`）。
@@ -149,6 +153,7 @@ impl Scratchpad {
             modes: ModeStack::new(|| Box::new(pigment_engine::mode::freehand::FreehandMode::new())),
             stroke_state: BrushState::default(),
             view: View::default(),
+            default_zoom: 1.0,
             dir,
             path,
             force_resync: true,
@@ -184,12 +189,17 @@ impl Scratchpad {
     /// 视图复位 —— `document.py:976` 的 `self.app.scratchpad_doc.reset_view(True, True, True)`。
     ///
     /// 源码那三个 True = 居中 / 复位缩放 / 复位旋转，缩放取偏好
-    /// `view.default_zoom`（`document.py:339-340`，出厂 1.0）。复位缩放的偏好
-    /// 接线未做（记账：B6-1 只接了暂存页路径 `scratchpad.last_opened_scratchpad`）。
+    /// `view.default_zoom`（`document.py:339-340`，出厂 1.0，由
+    /// [`crate::app::PigmentApp::apply_settings`] 推入 [`Self::default_zoom`]）。
     /// 另外暂存区的 TDW 是 `scroll_on_allocate = False`
     /// （`application.py:367`），所以不做"加载后居中"那一步。
     pub(crate) fn reset_view(&mut self) {
-        self.view = View::default();
+        self.view = View {
+            zoom: self
+                .default_zoom
+                .clamp(crate::view::ZOOM_MIN, crate::view::ZOOM_MAX),
+            ..View::default()
+        };
     }
 
     // ---- 文件（`gui/filehandling.py` 的 open_scratchpad / save_scratchpad）----

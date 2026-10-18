@@ -751,6 +751,125 @@ pub(crate) fn viewport_intersections(
         .collect()
 }
 
+/// 笔刷光标样式 —— `gui/cursor.py:27-30` 的四个 `BRUSH_CURSOR_STYLE_*`。
+///
+/// 样式由**笔刷属性**决定（`tileddrawwidget.py:603-615` 的 `_get_cursor_info`），
+/// 不是用户偏好：橡皮 / 锁 alpha / 着色各有自己的缺口圆环。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CursorStyle {
+    /// `BRUSH_CURSOR_STYLE_NORMAL = 0`：完整圆环。
+    Normal,
+    /// `BRUSH_CURSOR_STYLE_ERASER = 1`：八等分、隔段留空，十字线在对角。
+    Eraser,
+    /// `BRUSH_CURSOR_STYLE_LOCK_ALPHA = 2`：左右两侧留空，十字线只在左右。
+    LockAlpha,
+    /// `BRUSH_CURSOR_STYLE_COLORIZE = 3`：上下留空，十字线只在上下。
+    Colorize,
+}
+
+impl CursorStyle {
+    /// 按源码顺序判样式：橡皮优先，其次锁 alpha，最后着色
+    /// （`tileddrawwidget.py:607-614`）。
+    pub(crate) fn from_brush(brush: &pigment_engine::hokusai::Brush, eraser: bool) -> Self {
+        use pigment_engine::hokusai::BrushSetting;
+        if eraser || brush.get(BrushSetting::Eraser).base_value > 0.5 {
+            Self::Eraser
+        } else if brush.get(BrushSetting::LockAlpha).base_value > 0.5 {
+            Self::LockAlpha
+        } else if brush.get(BrushSetting::Colorize).base_value > 0.5 {
+            Self::Colorize
+        } else {
+            Self::Normal
+        }
+    }
+}
+
+/// 圆环缺口 —— `gui/cursor.py:268-288` 的 `cursor_arc_segments()`。
+///
+/// 返回 `(起始角, 结束角)` 列表（弧度，cairo 的角度约定：0 = 屏幕 +x，
+/// 正方向为屏幕顺时针；egui 的 y 轴也向下，所以直接用 `cos/sin`）。
+/// 角度与源码逐项相同，包括 `k2 + 6*k → k2 + k` 这种**跨 2π 的区间**。
+pub(crate) fn cursor_arc_segments(style: CursorStyle) -> Vec<(f32, f32)> {
+    let k = std::f32::consts::PI / 4.0;
+    let k2 = k / 2.0;
+    match style {
+        // 八等分，交替留空
+        CursorStyle::Eraser => vec![
+            (k2, k2 + k),
+            (k2 + 2.0 * k, k2 + 3.0 * k),
+            (k2 + 4.0 * k, k2 + 5.0 * k),
+            (k2 + 6.0 * k, k2 + 7.0 * k),
+        ],
+        // 同上，但左右两个空缺被填上
+        CursorStyle::LockAlpha => vec![(k2 + 6.0 * k, k2 + k), (k2 + 2.0 * k, k2 + 5.0 * k)],
+        // 同锁 alpha，但空缺转了 90°
+        CursorStyle::Colorize => vec![(k2, k2 + 3.0 * k), (k2 + 4.0 * k, k2 + 7.0 * k)],
+        CursorStyle::Normal => vec![(0.0, 2.0 * std::f32::consts::PI)],
+    }
+}
+
+/// 十字线几何 —— `gui/cursor.py:238-265` 的 `cursor_line_segments()`。
+///
+/// `r` 是光标半径、`threshold` 是 `cursor.dynamic_crosshair_threshold`。
+/// 半径不小于阈值时返回空表（源码同一判据）。
+pub(crate) fn cursor_line_segments(
+    style: CursorStyle,
+    r: f32,
+    threshold: f32,
+) -> Vec<((f32, f32), (f32, f32))> {
+    if r >= threshold {
+        return Vec::new();
+    }
+    let offs = (threshold - r).ceil();
+    match style {
+        CursorStyle::Eraser => {
+            let k = std::f32::consts::FRAC_1_SQRT_2;
+            let offs1 = r * k;
+            let offs2 = (r + offs) * k;
+            vec![
+                ((-offs1, -offs1), (-offs2, -offs2)),
+                ((offs1, -offs1), (offs2, -offs2)),
+                ((offs1, offs1), (offs2, offs2)),
+                ((-offs1, offs1), (-offs2, offs2)),
+            ]
+        }
+        CursorStyle::LockAlpha => vec![
+            ((-r - offs, 0.0), (-r, 0.0)),
+            ((r, 0.0), (r + offs, 0.0)),
+        ],
+        CursorStyle::Colorize => vec![
+            ((0.0, -r - offs), (0.0, -r)),
+            ((0.0, r), (0.0, r + offs)),
+        ],
+        CursorStyle::Normal => vec![
+            ((-r - offs, 0.0), (-r, 0.0)),
+            ((r, 0.0), (r + offs, 0.0)),
+            ((0.0, -r - offs), (0.0, -r)),
+            ((0.0, r), (0.0, r + offs)),
+        ],
+    }
+}
+
+/// 把一段圆弧采样成折线（egui 没有 cairo 的 `arc`）。
+///
+/// 采样密度按弧长取：每 ~3 显示像素一个点，至少 2 段。跨 2π 的区间
+/// （锁 alpha 的 `k2+6k → k2+k`）按源码语义处理：终点小于起点时视为
+/// **逆时针跨零**，总跨度 `end - start + 2π`。
+fn arc_points(center: egui::Pos2, r: f32, a1: f32, a2: f32) -> Vec<egui::Pos2> {
+    let span = if a2 >= a1 {
+        a2 - a1
+    } else {
+        a2 - a1 + std::f32::consts::TAU
+    };
+    let n = ((span * r / 3.0).ceil() as usize).clamp(2, 256);
+    (0..=n)
+        .map(|i| {
+            let a = a1 + span * (i as f32 / n as f32);
+            egui::pos2(center.x + r * a.cos(), center.y + r * a.sin())
+        })
+        .collect()
+}
+
 /// 画笔刷光标 —— `gui/cursor.py:get_brush_cursor()` / `draw_brush_cursor()`。
 ///
 /// 源码把光标渲染成一张 pixbuf 交给 `Gdk.Window.set_cursor()`；egui 没有
@@ -758,19 +877,23 @@ pub(crate) fn viewport_intersections(
 /// 隐藏（`CursorIcon::None`）。几何照 `draw_brush_cursor`：
 /// - 外圈半径 `radius - width1/2`，线宽 `cursor.freehand.outer_line_width`；
 /// - 内圈半径 `radius - inset + width2/2`，线宽 `cursor.freehand.inner_line_width`；
+/// - 圆环按 [`CursorStyle`] 断开（橡皮/锁 alpha/着色三种缺口）；
 /// - `cursor.dynamic_crosshair` 开启且半径小于阈值时，从圆边向外画十字线，
 ///   先黑 3px 再白 1px（源码同样的双描边）。
 ///
-/// 记账：橡皮/锁 alpha/着色三种**缺口圆环样式**（`cursor_arc_segments`）
-/// 还没搬，统一画完整圆环；颜色/线宽/内缩/十字线参数已按源码读取。
+/// 最小半径取 `cursor.freehand.min_size`（`cursor.py:85-94`：预设会把它改成
+/// 5/7；`thin` 预设删掉该键 → 回落到 4）。
 pub(crate) fn paint_brush_cursor(
     painter: &egui::Painter,
     clip: egui::Rect,
     center: egui::Pos2,
     radius: f32,
     style: &OverlayStyle,
+    cursor_style: CursorStyle,
     prefs: &Prefs,
 ) {
+    let min_size = prefs.f64_or("cursor.freehand.min_size", 4.0) as f32;
+    let radius = radius.max(min_size / 2.0);
     if radius < 0.5 {
         return;
     }
@@ -787,52 +910,53 @@ pub(crate) fn paint_brush_cursor(
         style.brush_inner_rgba[2],
         style.brush_inner_rgba[3],
     );
+    let arcs = cursor_arc_segments(cursor_style);
     // 外圈（cairo 的 `r_outer = radius - width1/2`）
     let r_outer = (radius - style.brush_outer_width / 2.0).max(0.5);
-    painter.circle_stroke(
-        center,
-        r_outer,
-        egui::Stroke::new(style.brush_outer_width.max(0.5), outer),
-    );
+    for (a1, a2) in &arcs {
+        painter.add(egui::Shape::line(
+            arc_points(center, r_outer, *a1, *a2),
+            egui::Stroke::new(style.brush_outer_width.max(0.5), outer),
+        ));
+    }
     // 内圈（`r_inner = radius - inset + width2/2`）
     let r_inner = (radius - style.brush_inset + style.brush_inner_width / 2.0).max(0.5);
-    painter.circle_stroke(
-        center,
-        r_inner,
-        egui::Stroke::new(style.brush_inner_width.max(0.5), inner),
-    );
+    for (a1, a2) in &arcs {
+        painter.add(egui::Shape::line(
+            arc_points(center, r_inner, *a1, *a2),
+            egui::Stroke::new(style.brush_inner_width.max(0.5), inner),
+        ));
+    }
 
-    // 动态十字线（`cursor_line_segments` 的普通样式）
+    // 动态十字线（`cursor_line_segments` 按样式的几何）
     if prefs.bool_or("cursor.dynamic_crosshair", false) {
         let threshold = prefs.i64_or("cursor.dynamic_crosshair_threshold", 8) as f32;
-        if radius < threshold {
-            let offs = (threshold - radius).ceil();
-            let segs = [
-                (
-                    egui::vec2(-radius - offs, 0.0),
-                    egui::vec2(-radius, 0.0),
-                ),
-                (egui::vec2(radius, 0.0), egui::vec2(radius + offs, 0.0)),
-                (
-                    egui::vec2(0.0, -radius - offs),
-                    egui::vec2(0.0, -radius),
-                ),
-                (egui::vec2(0.0, radius), egui::vec2(0.0, radius + offs)),
-            ];
-            for (a, b) in segs {
-                painter.line_segment(
-                    [center + a, center + b],
-                    egui::Stroke::new(3.0, egui::Color32::BLACK),
-                );
-            }
-            for (a, b) in segs {
-                painter.line_segment(
-                    [center + a, center + b],
-                    egui::Stroke::new(1.0, egui::Color32::WHITE),
-                );
-            }
+        let segs = cursor_line_segments(cursor_style, radius, threshold);
+        for (a, b) in &segs {
+            painter.line_segment(
+                [
+                    center + egui::vec2(a.0, a.1),
+                    center + egui::vec2(b.0, b.1),
+                ],
+                egui::Stroke::new(3.0, egui::Color32::BLACK),
+            );
+        }
+        for (a, b) in &segs {
+            painter.line_segment(
+                [
+                    center + egui::vec2(a.0, a.1),
+                    center + egui::vec2(b.0, b.1),
+                ],
+                egui::Stroke::new(1.0, egui::Color32::WHITE),
+            );
         }
     }
+}
+
+/// `cursor.freehand.style` 是否为 `crosshair` —— 此时源码改用系统十字光标
+/// （`tileddrawwidget.py:586-588`），不画圆环。
+pub(crate) fn cursor_is_crosshair(prefs: &Prefs) -> bool {
+    prefs.str_or("cursor.freehand.style", "thin") == "crosshair"
 }
 
 #[cfg(test)]
@@ -1178,6 +1302,116 @@ mod tests {
         // 极小视口也不能越界
         let tiny = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(40.0, 40.0));
         assert!(tiny.contains(frame_remove_pos(tiny)));
+    }
+
+    // ---- 笔刷光标（`gui/cursor.py`）----
+
+    #[test]
+    fn cursor_arcs_match_cursor_py() {
+        // 逐项照 cursor.py:268-288；角度是 cairo 的弧度，k=π/4、k2=π/8
+        let k = std::f32::consts::PI / 4.0;
+        let k2 = k / 2.0;
+        assert_eq!(cursor_arc_segments(CursorStyle::Normal), vec![(0.0, 2.0 * std::f32::consts::PI)]);
+        assert_eq!(
+            cursor_arc_segments(CursorStyle::Eraser),
+            vec![
+                (k2, k2 + k),
+                (k2 + 2.0 * k, k2 + 3.0 * k),
+                (k2 + 4.0 * k, k2 + 5.0 * k),
+                (k2 + 6.0 * k, k2 + 7.0 * k),
+            ]
+        );
+        // 锁 alpha：左右两个空缺被填上（第一段逆时针跨 0）
+        assert_eq!(
+            cursor_arc_segments(CursorStyle::LockAlpha),
+            vec![(k2 + 6.0 * k, k2 + k), (k2 + 2.0 * k, k2 + 5.0 * k)]
+        );
+        // 着色：空缺转 90°
+        assert_eq!(
+            cursor_arc_segments(CursorStyle::Colorize),
+            vec![(k2, k2 + 3.0 * k), (k2 + 4.0 * k, k2 + 7.0 * k)]
+        );
+        // 缺口样式不是整圆：橡皮 4×π/4 = π；锁 alpha / 着色各 3π/4 + 3π/4 = 3π/2
+        let total = |s| {
+            cursor_arc_segments(s)
+                .iter()
+                .map(|(a, b)| if b >= a { b - a } else { b - a + std::f32::consts::TAU })
+                .sum::<f32>()
+        };
+        assert!((total(CursorStyle::Eraser) - std::f32::consts::PI).abs() < 1e-4);
+        for s in [CursorStyle::LockAlpha, CursorStyle::Colorize] {
+            assert!(
+                (total(s) - 1.5 * std::f32::consts::PI).abs() < 1e-4,
+                "{s:?} 的两段应共 3π/2，实得 {}",
+                total(s)
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_crosshair_geometry_matches_cursor_py() {
+        // r=4、threshold=8 → offs=4；正常样式四个正方向
+        let normal = cursor_line_segments(CursorStyle::Normal, 4.0, 8.0);
+        assert_eq!(
+            normal,
+            vec![
+                ((-8.0, 0.0), (-4.0, 0.0)),
+                ((4.0, 0.0), (8.0, 0.0)),
+                ((0.0, -8.0), (0.0, -4.0)),
+                ((0.0, 4.0), (0.0, 8.0)),
+            ]
+        );
+        // 锁 alpha 只留左右；着色只留上下
+        assert_eq!(cursor_line_segments(CursorStyle::LockAlpha, 4.0, 8.0).len(), 2);
+        assert_eq!(cursor_line_segments(CursorStyle::Colorize, 4.0, 8.0).len(), 2);
+        let lock = cursor_line_segments(CursorStyle::LockAlpha, 4.0, 8.0);
+        assert!(lock.iter().all(|(a, b)| a.1 == 0.0 && b.1 == 0.0));
+        let colorize = cursor_line_segments(CursorStyle::Colorize, 4.0, 8.0);
+        assert!(colorize.iter().all(|(a, b)| a.0 == 0.0 && b.0 == 0.0));
+        // 橡皮的十字线在对角（cos π/4）
+        let eraser = cursor_line_segments(CursorStyle::Eraser, 4.0, 8.0);
+        assert_eq!(eraser.len(), 4);
+        let k = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((eraser[0].0 .0 + 4.0 * k).abs() < 1e-5);
+        assert!((eraser[0].1 .0 + 8.0 * k).abs() < 1e-5);
+        // 半径达到阈值后不再画十字线（cursor.py:240-241）
+        assert!(cursor_line_segments(CursorStyle::Normal, 8.0, 8.0).is_empty());
+        assert!(cursor_line_segments(CursorStyle::Normal, 20.0, 8.0).is_empty());
+        // 阈值以下时 offs 向上取整：ceil(8-3.5)=5 → -3.5-5 = -8.5
+        let segs = cursor_line_segments(CursorStyle::Normal, 3.5, 8.0);
+        assert!((segs[0].0 .0 + 8.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn cursor_style_follows_brush_flags() {
+        use pigment_engine::hokusai::{Brush, BrushSetting};
+        let mut b = Brush::new();
+        assert_eq!(CursorStyle::from_brush(&b, false), CursorStyle::Normal);
+        // 橡皮优先于其余两个
+        b.get_mut(BrushSetting::Eraser).base_value = 1.0;
+        b.get_mut(BrushSetting::LockAlpha).base_value = 1.0;
+        assert_eq!(CursorStyle::from_brush(&b, false), CursorStyle::Eraser);
+        // 覆盖开关（E 键）与笔刷自带橡皮等价
+        let mut plain = Brush::new();
+        assert_eq!(CursorStyle::from_brush(&plain, true), CursorStyle::Eraser);
+        plain.get_mut(BrushSetting::LockAlpha).base_value = 1.0;
+        assert_eq!(CursorStyle::from_brush(&plain, false), CursorStyle::LockAlpha);
+        plain.get_mut(BrushSetting::LockAlpha).base_value = 0.0;
+        plain.get_mut(BrushSetting::Colorize).base_value = 1.0;
+        assert_eq!(CursorStyle::from_brush(&plain, false), CursorStyle::Colorize);
+    }
+
+    #[test]
+    fn crosshair_preset_selects_the_system_cursor() {
+        let mut p = Prefs::load(std::env::temp_dir().join(format!(
+            "pigment-cursor-{}.json",
+            std::process::id()
+        )));
+        assert!(!cursor_is_crosshair(&p), "缺键 → thin → 自绘圆环");
+        p.set_str("cursor.freehand.style", "crosshair");
+        assert!(cursor_is_crosshair(&p));
+        p.set_str("cursor.freehand.style", "thick");
+        assert!(!cursor_is_crosshair(&p));
     }
 }
 

@@ -2889,6 +2889,7 @@ dependencies = [
  "image",
  "pigment-surface",
  "quick-xml 0.37.5",
+ "serde",
  "serde_json",
 ]
 
