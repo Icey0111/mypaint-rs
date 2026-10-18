@@ -1352,7 +1352,7 @@ impl PigmentApp {
             force_resync: false,
             pending_uploads: 0,
             stroke_dirty: false,
-            fullscreen: false,
+            fullscreen: win_full,
             appearance_dirty: true,
             icon_cache: Default::default(),
             toolbar_fragments,

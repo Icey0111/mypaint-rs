@@ -32,7 +32,13 @@ impl PigmentApp {
     /// 源码的全屏形态还有 FakeMenuButton（菜单项塞进 toolbar1 首位）与
     /// workspace 的边缘碰撞自动隐藏 —— **记账未移植**，这里直接整条隐藏。
     pub(crate) fn topbar(&mut self, ui: &mut egui::Ui) {
-        if self.fullscreen {
+        let hide_menu = self
+            .prefs
+            .bool_or("ui.hide_menubar_in_fullscreen", true);
+        let hide_toolbar = self
+            .prefs
+            .bool_or("ui.hide_toolbar_in_fullscreen", true);
+        if self.fullscreen && hide_menu && hide_toolbar {
             return;
         }
         egui::Panel::top("topbar")
@@ -40,8 +46,12 @@ impl PigmentApp {
             .resizable(false)
             .show(ui, |ui| {
                 ui.set_min_height(TOPBAR_MIN_HEIGHT);
-                self.menubar_row(ui);
-                self.toolbar_row(ui);
+                if !self.fullscreen || !hide_menu {
+                    self.menubar_row(ui);
+                }
+                if !self.fullscreen || !hide_toolbar {
+                    self.toolbar_row(ui);
+                }
             });
     }
 
