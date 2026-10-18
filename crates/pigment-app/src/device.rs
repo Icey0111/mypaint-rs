@@ -55,6 +55,13 @@ impl TabletUsage {
     }
 }
 
+/// 逐设备覆盖优先，缺失时回落到全局策略。
+pub(crate) fn resolve_usage(specific: Option<&str>, global: &str) -> TabletUsage {
+    specific
+        .map(TabletUsage::from_str)
+        .unwrap_or_else(|| TabletUsage::from_str(global))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,6 +74,13 @@ mod tests {
         assert_eq!(TabletUsage::from_str("navonly"), TabletUsage::NavOnly);
         assert_eq!(TabletUsage::from_str("garbage"), TabletUsage::Any);
         assert_eq!(TabletUsage::default(), TabletUsage::Any);
+    }
+
+    #[test]
+    fn device_override_wins_and_falls_back_to_global() {
+        assert_eq!(resolve_usage(Some("ignored"), "any"), TabletUsage::Ignored);
+        assert_eq!(resolve_usage(None, "navonly"), TabletUsage::NavOnly);
+        assert_eq!(resolve_usage(Some("bogus"), "nopaint"), TabletUsage::Any);
     }
 
     #[test]

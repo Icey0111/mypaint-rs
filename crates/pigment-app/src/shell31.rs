@@ -417,13 +417,19 @@ impl ApplicationHandler for Shell {
                 st.window.request_redraw();
             }
             WindowEvent::PointerMoved {
-                position, source, ..
+                position,
+                source,
+                device_id,
+                ..
             } => {
                 let p = pos(position);
                 st.last_pointer = Some(p);
                 st.last_move_sent = Some(p);
                 st.raw.events.push(Event::PointerMoved(p));
                 if let PointerSource::TabletTool { kind, data } = source {
+                    st.app
+                        .tablet
+                        .set_device(device_id.map(|d| d.into_raw()));
                     let pressure =
                         data.force.map(|f| f.normalized(None) as f32).unwrap_or(1.0);
                     let tilt = data
@@ -444,6 +450,7 @@ impl ApplicationHandler for Shell {
                 state,
                 position,
                 button,
+                device_id,
                 ..
             } => {
                 if let Some(b) = mouse_button(&button) {
@@ -460,6 +467,9 @@ impl ApplicationHandler for Shell {
                         modifiers: st.modifiers,
                     });
                     if let ButtonSource::TabletTool { kind, data, .. } = button {
+                        st.app
+                            .tablet
+                            .set_device(device_id.map(|d| d.into_raw()));
                         let pressure =
                             data.force.map(|f| f.normalized(None) as f32).unwrap_or(1.0);
                         let tilt = data

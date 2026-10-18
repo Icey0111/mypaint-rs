@@ -1555,6 +1555,44 @@ impl PigmentApp {
                 .set_str("input.tablet_usage", usage.as_str());
         }
         ui.add_space(4.0);
+        // 当前数位板设备的单独覆盖（winit DeviceId 的原始 i64）。
+        if let Some(id) = self.tablet.device_id {
+            let key = format!("input.device_usage.{id}");
+            let before_specific = self
+                .prefs
+                .get(&key)
+                .and_then(|v| v.as_str())
+                .map(TabletUsage::from_str);
+            let mut specific = before_specific;
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                ui.set_min_size(egui::vec2(450.0, 80.0));
+                ui.heading(format!("Device #{id}"));
+                ui.label(
+                    "Per-device override for the current tablet tool. \
+                     Unset uses the global policy above.",
+                );
+                egui::ComboBox::from_id_salt("device_usage")
+                    .selected_text(
+                        specific.map(TabletUsage::label).unwrap_or("Use global policy"),
+                    )
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut specific, None, "Use global policy");
+                        for u in TabletUsage::VALUES {
+                            ui.selectable_value(&mut specific, Some(u), u.label());
+                        }
+                    });
+            });
+            if specific != before_specific {
+                match specific {
+                    Some(u) => {
+                        self.prefs.set_str(&key, u.as_str());
+                    }
+                    None => {
+                        self.prefs.remove(&key);
+                    }
+                }
+            }
+        }
         let current = if self.tablet.active {
             if self.tablet.is_eraser() {
                 "tablet: eraser end"
@@ -1566,9 +1604,8 @@ impl PigmentApp {
         };
         ui.monospace(format!("Current input: {current}"));
         ui.label(
-            "Device name and axis ranges are not exposed by the windowing backend, \
-             so per-device profiles are not available; this policy applies to all \
-             tablet tools.",
+            "Device name and axis ranges are not exposed by the windowing backend; \
+             overrides are keyed by winit DeviceId, not by device name.",
         );
     }
     /// 控件在当前设置下是否可编辑。

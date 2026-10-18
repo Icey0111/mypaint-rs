@@ -390,6 +390,8 @@ pub(crate) struct TabletInput {
     pub(crate) tilt: (f32, f32),
     /// 笔尾橡皮端。
     pub(crate) eraser: bool,
+    /// winit `DeviceId::into_raw()`；用于逐设备策略/切换检测。
+    pub(crate) device_id: Option<i64>,
 }
 
 impl Default for TabletInput {
@@ -399,6 +401,7 @@ impl Default for TabletInput {
             pressure: 1.0,
             tilt: (0.0, 0.0),
             eraser: false,
+            device_id: None,
         }
     }
 }
@@ -411,6 +414,11 @@ impl TabletInput {
         self.pressure = pressure.clamp(0.0, 1.0);
         self.tilt = (tilt.0.clamp(-1.0, 1.0), tilt.1.clamp(-1.0, 1.0));
         self.eraser = eraser;
+    }
+
+    /// 记录当前数位板设备 id（winit 0.31 的 `DeviceId` 是不透明 i64）。
+    pub(crate) fn set_device(&mut self, device_id: Option<i64>) {
+        self.device_id = device_id;
     }
 
     #[allow(dead_code)]
@@ -581,7 +589,7 @@ pub struct PigmentApp {
     /// 笔尾橡皮生效前用户的 `eraser` 开关（`None` = 笔尾未按下）。
     pub(crate) tablet_eraser_prev: Option<bool>,
     /// 上一帧的输入设备类别（设备切换时重置笔刷状态）。
-    pub(crate) last_input_device: Option<u8>,
+    pub(crate) last_input_device: Option<(u8, Option<i64>)>,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
     /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
@@ -2032,7 +2040,13 @@ impl PigmentApp {
 
     /// 当前数位板策略（`gui/device.py::AllowedUsage` 的全局子集）。
     pub(crate) fn tablet_usage(&self) -> crate::device::TabletUsage {
-        crate::device::TabletUsage::from_str(
+        let specific = self.tablet.device_id.and_then(|id| {
+            self.prefs
+                .get(&format!("input.device_usage.{id}"))
+                .and_then(|v| v.as_str())
+        });
+        crate::device::resolve_usage(
+            specific,
             self.prefs.str_or("input.tablet_usage", "any"),
         )
     }
@@ -2045,12 +2059,15 @@ impl PigmentApp {
     /// 设备切换时重置笔刷状态（`freehand.py:383-394`）：否则上一支笔留下的
     /// 非零压力会在新设备未按下时拖出一笔。
     pub(crate) fn note_input_device(&mut self) {
-        let class = input_device_class(self.tablet.active, self.tablet.is_eraser());
-        if self.last_input_device != Some(class) {
+        let key = (
+            input_device_class(self.tablet.active, self.tablet.is_eraser()),
+            self.tablet.device_id,
+        );
+        if self.last_input_device != Some(key) {
             if self.last_input_device.is_some() {
                 self.stroke_state = pigment_engine::hokusai::BrushState::default();
             }
-            self.last_input_device = Some(class);
+            self.last_input_device = Some(key);
         }
     }
     /// 笔尾橡皮端生效时临时把 `eraser` 打开，抬起后恢复用户原来的开关
