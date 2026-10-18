@@ -1705,6 +1705,26 @@ pub struct RestackLayer {
     orig_targ: Vec<usize>,
 }
 
+/// 新父组的唯一名字（`tree.py:1197-1213` 的 `get_unique_name` +
+/// `lib/naming.py:36-81` 的 `make_unique_name`）。
+fn unique_group_name(layers: &LayerStack) -> String {
+    let existing: std::collections::HashSet<&str> = layers
+        .walk()
+        .into_iter()
+        .filter_map(|(_, l)| l.name.as_deref())
+        .collect();
+    if !existing.contains("Group") {
+        return "Group".to_string();
+    }
+    for n in 1.. {
+        let name = format!("Group {n}");
+        if !existing.contains(name.as_str()) {
+            return name;
+        }
+    }
+    unreachable!()
+}
+
 impl RestackLayer {
     pub fn new(ctx: &mut DocContext<'_>, src_path: Vec<usize>, targ_path: Vec<usize>) -> Option<Self> {
         if targ_path.is_empty() || targ_path.starts_with(&src_path) {
@@ -1750,7 +1770,8 @@ impl RestackLayer {
                 ctx.layers.remove_by_id(ph_id);
                 return false;
             };
-            let group = Layer::new_group();
+            let mut group = Layer::new_group();
+            group.name = Some(unique_group_name(ctx.layers));
             let group_path = parent_path.to_vec();
             if ctx.layers.insert_at(&group_path, group).is_none() {
                 let _ = ctx.layers.insert_at(parent_path, target_layer);
@@ -2260,6 +2281,20 @@ mod tests {
         let before = stack.undo_len();
         assert!(!stack.do_command(Box::new(BubbleLayer::up(top)), &mut ctx(&mut st, &mut t)));
         assert_eq!(stack.undo_len(), before, "取消的命令不入栈");
+    }
+
+    #[test]
+    fn unique_group_names_follow_mypaint_numbering() {
+        let mut st = LayerStack::new();
+        assert_eq!(unique_group_name(&st), "Group");
+        let mut g = Layer::new_group();
+        g.name = Some("Group".to_string());
+        st.insert(0, g);
+        assert_eq!(unique_group_name(&st), "Group 1");
+        let mut g2 = Layer::new_group();
+        g2.name = Some("Group 1".to_string());
+        st.insert(0, g2);
+        assert_eq!(unique_group_name(&st), "Group 2");
     }
 
     /// 跨组冒泡：出组/入组后，`undo` 用反方向冒泡必须精确还原结构。
