@@ -20,6 +20,7 @@ use winit::window::{Window, WindowAttributes, WindowId};
 use crate::app::PigmentApp;
 
 struct State {
+    clipboard: Option<arboard::Clipboard>,
     window: Arc<dyn Window>,
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
@@ -117,6 +118,19 @@ fn mouse_button(button: &ButtonSource) -> Option<PointerButton> {
         },
         _ => None,
     }
+}
+
+/// 剪贴板快捷键（Ctrl+C/X/V）的字符；其他键返回 None。
+fn clipboard_shortcut(key: &WinitKey) -> Option<char> {
+    match key {
+        WinitKey::Character(s) => s.chars().next().map(|c| c.to_ascii_lowercase()),
+        _ => None,
+    }
+}
+
+/// 把系统剪贴板的 CRLF 统一成 egui 使用的 LF。
+fn normalize_paste(text: &str) -> String {
+    text.replace("\r\n", "\n")
 }
 
 /// winit 的 preedit 范围是 UTF-8 字节索引 → egui 的字符索引。
@@ -247,6 +261,7 @@ impl Shell {
             ),
         ));
         self.state = Some(State {
+            clipboard: arboard::Clipboard::new().ok(),
             window,
             surface,
             config,
@@ -372,6 +387,38 @@ impl ApplicationHandler for Shell {
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let pressed = event.state == ElementState::Pressed;
+                // 剪贴板快捷键（照 egui-winit `:1128-1152`）：Ctrl+C/X/V 只发
+                // 剪贴板事件，不再发 Key，避免文本框和应用快捷键重复处理。
+                if pressed && st.modifiers.ctrl {
+                    let shortcut = clipboard_shortcut(&event.logical_key);
+                    match shortcut {
+                        Some('c') => {
+                            st.raw.events.push(Event::Copy);
+                            st.window.request_redraw();
+                            return;
+                        }
+                        Some('x') => {
+                            st.raw.events.push(Event::Cut);
+                            st.window.request_redraw();
+                            return;
+                        }
+                        Some('v') => {
+                            if let Some(text) = st
+                                .clipboard
+                                .as_mut()
+                                .and_then(|c| c.get_text().ok())
+                            {
+                                let text = normalize_paste(&text);
+                                if !text.is_empty() {
+                                    st.raw.events.push(Event::Paste(text));
+                                }
+                            }
+                            st.window.request_redraw();
+                            return;
+                        }
+                        _ => {}
+                    }
+                }
                 if let Some(key) = map_key(&event.logical_key) {
                     let repeat = event.repeat;
                     st.raw.events.push(Event::Key {
@@ -477,6 +524,14 @@ fn render_frame(st: &mut State) {
     let output = st.ctx.run_ui(st.raw.take(), |ui| {
         st.app.ui_root(ui);
     });
+    // 把 egui 的复制命令写进系统剪贴板（Cut/Copy 的事件路径）。
+    for cmd in &output.platform_output.commands {
+        if let egui::OutputCommand::CopyText(text) = cmd {
+            if let Some(cb) = st.clipboard.as_mut() {
+                let _ = cb.set_text(text.clone());
+            }
+        }
+    }
     // 面板的自动备份需要 1Hz 帧；egui 的 repaint_delay 已经包含它。
     let delay = output
         .viewport_output
@@ -571,6 +626,20 @@ fn render_frame(st: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clipboard_shortcuts_and_newlines_are_normalized() {
+        assert_eq!(
+            clipboard_shortcut(&WinitKey::Character("C".into())),
+            Some('c')
+        );
+        assert_eq!(
+            clipboard_shortcut(&WinitKey::Character("v".into())),
+            Some('v')
+        );
+        assert_eq!(clipboard_shortcut(&WinitKey::Named(NamedKey::Enter)), None);
+        assert_eq!(normalize_paste("a\r\nb"), "a\nb");
+    }
 
     #[test]
     fn preedit_range_converts_utf8_bytes_to_chars() {

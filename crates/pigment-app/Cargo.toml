@@ -21,6 +21,7 @@ egui_system_font_provider = "0.37"
 wgpu = "30"
 winit = "=0.31.0-beta.3"
 pollster = "1"
+arboard = "3"
 
 [build-dependencies]
 resvg = "0.48.1"
