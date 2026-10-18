@@ -425,6 +425,43 @@ impl TabletInput {
     }
 }
 
+/// 由视图 + 数位板快照构造模式层指针事件（纯函数，方便测试压感接线）。
+fn build_pointer_event(
+    view: &View,
+    tablet: &TabletInput,
+    pos: egui::Pos2,
+    rect: egui::Rect,
+    time_ms: f64,
+    button: u32,
+    modifiers: pigment_engine::mode::Modifiers,
+    view_bbox: Option<(i32, i32, i32, i32)>,
+) -> pigment_engine::mode::PointerEvent {
+    let local = pos - rect.min;
+    let [x, y] = view.screen_to_world(local.x, local.y);
+    let (pressure, xtilt, ytilt) = if tablet.active {
+        (Some(tablet.pressure), Some(tablet.tilt.0), Some(tablet.tilt.1))
+    } else {
+        (None, None, None)
+    };
+    pigment_engine::mode::PointerEvent {
+        time_ms,
+        x,
+        y,
+        pressure,
+        xtilt,
+        ytilt,
+        viewzoom: view.zoom,
+        // 源码 `freehand.py:403-404`：`viewzoom = tdw.scale`、
+        // `viewrotation = tdw.rotation`（弧度，cairo 的 `Matrix.rotate`）。
+        viewrotation: view.rotation,
+        viewmirrored: view.mirrored,
+        barrel_rotation: None,
+        button,
+        modifiers,
+        view_bbox,
+    }
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -2682,34 +2719,16 @@ impl PigmentApp {
         button: u32,
         modifiers: pigment_engine::mode::Modifiers,
     ) -> pigment_engine::mode::PointerEvent {
-        let local = pos - rect.min;
-        let [x, y] = self.view.screen_to_world(local.x, local.y);
-        let (pressure, xtilt, ytilt) = if self.tablet.active {
-            (
-                Some(self.tablet.pressure),
-                Some(self.tablet.tilt.0),
-                Some(self.tablet.tilt.1),
-            )
-        } else {
-            (None, None, None)
-        };
-        pigment_engine::mode::PointerEvent {
+        build_pointer_event(
+            &self.view,
+            &self.tablet,
+            pos,
+            rect,
             time_ms,
-            x,
-            y,
-            pressure,
-            xtilt,
-            ytilt,
-            viewzoom: self.view.zoom,
-            // 源码 `freehand.py:403-404`：`viewzoom = tdw.scale`、
-            // `viewrotation = tdw.rotation`（弧度，cairo 的 `Matrix.rotate`）。
-            viewrotation: self.view.rotation,
-            viewmirrored: self.view.mirrored,
-            barrel_rotation: None,
             button,
             modifiers,
-            view_bbox: Some(self.view_bbox_model(rect)),
-        }
+            Some(self.view_bbox_model(rect)),
+        )
     }
 
     /// 视口四角投到模型坐标后的包围盒（`fill.py:222-224` 的
@@ -4841,6 +4860,43 @@ mod tests {
         p.push(format!("pigment-app-prefs-{}-{tag}.json", std::process::id()));
         let _ = std::fs::remove_file(&p);
         Prefs::load(p)
+    }
+
+    #[test]
+    fn tablet_input_reaches_the_mode_pointer_event() {
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let view = View::default();
+        let modifiers = pigment_engine::mode::Modifiers::NONE;
+        let mut tablet = TabletInput::default();
+        tablet.set(0.42, (0.25, -0.5), false);
+        let ev = build_pointer_event(
+            &view,
+            &tablet,
+            egui::pos2(100.0, 120.0),
+            rect,
+            1.5,
+            1,
+            modifiers,
+            None,
+        );
+        assert_eq!(ev.pressure, Some(0.42));
+        assert_eq!(ev.xtilt, Some(0.25));
+        assert_eq!(ev.ytilt, Some(-0.5));
+        // 鼠标路径：没有 active 时保持原来的 None
+        tablet.clear();
+        let ev = build_pointer_event(
+            &view,
+            &tablet,
+            egui::pos2(100.0, 120.0),
+            rect,
+            1.5,
+            1,
+            modifiers,
+            None,
+        );
+        assert_eq!(ev.pressure, None);
+        assert_eq!(ev.xtilt, None);
+        assert_eq!(ev.ytilt, None);
     }
 
     #[test]
