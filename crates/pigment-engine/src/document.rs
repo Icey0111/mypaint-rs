@@ -36,7 +36,7 @@ use pigment_surface::symmetry::SymmetryType;
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
-    Brushwork, Command, CommandStack, CommandUpdate, DocContext, LayerProp,
+    Brushwork, Command, CommandStack, CommandUpdate, DocContext, LayerProp, MoveLayer,
     DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
@@ -559,6 +559,64 @@ impl Document {
     /// 最近一次命令（`lib/document.py:1184`）。
     pub fn get_last_command(&self) -> Option<&dyn Command> {
         self.command_stack.get_last_command()
+    }
+
+    /// 裁剪当前图层：丢弃完全在画框之外的 tile（`trim_layer_cb` →
+    /// `Document.trim_current_layer`，`gui/document.py:1007-1013`）。
+    ///
+    /// 源码按 tile 粒度丢；含画框边缘的部分 tile 保留。用前后快照做撤销。
+    pub fn trim_current_layer(&mut self) -> bool {
+        const TILE: i32 = 64;
+        let path = self.layers.current_path().to_vec();
+        if self.layers.branch_locked(&path) {
+            return false;
+        }
+        let Some(current) = self.layers.paintable_at(&path) else {
+            return false;
+        };
+        if !current.paintable_self() {
+            return false;
+        }
+        let layer_id = current.id;
+        let (fx, fy, fw, fh) = self.get_frame();
+        if fw <= 0 || fh <= 0 {
+            return false;
+        }
+        let Some(surface) = self.layers.paintable_surface_mut() else {
+            return false;
+        };
+        let before = surface.save_snapshot();
+        let before_strokes = surface.strokes().to_vec();
+        let mut trimmed = PigmentSurface::new();
+        for ((tx, ty), tile) in surface.tiles() {
+            let x0 = tx * TILE;
+            let y0 = ty * TILE;
+            let inside = x0 < fx + fw
+                && x0 + TILE > fx
+                && y0 < fy + fh
+                && y0 + TILE > fy;
+            if inside {
+                trimmed.paste_tile(
+                    tx,
+                    ty,
+                    tile.pixels().as_flattened().as_flattened(),
+                );
+            }
+        }
+        if trimmed.tile_count() == surface.tile_count() {
+            return false;
+        }
+        surface.load_from_surface(&trimmed);
+        let after = surface.save_snapshot();
+        let after_strokes = surface.strokes().to_vec();
+        self.do_command(Box::new(MoveLayer::new(
+            layer_id,
+            before,
+            after,
+            before_strokes,
+            after_strokes,
+        )));
+        true
     }
 
     /// 内容外接框（`lib/document.py:1191` 的 `get_bbox()` 的 tile 对齐版）：
@@ -1376,6 +1434,23 @@ mod tests {
         assert_eq!(doc.command_stack.max_stack_size(), 40);
     }
 
+    #[test]
+    fn trim_current_layer_discards_tiles_outside_frame_and_undoes() {
+        let mut doc = Document::new();
+        doc.set_frame(0, 0, 64, 64);
+        doc.set_frame_enabled(true);
+        let tile = Box::new([[[0u16; 4]; 64]; 64]);
+        {
+            let surface = doc.layers.paintable_surface_mut().unwrap();
+            surface.paste_tile(0, 0, tile.as_flattened().as_flattened());
+            surface.paste_tile(2, 0, tile.as_flattened().as_flattened());
+            assert_eq!(surface.tile_count(), 2);
+        }
+        assert!(doc.trim_current_layer());
+        assert_eq!(doc.layers.current().surface().unwrap().tile_count(), 1);
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers.current().surface().unwrap().tile_count(), 2);
+    }
     #[test]
     fn undo_and_redo_round_trip_pixels() {
         let mut doc = Document::new();

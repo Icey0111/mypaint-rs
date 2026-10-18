@@ -4449,6 +4449,14 @@ fn layout_ink_buttons(
                 self.doc.set_layer_visible(&path, !visible);
                 ctx.request_repaint();
             }
+            "TrimLayer" => {
+                if self.doc.trim_current_layer() {
+                    self.set_status("已裁剪图层到画框".to_string(), now);
+                } else {
+                    self.set_status("没有需要裁剪的图层内容".to_string(), now);
+                }
+                ctx.request_repaint();
+            }
             // ---- 对称开关（B3-5：`symmetry_active_toggled_cb`，
             //      `gui/document.py:1889-1905`）----
             "SymmetryActive" => {
