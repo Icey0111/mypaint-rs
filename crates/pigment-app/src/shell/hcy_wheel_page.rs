@@ -56,11 +56,11 @@
 //!
 //! ## 与源码的差异（逐条记账）
 //!
-//! 1. **遮罩编辑对话框没有搬**（`HCYMaskEditorWheel` + `HCYMaskPropertiesDialog`，
+//! 1. **遮罩编辑对话框**（`HCYMaskEditorWheel` + `HCYMaskPropertiesDialog`，
 //!    `hcywheel.py:370-822` / `:1055-1265`）：源码从工具页签的"属性"菜单弹一个
-//!    GTK 模态对话框，在里面拖顶点、加删形状、整体旋转、从 GIMP 调色板读写。
-//!    本页把**遮罩的选择**（五个 mood 预设 + 开关 + 清空）做成页内一行控件，
-//!    编辑交互未移植（见交付记账）。
+//!    GTK 模态对话框。本页把它压成一行页内控件 + 轮上的编辑模式：
+//!    拖顶点移动、Shift+点击加顶点、右键删顶点、清空、套模板都已实现；
+//!    拖轮缘整体旋转、从 GIMP 调色板读写、形状数上限/明度夹取仍未做。
 //! 2. **`Gtk.AspectFrame` 的正方约束**：egui 没有 AspectFrame，用
 //!    [`crate::shell::wheel_pages::page_size`] 的 `square = true` 近似（与
 //!    HSV 轮页同一处置）。
@@ -454,6 +454,10 @@ pub(crate) struct HcyWheelState {
     pub mask_active: bool,
     /// 当前套用的模板下标（`None` = 没套过 / 已清空）；只用于下拉框显示。
     pub mask_template: Option<usize>,
+    /// 遮罩编辑模式（`HCYMaskPropertiesDialog` 里的编辑轮，本项目做成页内开关）。
+    pub mask_edit: bool,
+    /// 正在拖的顶点 `(形状下标, 点下标)`。
+    pub mask_drag: Option<(usize, usize)>,
 }
 
 impl Default for HcyWheelState {
@@ -471,6 +475,8 @@ impl HcyWheelState {
             // `mask_toggle` 的初值来自偏好（`hcywheel.py:108`，默认 False）
             mask_active: false,
             mask_template: None,
+            mask_edit: false,
+            mask_drag: None,
         }
     }
 
@@ -573,6 +579,9 @@ impl PigmentApp {
                 with_alpha(ui.visuals().text_color(), MASK_DRAW_ALPHA),
             );
         }
+        if self.hcy_wheel.mask_edit {
+            self.hcy_mask_editor(ui, parts.wheel, &geom, ranges, &managed);
+        }
         paint_hcy_marker(&painter, parts.wheel, &managed, ranges);
 
         // 明度滑条：采样段数由控件尺寸决定（`sliders.py:287-292`）
@@ -621,7 +630,10 @@ impl PigmentApp {
         let frame = PointerFrame::read(ui);
         let mask = &self.hcy_wheel.mask;
         let mask_active = self.hcy_wheel.mask_active && !mask.is_empty();
-        let wheel_color = drive_changer(
+        let wheel_color = if self.hcy_wheel.mask_edit {
+            None
+        } else {
+            drive_changer(
             &frame,
             &mut self.hcy_wheel.wheel,
             &mut self.color_manager,
@@ -640,7 +652,7 @@ impl PigmentApp {
                     hcy_wheel_color_at_position(&geom, x, y, &managed, ranges).map(Color::Hcy)
                 }
             },
-        );
+        )};
         let luma_color = if luma_ok {
             drive_changer(
                 &frame,
@@ -679,7 +691,121 @@ impl PigmentApp {
         }
     }
 
-    /// 页内的遮罩控件行 —— `HCYMaskPropertiesDialog` 的两个控件（"Active"
+    /// 遮罩编辑轮的指针交互 —— `HCYMaskEditorWheel`
+    /// （`hcywheel.py:370-822`）。
+    ///
+    /// 源码：拖顶点移动、拖边插入新顶点、拖轮缘整体旋转、Delete 删形状。
+    /// 这里实现前两项 + Shift 加顶点 / 右键删顶点；旋转留给后续（记账）。
+    fn hcy_mask_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        rect: egui::Rect,
+        geom: &WheelGeometry,
+        ranges: Option<&[HueRange]>,
+        managed: &Color,
+    ) {
+        let resp = ui.interact(
+            rect,
+            ui.id().with("hcy_mask_editor_wheel"),
+            egui::Sense::click_and_drag(),
+        );
+        let handle_r = 5.0;
+        let grab_r = 11.0;
+        let pos_for = |color: &Color| {
+            let (x, y) = hcy_wheel_position_for_color(geom, color, ranges);
+            rect.min + egui::vec2(x as f32, y as f32)
+        };
+        let hit_at = |mask: &[MaskShape], p: egui::Pos2| -> Option<(usize, usize)> {
+            let mut pts = Vec::new();
+            for (si, shape) in mask.iter().enumerate() {
+                for (pi, color) in shape.iter().enumerate() {
+                    pts.push((si, pi, pos_for(color)));
+                }
+            }
+            nearest_mask_handle(&pts, p, grab_r)
+        };
+
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                self.hcy_wheel.mask_drag = hit_at(&self.hcy_wheel.mask, p);
+            }
+        }
+        if resp.dragged() {
+            if let (Some((si, pi)), Some(p)) =
+                (self.hcy_wheel.mask_drag, resp.interact_pointer_pos())
+            {
+                let x = f64::from(p.x - rect.left());
+                let y = f64::from(p.y - rect.top());
+                if let Some(c) = hcy_wheel_color_at_position(geom, x, y, managed, ranges) {
+                    if let Some(shape) = self.hcy_wheel.mask.get_mut(si) {
+                        if let Some(slot) = shape.get_mut(pi) {
+                            *slot = Color::Hcy(c);
+                        }
+                    }
+                }
+            }
+        }
+        if resp.drag_stopped() {
+            self.hcy_wheel.mask_drag = None;
+        }
+
+        // Shift+点击：在指针处加一个顶点（源码是拖边插入，语义等价）
+        if resp.clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let shift = ui.input(|i| i.modifiers.shift);
+                if shift && rect.contains(p) {
+                    let x = f64::from(p.x - rect.left());
+                    let y = f64::from(p.y - rect.top());
+                    if let Some(c) = hcy_wheel_color_at_position(geom, x, y, managed, ranges) {
+                        if self.hcy_wheel.mask.is_empty() {
+                            self.hcy_wheel.mask.push(Vec::new());
+                        }
+                        let last = self.hcy_wheel.mask.len() - 1;
+                        self.hcy_wheel.mask[last].push(Color::Hcy(c));
+                    }
+                }
+            }
+        }
+        // 右键：删最近的顶点；形状不足 3 点就整组丢掉
+        if resp.secondary_clicked() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                if let Some((si, pi)) = hit_at(&self.hcy_wheel.mask, p) {
+                    let shape = &mut self.hcy_wheel.mask[si];
+                    if pi < shape.len() {
+                        shape.remove(pi);
+                    }
+                    if shape.len() < 3 {
+                        self.hcy_wheel.mask.remove(si);
+                    }
+                }
+            }
+        }
+
+        // 顶点手柄
+        let painter = ui.painter().with_clip_rect(ui.clip_rect());
+        for (si, shape) in self.hcy_wheel.mask.iter().enumerate() {
+            for (pi, color) in shape.iter().enumerate() {
+                let active = self.hcy_wheel.mask_drag == Some((si, pi));
+                let p = pos_for(color);
+                painter.circle_filled(
+                    p,
+                    if active { handle_r + 1.5 } else { handle_r },
+                    if active {
+                        egui::Color32::from_rgb(255, 220, 80)
+                    } else {
+                        egui::Color32::from_rgb(240, 240, 240)
+                    },
+                );
+                painter.circle_stroke(
+                    p,
+                    if active { handle_r + 1.5 } else { handle_r },
+                    egui::Stroke::new(1.0, egui::Color32::BLACK),
+                );
+            }
+        }
+    }
+
+/// 页内的遮罩控件行 —— `HCYMaskPropertiesDialog` 的两个控件（"Active"
     /// 勾选框 + "New" 模板按钮，`hcywheel.py:1085-1106`）压成一行。
     ///
     /// 源码把它们放在一个 GTK 模态对话框里（从工具页签的"属性"菜单弹出，
@@ -693,6 +819,16 @@ impl PigmentApp {
                 .changed()
             {
                 self.hcy_wheel.mask_active = active;
+            }
+            // 遮罩编辑（源码是 `HCYMaskPropertiesDialog` 里的编辑轮，
+            // `hcywheel.py:1055-1265`；这里做成页内模式开关）。
+            if ui
+                .checkbox(&mut self.hcy_wheel.mask_edit, "Edit Mask")
+                .on_hover_text("拖动顶点改形状；Shift+点击加顶点；右键删顶点")
+                .changed()
+                && !self.hcy_wheel.mask_edit
+            {
+                self.hcy_wheel.mask_drag = None;
             }
             let templates = mask_templates();
             let current = match self.hcy_wheel.mask_template {
@@ -738,6 +874,24 @@ impl PigmentApp {
 // `pigment-engine/tests/wheel_vectors.rs` 的 `hcy_*` 部分）
 // ---------------------------------------------------------------------------
 
+/// 在遮罩顶点里找最近的一个（`HCYMaskEditorWheel.__update_active_objects`
+/// 的 `__ctrlpoint_grab_radius` 判定，`hcywheel.py:487-505`）。
+fn nearest_mask_handle(
+    points: &[(usize, usize, egui::Pos2)],
+    p: egui::Pos2,
+    radius: f32,
+) -> Option<(usize, usize)> {
+    let mut best: Option<(usize, usize, f32)> = None;
+    for &(si, pi, q) in points {
+        let d = q.distance(p);
+        if d <= radius && best.map(|b| d < b.2).unwrap_or(true) {
+            best = Some((si, pi, d));
+        }
+    }
+    best.map(|b| (b.0, b.1))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -748,6 +902,24 @@ mod tests {
 
     fn rect(w: f32, h: f32) -> egui::Rect {
         egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(w, h))
+    }
+
+    #[test]
+    fn mask_handle_pick_prefers_the_nearest_within_radius() {
+        let pts = [
+            (0, 0, egui::pos2(100.0, 100.0)),
+            (0, 1, egui::pos2(108.0, 100.0)),
+            (1, 0, egui::pos2(200.0, 200.0)),
+        ];
+        assert_eq!(
+            nearest_mask_handle(&pts, egui::pos2(106.0, 101.0), 11.0),
+            Some((0, 1))
+        );
+        assert_eq!(
+            nearest_mask_handle(&pts, egui::pos2(101.0, 101.0), 11.0),
+            Some((0, 0))
+        );
+        assert_eq!(nearest_mask_handle(&pts, egui::pos2(150.0, 150.0), 11.0), None);
     }
 
     fn approx(a: f32, b: f32, eps: f32) -> bool {
