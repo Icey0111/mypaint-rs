@@ -369,8 +369,6 @@ const R_ALPHA_CHECK: &str = "画布透明区的棋盘格只有一种画法，未
                              tileddrawwidget.py:1078-1081 的 _draw_real_alpha_checks";
 /// `lib.i18n.userlocale`
 const R_LOCALE: &str = "多语言（lib/config.py 的 supported_locales + lib/localecodes.py 语言名表）未移植";
-/// `ui.toolbar_icon_size`
-const R_ICON_SIZE: &str = "图标在构建期按 24×24 栅格化（pigment-app/build.rs），运行期不再按该键换尺寸";
 /// `ui.blink_layers`
 const R_BLINK: &str = "图层闪烁提示（layerswindow.py 的 blink）未移植";
 /// `default_compatibility_mode` / `compability_settings` /
@@ -671,25 +669,24 @@ pub(crate) static CONTROLS: &[ControlDef] = &[
         "glade:873-887",
     ),
     // `toolbar_icon_size_large_radio`（glade:968-977）；写回 preferenceswindow.py:297-300。
-    ControlDef::unported(
+    // 消费方：`toolbars::icon_size` → `tool_button` 的图标边长。
+    ControlDef::wired(
         5,
         Kind::Radio,
         "toolbar_icon_size_large_radio",
         "Large (requires recent GTK3)",
         Some("ui.toolbar_icon_size"),
         "glade:968-977",
-        R_ICON_SIZE,
     )
     .value("large"),
     // `toolbar_icon_size_small_radio`（glade:985-1001）；写回 `:292-295`。
-    ControlDef::unported(
+    ControlDef::wired(
         5,
         Kind::Radio,
         "toolbar_icon_size_small_radio",
         "Small",
         Some("ui.toolbar_icon_size"),
         "glade:985-1001",
-        R_ICON_SIZE,
     )
     .value("small"),
     ControlDef::text(
@@ -1972,11 +1969,11 @@ mod tests {
             .count();
         assert_eq!(widgets, 37, "控件行数");
         assert_eq!(CONTROLS.len() - widgets, 34, "标题/说明/行标签的行数");
-        // 已接线的控件行 = 14 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
+        // 已接线的控件行 = 16 个偏好控件 + Keys 页编辑器 + Buttons 页编辑器
         // + Color 页的 3 个单选
         let wired = CONTROLS.iter().filter(|c| c.wired).count();
-        assert_eq!(wired, 17);
-        assert_eq!(widgets - wired, 20, "禁用控件行数（未移植子系统）");
+        assert_eq!(wired, 19);
+        assert_eq!(widgets - wired, 18, "禁用控件行数（未移植子系统）");
     }
 
     // ---- 控件 ↔ 偏好键映射表 ----
@@ -2028,6 +2025,7 @@ mod tests {
                 "document.autosave_backups",       // AutosaveState + autosave_tick
                 "document.autosave_interval",      // 同上（夹在 5..300）
                 "saving.scrap_prefix",             // scrap_dir → Save/Next/Prev Scrap
+                "ui.toolbar_icon_size",            // toolbars::icon_size
             ])
         );
         // 唯一一个没有偏好键的已接线控件是 B6-2 的加速键编辑器
@@ -2053,7 +2051,6 @@ mod tests {
             "input.device_mode",             // Devices 页的编辑器
             "display.colorspace",            // 色彩管理两个单选
             "view.real_alpha_checks",        // 棋盘格复选框
-            "ui.toolbar_icon_size",          // 图标尺寸两个单选
             "ui.blink_layers",               // 图层闪烁
             "default_compatibility_mode",    // Compatibility 页
             "compability_settings",

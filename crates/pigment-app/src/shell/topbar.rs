@@ -235,6 +235,7 @@ impl PigmentApp {
                     .unwrap_or(id)
                     .to_string(),
             },
+            crate::shell::toolbars::icon_size(&self.prefs),
         );
         if clicked {
             let ctx = ui.ctx().clone();

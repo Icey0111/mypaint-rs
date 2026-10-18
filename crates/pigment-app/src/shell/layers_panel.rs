@@ -776,6 +776,7 @@ impl PigmentApp {
                     .unwrap_or(id)
                     .to_string(),
             },
+            24.0,
         );
         if clicked {
             let ctx = ui.ctx().clone();

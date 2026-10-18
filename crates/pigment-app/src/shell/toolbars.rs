@@ -330,14 +330,26 @@ pub struct ToolBtn {
     pub fallback_label: String,
 }
 
+/// 工具栏图标边长 —— 偏好 `ui.toolbar_icon_size`
+/// （`gui/widgets.py:164-172`：small = SMALL_TOOLBAR 16px，large = LARGE_TOOLBAR 24px）。
+pub fn icon_size(prefs: &pigment_engine::prefs::Prefs) -> f32 {
+    if prefs.str_or("ui.toolbar_icon_size", "large") == "small" {
+        16.0
+    } else {
+        24.0
+    }
+}
+
 pub fn tool_button(
     ui: &mut egui::Ui,
     cache: &mut IconCache,
     b: ToolBtn,
+    icon_size: f32,
 ) -> bool {
     let mut btn = match b.icon_name.and_then(|n| icon_texture(ui.ctx(), cache, n)) {
         Some(tex) => {
-            let mut img = egui::Image::new(&tex).max_size(egui::vec2(24.0, 24.0));
+            let mut img =
+                egui::Image::new(&tex).max_size(egui::vec2(icon_size, icon_size));
             if !b.available {
                 img = img.tint(egui::Color32::from_rgba_unmultiplied(215, 215, 215, 90));
             }
@@ -366,6 +378,23 @@ pub fn tool_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toolbar_icon_size_follows_the_preference() {
+        // widgets.py:164-172：large=24、small=16；缺键回落 large
+        let path = std::env::temp_dir().join(format!(
+            "pigment-toolbar-icon-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut prefs = pigment_engine::prefs::Prefs::load(&path);
+        assert_eq!(icon_size(&prefs), 24.0);
+        prefs.set_str("ui.toolbar_icon_size", "small");
+        assert_eq!(icon_size(&prefs), 16.0);
+        prefs.set_str("ui.toolbar_icon_size", "large");
+        assert_eq!(icon_size(&prefs), 24.0);
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn count_nodes<'a>(nodes: impl IntoIterator<Item = &'a TbNode>) -> (usize, usize) {
         // (toolitem 数, separator 数)，占位符递归
