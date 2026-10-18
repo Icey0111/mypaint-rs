@@ -522,27 +522,33 @@ impl PigmentApp {
             // 落点判定：组行中段 = 放进组顶；行上半 = 插到该行前；下半 = 其后
             let rect = resp.rect;
             if let Some(pos) = ui.ctx().pointer_interact_pos() {
-                let into_group = row.is_group
-                    && (pos.y - rect.top()) > rect.height() * 0.3
-                    && (rect.bottom() - pos.y) > rect.height() * 0.3;
-                let target = if into_group {
-                    let mut p = row.path.clone();
-                    p.push(0);
-                    p
-                } else {
-                    let before = pos.y < rect.center().y;
-                    let mut p = row.path.clone();
-                    if !before {
-                        *p.last_mut().unwrap() += 1;
-                    }
-                    p
-                };
+                let target = Self::layer_drop_path(&row.path, pos.y, rect);
                 self.layer_drop_target = Some(target);
             }
         }
     }
 
-    /// 拖动结束（全局）：把拖着的层挪到落点。
+    /// 拖动落点 → `RestackLayer` 的目标路径。
+///
+/// 行中段（上下各留 30%）= 放进该层：组是插到组顶，数据层则由命令现场建父组
+/// （`command.py:1310-1337`）。行上半 = 插到该行前，下半 = 其后。
+fn layer_drop_path(row_path: &[usize], pos_y: f32, rect: egui::Rect) -> Vec<usize> {
+    let h = rect.height();
+    let into_layer = (pos_y - rect.top()) > h * 0.3 && (rect.bottom() - pos_y) > h * 0.3;
+    if into_layer {
+        let mut p = row_path.to_vec();
+        p.push(0);
+        p
+    } else {
+        let before = pos_y < rect.center().y;
+        let mut p = row_path.to_vec();
+        if !before {
+            *p.last_mut().unwrap() += 1;
+        }
+        p
+    }
+}
+/// 拖动结束（全局）：把拖着的层挪到落点。
     fn layer_drag_finish(&mut self, ctx: &egui::Context) {
         if self.layer_drag.is_none() {
             return;
@@ -823,4 +829,23 @@ fn icon_button(
     };
     btn = btn.min_size(egui::vec2(FLAG_PX, FLAG_PX));
     ui.add(btn)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn layer_drop_path_targets_layer_middle_for_any_row_type() {
+        let rect = egui::Rect::from_min_size(
+            egui::pos2(0.0, 100.0),
+            egui::vec2(100.0, 40.0),
+        );
+        // 上半 → 插到该行前
+        assert_eq!(PigmentApp::layer_drop_path(&[1], 105.0, rect), vec![1]);
+        // 中段（上下各 30%）→ 放进该层；数据层由命令现场建组
+        assert_eq!(PigmentApp::layer_drop_path(&[1], 120.0, rect), vec![1, 0]);
+        // 下半 → 插到该行后
+        assert_eq!(PigmentApp::layer_drop_path(&[1], 135.0, rect), vec![2]);
+    }
 }
