@@ -718,6 +718,10 @@ impl ModePrefs {
         BrushpackOpen,
         /// 当前分组导出为 `.zip`（`brushmanager.py:845-886`）
         BrushpackExport,
+        /// HCY 遮罩 → GIMP 调色板（`hcywheel.py:1186-1216`）
+        MaskSave,
+        /// GIMP 调色板 → HCY 遮罩（`hcywheel.py:1218-1235`）
+        MaskLoad,
     }
 
     pub(crate) struct FilePrompt {
@@ -767,6 +771,8 @@ impl ModePrefs {
                 FileAction::PaletteSaveAs => "导出调色板 .gpl",
                 FileAction::BrushpackOpen => "导入笔刷包（.zip）",
                 FileAction::BrushpackExport => "导出分组为笔刷包（.zip）",
+                FileAction::MaskSave => "保存遮罩为 GIMP 调色板（.gpl）",
+                FileAction::MaskLoad => "从 GIMP 调色板载入遮罩（.gpl）",
             }
         }
     }
@@ -800,6 +806,7 @@ fn action_extension(action: FileAction, doc_ext: &'static str) -> &'static str {
         FileAction::PaletteOpen | FileAction::PaletteSaveAs => ".gpl",
         FileAction::BrushpackOpen => ".zip",
         FileAction::BrushpackExport => ".zip",
+        FileAction::MaskSave | FileAction::MaskLoad => ".gpl",
         _ => doc_ext,
     }
 }
@@ -2416,6 +2423,42 @@ impl PigmentApp {
                     Err(e) => self.set_status(format!("导出笔刷包失败：{e}"), now),
                 }
             }
+            FileAction::MaskSave => {
+                if self.hcy_wheel.mask.is_empty() {
+                    self.file_prompt = Some(FilePrompt {
+                        error: Some("遮罩是空的，没有可保存的点".into()),
+                        ..prompt
+                    });
+                    return;
+                }
+                let text = pigment_engine::color::mask_to_palette(&self.hcy_wheel.mask)
+                    .to_gimp_palette_string();
+                match std::fs::write(&path, text) {
+                    Ok(()) => self.set_status(format!("已保存遮罩：{}", path.display()), now),
+                    Err(e) => self.set_status(format!("保存遮罩失败：{e}"), now),
+                }
+            }
+            FileAction::MaskLoad => {
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => {
+                        let mut pal = pigment_engine::color::Palette::new();
+                        match pal.load_str(&text) {
+                            Ok(()) => {
+                                self.hcy_wheel.mask =
+                                    pigment_engine::color::mask_from_palette(&pal);
+                                self.hcy_wheel.mask_active = !self.hcy_wheel.mask.is_empty();
+                                let n: usize = self.hcy_wheel.mask.iter().map(Vec::len).sum();
+                                self.set_status(
+                                    format!("已载入遮罩（{} 个形状 / {n} 点）", self.hcy_wheel.mask.len()),
+                                    now,
+                                );
+                            }
+                            Err(e) => self.set_status(format!("解析调色板失败：{e}"), now),
+                        }
+                    }
+                    Err(e) => self.set_status(format!("读取遮罩失败：{e}"), now),
+                }
+            }
             FileAction::PaletteOpen => {
                 if !path.is_file() {
                     self.file_prompt = Some(FilePrompt {
@@ -2518,6 +2561,8 @@ impl PigmentApp {
                 FileAction::PaletteSaveAs => "导出调色板的路径（不带后缀时按 .gpl 处理）：",
                 FileAction::BrushpackOpen => "要导入的笔刷包路径（.zip）：",
                 FileAction::BrushpackExport => "导出笔刷包的路径（.zip）：",
+                FileAction::MaskSave => "保存遮罩的 GIMP 调色板路径（.gpl）：",
+                FileAction::MaskLoad => "要载入的 GIMP 调色板路径（.gpl）：",
             });
             let resp = ui.add(
                 egui::TextEdit::singleline(&mut prompt.path)

@@ -462,13 +462,17 @@ impl Palette {
         Ok(())
     }
 
+    /// 只读访问格子列表（遮罩 ↔ GIMP 调色板互操作需要按名字分组）。
+    pub fn swatches(&self) -> &[Option<Swatch>] {
+        &self.entries
+    }
+
     /// 序列化成 GIMP 调色板文本 —— `palette.py:776-799` 的 `__unicode__()`
     /// （`save()` 只是把它写进文件，`palette.py:198-222`）。
     ///
     /// 逐行照抄：表头两行按需、固定一行 `#`、每格一行
     /// `"%d %d %d    %s\n"`（名字前**四个空格**）或 `"%d %d %d\n"`（匿名字）。
-    pub fn to_gimp_palette_string(&self) -> String {
-        let mut s = String::from("GIMP Palette\n");
+    pub fn to_gimp_palette_string(&self) -> String {        let mut s = String::from("GIMP Palette\n");
         if let Some(name) = &self.name {
             s.push_str(&format!("Name: {name}\n"));
         }

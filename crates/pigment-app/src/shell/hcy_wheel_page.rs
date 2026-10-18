@@ -884,6 +884,28 @@ impl PigmentApp {
             {
                 self.hcy_wheel.clear_mask();
             }
+            // GIMP 调色板互操作（`hcywheel.py:1186-1235`）
+            if ui.button("Load…").clicked() {
+                self.file_prompt = Some(crate::app::FilePrompt::new(
+                    crate::app::FileAction::MaskLoad,
+                    None,
+                    ".gpl",
+                ));
+            }
+            if ui
+                .add_enabled(
+                    !self.hcy_wheel.mask.is_empty(),
+                    egui::Button::new("Save…"),
+                )
+                .on_disabled_hover_text("遮罩是空的")
+                .clicked()
+            {
+                self.file_prompt = Some(crate::app::FilePrompt::new(
+                    crate::app::FileAction::MaskSave,
+                    None,
+                    ".gpl",
+                ));
+            }
         });
     }
 }

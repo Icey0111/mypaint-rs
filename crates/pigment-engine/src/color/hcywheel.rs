@@ -66,6 +66,7 @@
 //! - **`get_prefs()`**（`adjbases.py:414-419`）：偏好系统属 B6。
 
 use super::model::{Color, HcyColor, UIColor};
+use super::palette::Palette;
 use super::tools::{clamp, ScrollDirection, SCROLL_DELTA};
 use super::wheels::{distort_hue, undistort_hue, HueRange, WheelGeometry, SAT_GAMMA};
 
@@ -849,6 +850,43 @@ pub fn mask_templates() -> Vec<MaskTemplate> {
     ]
 }
 
+/// 遮罩 → GIMP 调色板 —— `HCYMaskPropertiesDialog.__save_clicked`
+/// （`hcywheel.py:1186-1216`）：每个点命名 `mask#<形状> primary#<点>`。
+pub fn mask_to_palette(mask: &[MaskShape]) -> Palette {
+    let mut pal = Palette::new();
+    for (i, shape) in mask.iter().enumerate() {
+        for (j, color) in shape.iter().enumerate() {
+            let name = format!("mask#{i} primary#{j}");
+            pal.append(Some(color), Some(&name), false, false);
+        }
+    }
+    pal
+}
+
+/// 名字里的 `mask #<n>` → 形状 id（`set_mask_from_palette`，
+/// `hcywheel.py:129-159`；没有该模式时归到 0）。
+fn mask_shape_id(name: &str) -> usize {
+    let lower = name.to_lowercase();
+    let Some(pos) = lower.find("mask") else {
+        return 0;
+    };
+    let rest = lower[pos + 4..].trim_start_matches([' ', '#', '\t']);
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().unwrap_or(0)
+}
+
+/// GIMP 调色板 → 遮罩 —— `set_mask_from_palette`（`hcywheel.py:129-159`）：
+/// 按名字里的形状 id 分组，id 升序排列。
+pub fn mask_from_palette(pal: &Palette) -> Vec<MaskShape> {
+    let mut shapes: std::collections::BTreeMap<usize, MaskShape> =
+        std::collections::BTreeMap::new();
+    for sw in pal.swatches().iter().flatten() {
+        let id = sw.name.as_deref().map(mask_shape_id).unwrap_or(0);
+        shapes.entry(id).or_default().push(Color::Rgb(sw.color));
+    }
+    shapes.into_values().collect()
+}
+
 /// 整体旋转遮罩 —— `HCYMaskEditorWheel` 拖轮缘的 `__rotate_drag`
 /// （`hcywheel.py:760-790`）：所有形状的色相加同一个 `delta`。
 pub fn rotate_mask(mask: &mut [MaskShape], delta: f64) {
@@ -953,6 +991,28 @@ mod tests {
 
     fn close(a: f64, b: f64, eps: f64) -> bool {
         (a - b).abs() <= eps
+    }
+
+    #[test]
+    fn mask_palette_roundtrip_keeps_shape_grouping() {
+        use crate::color::Palette;
+        let a = Color::Rgb(crate::color::RgbColor::new(0.8, 0.2, 0.1));
+        let b = Color::Rgb(crate::color::RgbColor::new(0.1, 0.7, 0.3));
+        let c = Color::Rgb(crate::color::RgbColor::new(0.2, 0.3, 0.9));
+        let mask: Vec<MaskShape> = vec![vec![a, b], vec![c, a, b]];
+        let pal = mask_to_palette(&mask);
+        let text = pal.to_gimp_palette_string();
+        assert!(text.contains("mask#0 primary#0"));
+        assert!(text.contains("mask#1 primary#2"));
+        let mut back = Palette::new();
+        back.load_str(&text).unwrap();
+        let out = mask_from_palette(&back);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].len(), 2);
+        assert_eq!(out[1].len(), 3);
+        let [r, g, _b] = out[0][0].get_rgb();
+        assert!((r - 0.8).abs() < 0.01, "r={r}");
+        assert!((g - 0.2).abs() < 0.01, "g={g}");
     }
 
     #[test]
