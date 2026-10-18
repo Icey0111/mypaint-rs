@@ -6,3 +6,7 @@ publish = false
 
 [dependencies]
 winit = "=0.31.0-beta.3"
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+wgpu = "30"
+pollster = "1"

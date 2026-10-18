@@ -3898,6 +3898,10 @@ dependencies = [
 name = "tablet-probe"
 version = "0.1.0"
 dependencies = [
+ "egui",
+ "egui-wgpu",
+ "pollster",
+ "wgpu",
  "winit 0.31.0-beta.3",
 ]
 
