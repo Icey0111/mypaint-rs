@@ -31,6 +31,10 @@ struct State {
     raw: RawInput,
     modifiers: Modifiers,
     start: Instant,
+    /// 主键是否按下（用于窗口不产事件时继续产帧 + 补最后一次指针位置）。
+    pointer_down: bool,
+    last_pointer: Option<Pos2>,
+    last_move_sent: Option<Pos2>,
 }
 
 pub(crate) struct Shell {
@@ -243,6 +247,9 @@ impl Shell {
             raw,
             modifiers: Modifiers::default(),
             start: Instant::now(),
+            pointer_down: false,
+            last_pointer: None,
+            last_move_sent: None,
         });
         if let Some(st) = self.state.as_ref() {
             st.window.request_redraw();
@@ -292,7 +299,8 @@ impl ApplicationHandler for Shell {
                 position, source, ..
             } => {
                 let p = pos(position);
-                eprintln!("PM {:.1},{:.1} {source:?}", p.x, p.y);
+                st.last_pointer = Some(p);
+                st.last_move_sent = Some(p);
                 st.raw.events.push(Event::PointerMoved(p));
                 if let PointerSource::TabletTool { kind, data } = source {
                     let pressure =
@@ -317,10 +325,13 @@ impl ApplicationHandler for Shell {
                 button,
                 ..
             } => {
-                eprintln!("PB {state:?} {button:?}");
                 if let Some(b) = mouse_button(&button) {
                     let p = pos(position);
+                    st.last_pointer = Some(p);
                     let pressed = state == ElementState::Pressed;
+                    if b == PointerButton::Primary {
+                        st.pointer_down = pressed;
+                    }
                     st.raw.events.push(Event::PointerButton {
                         pos: p,
                         button: b,
@@ -412,6 +423,16 @@ impl ApplicationHandler for Shell {
 
 fn render_frame(st: &mut State) {
     st.raw.time = Some(st.start.elapsed().as_secs_f64());
+    // 主键按住时，Windows 可能把整段移动合并到一帧；补一个当前指针位置，
+    // 并在本帧结束后继续要帧，让 egui 的 drag 状态有机会推进。
+    if st.pointer_down {
+        if let Some(p) = st.last_pointer {
+            if st.last_move_sent != Some(p) {
+                st.raw.events.push(Event::PointerMoved(p));
+                st.last_move_sent = Some(p);
+            }
+        }
+    }
     // 笔尾橡皮端：按下时临时切到橡皮，抬起后恢复用户原来的 E 开关。
     let tablet_eraser = st.app.tablet.is_eraser();
     st.app.apply_tablet_eraser(tablet_eraser);
@@ -498,6 +519,11 @@ fn render_frame(st: &mut State) {
     st.queue
         .submit(cmd.into_iter().chain(std::iter::once(encoder.finish())));
     st.queue.present(frame);
+    // 按住期间必须继续产帧：egui 的 drag_started/dragged 分帧推进，
+    // 只靠 PointerMoved 事件在 Windows 上会被合并成一帧，表现为只落一个 dab。
+    if st.pointer_down {
+        st.window.request_redraw();
+    }
     for id in &textures.free {
         st.renderer.free_texture(id);
     }
