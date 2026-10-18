@@ -659,6 +659,7 @@ impl PigmentApp {
                 .id(egui::Id::unique(("dock_float", gi)))
                 .open(&mut open)
                 .default_width(280.0)
+                .default_pos(egui::pos2(80.0, 120.0))
                 .show(ui, |ui| {
                     self.dock_group(ui, &group, Side::Right, None);
                 });
