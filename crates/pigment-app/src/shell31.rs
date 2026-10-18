@@ -697,6 +697,40 @@ fn render_frame(st: &mut State) -> bool {
             st.last_cursor = Some(cursor);
         }
     }
+    // egui 的视口命令（菜单 Quit / Fullscreen / Maximized 等）。
+    for viewport in output.viewport_output.values() {
+        for cmd in &viewport.commands {
+            match cmd {
+                egui::ViewportCommand::Close => {
+                    let now = st.start.elapsed().as_secs_f64();
+                    st.app.request_quit(now);
+                    st.window.request_redraw();
+                }
+                egui::ViewportCommand::Fullscreen(on) => {
+                    st.window.set_fullscreen(if *on {
+                        Some(winit::monitor::Fullscreen::Borderless(None))
+                    } else {
+                        None
+                    });
+                    st.app.window_fullscreen = *on;
+                }
+                egui::ViewportCommand::Maximized(on) => {
+                    st.window.set_maximized(*on);
+                    st.app.window_maximized = *on;
+                }
+                egui::ViewportCommand::Title(title) => st.window.set_title(title),
+                egui::ViewportCommand::InnerSize(size) => {
+                    let _ = st.window.request_surface_size(winit::dpi::Size::Physical(
+                        winit::dpi::PhysicalSize::new(
+                            size.x.max(1.0) as u32,
+                            size.y.max(1.0) as u32,
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
     // IME 只在文本框获得焦点时启用。全局启用会把单键快捷键（k/t/…）
     // 送进输入法，画到候选窗里。
     let ime_wanted = output.platform_output.ime.is_some();
