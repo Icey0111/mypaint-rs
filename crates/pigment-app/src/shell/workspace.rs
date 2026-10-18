@@ -948,7 +948,7 @@ impl PigmentApp {
                     .iter()
                     .enumerate()
                     .map(|(i, q)| (i, q.distance(p)))
-                    .filter(|(_, d)| *d <= 20.0)
+                    .filter(|(_, d)| *d <= 60.0)
                     .min_by(|a, b| a.1.total_cmp(&b.1))
                     .map(|(i, _)| i);
             }
