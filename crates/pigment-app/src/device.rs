@@ -55,11 +55,53 @@ impl TabletUsage {
     }
 }
 
+/// Windows 设备友好名（`DEVPKEY_Device_FriendlyName`）。
+///
+/// `persistent_identifier()` 给的是设备接口路径；`CM_Get_Device_Interface_PropertyW`
+/// 可以直接按接口路径取 PnP 友好名（如 "Wacom Intuos Pro M"）。
+#[cfg(windows)]
+fn friendly_device_name(id: &str) -> Option<String> {
+    use windows_sys::Win32::Devices::DeviceAndDriverInstallation::CM_Get_Device_Interface_PropertyW;
+    use windows_sys::Win32::Devices::Properties::{
+        DEVPKEY_Device_FriendlyName, DEVPROP_TYPE_STRING,
+    };
+
+    let wide: Vec<u16> = id.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut buf = [0u16; 512];
+    let mut size = (buf.len() * 2) as u32;
+    let mut ty = 0u32;
+    let cr = unsafe {
+        CM_Get_Device_Interface_PropertyW(
+            wide.as_ptr(),
+            &DEVPKEY_Device_FriendlyName,
+            &mut ty,
+            buf.as_mut_ptr().cast::<u8>(),
+            &mut size,
+            0,
+        )
+    };
+    if cr != 0 || ty != DEVPROP_TYPE_STRING {
+        return None;
+    }
+    let units = (size as usize / 2).min(buf.len());
+    let name = String::from_utf16_lossy(&buf[..units]);
+    let name = name.trim_end_matches('\0').trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+#[cfg(not(windows))]
+fn friendly_device_name(_id: &str) -> Option<String> {
+    None
+}
+
 /// 设备 id 的短标签。
 ///
 /// Windows HID 接口路径里带 `VID_xxxx&PID_yyyy`：已知厂商映射成名字
 /// （Wacom/Huion/XP-Pen），否则显示 `VID:PID`；没有 VID/PID 时取最后一段。
 pub(crate) fn device_label(id: &str) -> String {
+    if let Some(name) = friendly_device_name(id) {
+        return name;
+    }
     let Some(seg) = id.split('#').find(|s| s.starts_with("VID_")) else {
         return id.rsplit('#').next().unwrap_or(id).to_string();
     };

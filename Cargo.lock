@@ -2925,6 +2925,7 @@ dependencies = [
  "roxmltree 0.21.1",
  "serde_json",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit 0.31.0-beta.3",
 ]
 
