@@ -462,6 +462,28 @@ fn build_pointer_event(
     }
 }
 
+/// 笔尾橡皮端的状态转移：返回需要写回的新 `eraser` 值（`None` = 不变）。
+///
+/// `saved` 在首次按下时记录用户原来的开关，抬起后恢复。
+fn tablet_eraser_transition(
+    eraser: bool,
+    saved: &mut Option<bool>,
+    active: bool,
+) -> Option<bool> {
+    if active {
+        if saved.is_none() {
+            *saved = Some(eraser);
+            if !eraser {
+                return Some(true);
+            }
+        }
+        None
+    } else {
+        let prev = saved.take()?;
+        (eraser != prev).then_some(prev)
+    }
+}
+
 /// 字段一律 `pub(crate)`：UI 已经按 `gui/` 的模块边界拆到 [`crate::shell`] 的
 /// 子模块里（顶栏 / 工作区 / 底栏），那些模块要读写这些状态。
 /// 「谁能改谁」的约束靠方法（`set_color`、`derive_active` 等）而不是字段可见性。
@@ -543,6 +565,8 @@ pub struct PigmentApp {
     pub(crate) eraser: bool,
     /// 数位板输入快照（由外壳的事件循环每帧更新）。
     pub(crate) tablet: TabletInput,
+    /// 笔尾橡皮生效前用户的 `eraser` 开关（`None` = 笔尾未按下）。
+    pub(crate) tablet_eraser_prev: Option<bool>,
     /// 光谱混色覆盖（`P`；`None` = 用笔刷自带值）。
     pub(crate) paint_override: Option<bool>,
     /// 当前色 + 颜色历史 + `ContextRestoreColor` 开关 —— **颜色的唯一事实来源**。
@@ -1117,6 +1141,7 @@ impl PigmentApp {
             radius_override: None,
             eraser: false,
             tablet: TabletInput::default(),
+            tablet_eraser_prev: None,
             paint_override: None,
             color_manager,
             last_selected_color: initial_color,
@@ -1986,6 +2011,17 @@ impl PigmentApp {
                 eprintln!("{msg}");
                 self.prefs_window.status = Some(msg);
             }
+        }
+    }
+
+    /// 笔尾橡皮端生效时临时把 `eraser` 打开，抬起后恢复用户原来的开关
+    /// （`gui/device.py`/`document.py` 的设备橡皮语义；恢复值在首次按下时记下）。
+    pub(crate) fn apply_tablet_eraser(&mut self, active: bool) {
+        if let Some(next) =
+            tablet_eraser_transition(self.eraser, &mut self.tablet_eraser_prev, active)
+        {
+            self.eraser = next;
+            self.derive_active();
         }
     }
 
@@ -4910,6 +4946,23 @@ mod tests {
         assert_eq!(ev.pressure, None);
         assert_eq!(ev.xtilt, None);
         assert_eq!(ev.ytilt, None);
+    }
+
+    #[test]
+    fn tablet_eraser_temporarily_overrides_the_user_switch() {
+        let mut saved = None;
+        assert_eq!(tablet_eraser_transition(false, &mut saved, true), Some(true));
+        assert_eq!(saved, Some(false));
+        // 重复的按下事件不改变状态
+        assert_eq!(tablet_eraser_transition(true, &mut saved, true), None);
+        // 抬起恢复用户原来的 false
+        assert_eq!(tablet_eraser_transition(true, &mut saved, false), Some(false));
+        assert_eq!(saved, None);
+        // 用户本来就是橡皮：无需切换
+        let mut saved = None;
+        assert_eq!(tablet_eraser_transition(true, &mut saved, true), None);
+        assert_eq!(saved, Some(true));
+        assert_eq!(tablet_eraser_transition(true, &mut saved, false), None);
     }
 
     #[test]

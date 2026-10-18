@@ -292,6 +292,7 @@ impl ApplicationHandler for Shell {
                 position, source, ..
             } => {
                 let p = pos(position);
+                eprintln!("PM {:.1},{:.1} {source:?}", p.x, p.y);
                 st.raw.events.push(Event::PointerMoved(p));
                 if let PointerSource::TabletTool { kind, data } = source {
                     let pressure =
@@ -316,6 +317,7 @@ impl ApplicationHandler for Shell {
                 button,
                 ..
             } => {
+                eprintln!("PB {state:?} {button:?}");
                 if let Some(b) = mouse_button(&button) {
                     let p = pos(position);
                     let pressed = state == ElementState::Pressed;
@@ -410,6 +412,9 @@ impl ApplicationHandler for Shell {
 
 fn render_frame(st: &mut State) {
     st.raw.time = Some(st.start.elapsed().as_secs_f64());
+    // 笔尾橡皮端：按下时临时切到橡皮，抬起后恢复用户原来的 E 开关。
+    let tablet_eraser = st.app.tablet.is_eraser();
+    st.app.apply_tablet_eraser(tablet_eraser);
     let output = st.ctx.run_ui(st.raw.take(), |ui| {
         st.app.ui_root(ui);
     });
