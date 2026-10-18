@@ -100,6 +100,15 @@ fn map_key(key: &WinitKey) -> Option<egui::Key> {
                 '9' => K::Num9,
                 ' ' => K::Space,
                 '+' => K::Plus, '-' => K::Minus,
+                ':' => K::Colon, ',' => K::Comma,
+                '\\' => K::Backslash, '/' => K::Slash,
+                '|' => K::Pipe, '?' => K::Questionmark,
+                '!' => K::Exclamationmark,
+                '[' => K::OpenBracket, ']' => K::CloseBracket,
+                '{' => K::OpenCurlyBracket, '}' => K::CloseCurlyBracket,
+                '`' => K::Backtick, '.' => K::Period,
+                '=' => K::Equals, ';' => K::Semicolon,
+                '\'' => K::Quote,
                 _ => return None,
             })
         }
@@ -701,6 +710,28 @@ fn render_frame(st: &mut State) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shell_maps_drawing_shortcut_keys() {
+        for (c, key) in [
+            ("[", egui::Key::OpenBracket),
+            ("]", egui::Key::CloseBracket),
+            ("e", egui::Key::E),
+            ("p", egui::Key::P),
+            ("-", egui::Key::Minus),
+            ("=", egui::Key::Equals),
+        ] {
+            assert_eq!(
+                map_key(&WinitKey::Character(c.into())),
+                Some(key),
+                "key {c:?}"
+            );
+        }
+        assert_eq!(
+            map_key(&WinitKey::Named(NamedKey::Escape)),
+            Some(egui::Key::Escape)
+        );
+    }
 
     #[test]
     fn clipboard_image_roundtrips_rgba() {
