@@ -691,6 +691,11 @@ mod tests {
         assert!((s.entry_pressure - 0.1).abs() < 1e-6);
         apply_curve_point(&mut s, 3, 1.0, 0.4); // exit=0.6
         assert!((s.exit_pressure - 0.6).abs() < 1e-6);
+        // head 不能越过 tail，tail 也不能越过 head
+        apply_curve_point(&mut s, 1, 0.99, 0.5);
+        assert!(s.head < s.tail, "head={} tail={}", s.head, s.tail);
+        apply_curve_point(&mut s, 2, 0.0, 0.5);
+        assert!(s.tail > s.head, "head={} tail={}", s.head, s.tail);
     }
     #[test]
     fn line_settings_can_be_pushed_from_the_app() {
