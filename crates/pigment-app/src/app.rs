@@ -189,6 +189,30 @@ impl LayoutNode {
     }
 }
 
+/// 从 `workspace.layout` 读左右停靠侧栏宽度（缺失用出厂值 240/310）。
+fn workspace_widths_from_prefs(prefs: &Prefs) -> (f32, f32) {
+    let obj = prefs.get_object("workspace.layout");
+    let get = |key: &str, fallback: f32| {
+        obj.and_then(|o| o.get(key))
+            .and_then(|v| v.as_f64())
+            .map(|v| (v as f32).clamp(160.0, 520.0))
+            .unwrap_or(fallback)
+    };
+    (get("left_width", 240.0), get("right_width", 310.0))
+}
+
+/// 把左右停靠侧栏宽度合并进 `workspace.layout`，保留源码的
+/// `position`/`autohide` 字段。
+fn store_workspace_layout(prefs: &mut Prefs, left: f32, right: f32) {
+    let mut obj = prefs
+        .get_object("workspace.layout")
+        .cloned()
+        .unwrap_or_default();
+    obj.insert("left_width".into(), serde_json::json!(left as f64));
+    obj.insert("right_width".into(), serde_json::json!(right as f64));
+    prefs.set("workspace.layout", serde_json::Value::Object(obj));
+}
+
 /// 按 MyPaint 的规则播种 10 个槽位（`_init_default_brushkeys_and_history`）。
 fn seed_brushkeys(panel: &BrushPanel) -> [Option<BrushKeySlot>; NUM_BRUSHKEYS] {
     let seed = panel.library.brushkey_seed();
@@ -506,6 +530,10 @@ pub struct PigmentApp {
     pub(crate) brushpack_readme: Option<(String, String)>,
     /// 待导出的分组 id（`BrushGroupsMenu` 的 Export Group…）。
     pub(crate) pending_export_group: Option<String>,
+    /// 左右停靠侧栏宽度（本项目对 `workspace.layout` 的映射；源码存的是
+    /// ToolStackWindow 的几何，见 `gui/workspace.py`）。
+    pub(crate) dock_left_width: f32,
+    pub(crate) dock_right_width: f32,
     // ---- 交互与渲染 ----
     /// 笔刷引擎的跨事件状态（`hokusai::BrushState`）：每次起笔重置
     /// （源码 `brush.reset()` 的等价物）。
@@ -908,6 +936,9 @@ impl PigmentApp {
         // 兼容模式（`compatconfig.py` 的 DEFAULT_COMPAT / COMPAT_SETTINGS）
         let compat_settings = pigment_engine::compat::CompatSettings::from_prefs(&prefs);
         let compat_mode = pigment_engine::compat::default_mode(&prefs);
+        // 停靠侧栏宽度（`workspace.layout` 的对象里存我们自己加的两个键）
+        let (dock_left_width, dock_right_width) =
+            workspace_widths_from_prefs(&prefs);
         // 片段开关从偏好 `ui.toolbar_items` 读（`userconfig.py:76-85`）；
         // 在 `prefs` 被移进结构体之前算好。
         let toolbar_fragments = crate::shell::toolbars::fragments_from_prefs(&prefs);
@@ -1006,6 +1037,8 @@ impl PigmentApp {
             brushpack_pending: None,
             brushpack_readme: None,
             pending_export_group: None,
+            dock_left_width,
+            dock_right_width,
             stroke_state: BrushState::default(),
             modes: pigment_engine::mode::ModeStack::new(|| {
                 Box::new(pigment_engine::mode::freehand::FreehandMode::new())
@@ -1820,6 +1853,12 @@ impl PigmentApp {
         self.prefs.set_str(
             prefs::KEY_LAST_OPENED_SCRATCHPAD,
             scratch_path.display().to_string(),
+        );
+        // 停靠侧栏宽度（本项目对 `workspace.layout` 的映射）
+        store_workspace_layout(
+            &mut self.prefs,
+            self.dock_left_width,
+            self.dock_right_width,
         );
         // 3. 偏好整表落盘 —— `save_settings()`（`:628`）。存盘这一步的实现在
         //    `prefs_window::settings_on_accept`：它同时是偏好对话框 ACCEPT
@@ -4683,6 +4722,35 @@ mod tests {
         p.push(format!("pigment-app-prefs-{}-{tag}.json", std::process::id()));
         let _ = std::fs::remove_file(&p);
         Prefs::load(p)
+    }
+
+    #[test]
+    fn workspace_layout_widths_roundtrip_and_keep_source_fields() {
+        let mut prefs = fresh_prefs("layout");
+        prefs.set(
+            "workspace.layout",
+            serde_json::json!({"position": {"x": 50, "y": 32}, "autohide": true}),
+        );
+        store_workspace_layout(&mut prefs, 301.0, 355.0);
+        assert_eq!(workspace_widths_from_prefs(&prefs), (301.0, 355.0));
+        let obj = prefs.get_object("workspace.layout").cloned().unwrap();
+        assert_eq!(obj.get("autohide").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(
+            obj.get("position")
+                .and_then(|v| v.get("x"))
+                .and_then(|v| v.as_i64()),
+            Some(50)
+        );
+    }
+
+    #[test]
+    fn workspace_layout_widths_clamp_out_of_range_values() {
+        let mut prefs = fresh_prefs("layout-clamp");
+        prefs.set(
+            "workspace.layout",
+            serde_json::json!({"left_width": 10, "right_width": 9999}),
+        );
+        assert_eq!(workspace_widths_from_prefs(&prefs), (160.0, 520.0));
     }
 
     #[test]

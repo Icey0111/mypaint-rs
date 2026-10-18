@@ -364,19 +364,29 @@ impl PigmentApp {
     pub(crate) fn dock_sidebars(&mut self, ui: &mut egui::Ui) {
         let mut pick = false;
         if !self.dock.left.is_empty() {
-            egui::Panel::left("dock_left")
+            let want = self.dock_left_width;
+            let resp = egui::Panel::left("dock_left")
                 .resizable(true)
-                .default_size(240.0)
+                .default_size(want)
                 // 下界 = `TOOL_WIDGET_MIN_WIDTH`（`gui/toolstack.py:40`）
                 .size_range(crate::brushes::TOOL_WIDGET_MIN_WIDTH..=520.0)
                 .show(ui, |ui| pick = self.dock_sidebar(ui, Side::Left) || pick);
+            let actual = resp.response.rect.width();
+            if (actual - want).abs() > 0.5 {
+                self.dock_left_width = actual;
+            }
         }
         if !self.dock.right.is_empty() {
-            egui::Panel::right("dock_right")
+            let want = self.dock_right_width;
+            let resp = egui::Panel::right("dock_right")
                 .resizable(true)
-                .default_size(310.0)
+                .default_size(want)
                 .size_range(250.0..=520.0)
                 .show(ui, |ui| pick = self.dock_sidebar(ui, Side::Right) || pick);
+            let actual = resp.response.rect.width();
+            if (actual - want).abs() > 0.5 {
+                self.dock_right_width = actual;
+            }
         }
         if pick {
             self.reload_selected_brush();
