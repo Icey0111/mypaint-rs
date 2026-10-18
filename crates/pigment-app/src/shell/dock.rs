@@ -627,6 +627,14 @@ impl PigmentApp {
 
     /// 浮动组（`egui::Window` 承接 GTK 的 `ToolStackWindow`）。
     pub(crate) fn dock_floatings(&mut self, ui: &mut egui::Ui) {
+        // 全屏时按偏好隐藏浮动子窗口（`ui.hide_subwindows_in_fullscreen`）。
+        if self.fullscreen
+            && self
+                .prefs
+                .bool_or("ui.hide_subwindows_in_fullscreen", true)
+        {
+            return;
+        }
         let n = self.dock.floating.len();
         for gi in 0..n {
             let Some(group) = self.dock.floating.get(gi).cloned() else {
