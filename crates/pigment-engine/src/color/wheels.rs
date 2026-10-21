@@ -183,7 +183,7 @@ pub type HueRange = ((f64, f64), (f64, f64));
 /// 注意它**只覆盖到 2/3**：`2/3` 之后原样返回（蓝 → 红那段被压缩掉，
 /// 于是红黄蓝在轮上等距）。
 pub static RYB_HUE_RANGES: [HueRange; 3] = [
-    ((0.0, 1.0 / 6.0), (0.0, 1.0 / 3.0)),     // 红 → 黄
+    ((0.0, 1.0 / 6.0), (0.0, 1.0 / 3.0)),       // 红 → 黄
     ((1.0 / 6.0, 1.0 / 3.0), (1.0 / 3.0, 0.5)), // 黄 → 绿
     ((1.0 / 3.0, 2.0 / 3.0), (0.5, 2.0 / 3.0)), // 绿 → 蓝
 ];
@@ -968,7 +968,11 @@ mod tests {
         // rygb：红→黄那段被拉长到 0..0.25
         assert_eq!(distort_hue(1.0 / 12.0, rygb).to_bits(), 0.125f64.to_bits());
         // 段边界：左开右闭（h=0 不进第一段，h=1/6 进第一段）
-        assert_eq!(distort_hue(0.0, rygb), 0.0, "h=0 不重映射（:325 的 h > in0）");
+        assert_eq!(
+            distort_hue(0.0, rygb),
+            0.0,
+            "h=0 不重映射（:325 的 h > in0）"
+        );
         assert_eq!(distort_hue(1.0 / 6.0, rygb).to_bits(), 0.25f64.to_bits());
         // 负角度先绕回（:321 的 h %= 1.0）；-5/6 绕回后略小于 1/6，
         // 于是落进第一段、被拉成 ~0.25（浮点上是 0.24999999999999994）
@@ -1068,7 +1072,8 @@ mod tests {
         let col = hsv_wheel_color_at_position(&g, 50.0, 50.0 + 48.5, &managed, None).unwrap();
         assert_eq!((col.s, col.h), (1.0, 0.25), "下 = 0.25、圆上 = 满饱和");
         // 标记位置：色相 0.25 → 正下方
-        let (x, y) = hsv_wheel_position_for_color(&g, &Color::Hsv(HsvColor::new(0.25, 1.0, 0.7)), None);
+        let (x, y) =
+            hsv_wheel_position_for_color(&g, &Color::Hsv(HsvColor::new(0.25, 1.0, 0.7)), None);
         assert_eq!(x, 50.5);
         assert_eq!(y, (50.0f64 + 48.5).trunc() + 0.5);
     }
@@ -1149,14 +1154,10 @@ mod tests {
         assert_eq!((hsv.h, hsv.s, hsv.v), (0.2, 0.9, 0.6));
         // 竖直滑条向上滚 +SCROLL_DELTA，夹在 1
         let col = depth_slider_scroll(&managed, HsvFace::V, true, ScrollDirection::Up);
-        let Color::Hsv(hsv) = col else {
-            panic!()
-        };
+        let Color::Hsv(hsv) = col else { panic!() };
         assert_eq!(hsv.v, 0.6 + SCROLL_DELTA);
         let col = depth_slider_scroll(&managed, HsvFace::V, true, ScrollDirection::Down);
-        let Color::Hsv(hsv) = col else {
-            panic!()
-        };
+        let Color::Hsv(hsv) = col else { panic!() };
         assert_eq!(hsv.v, 0.6 - SCROLL_DELTA);
         let full = Color::Hsv(HsvColor::new(0.2, 0.4, 1.0));
         let Color::Hsv(hsv) = depth_slider_scroll(&full, HsvFace::V, true, ScrollDirection::Up)
@@ -1201,10 +1202,16 @@ mod tests {
         assert_eq!(hues, vec![0.0, 1.0 / 6.0, 1.0 / 3.0, 2.0 / 3.0, 0.0]);
         // HSV 轮边缘色 = HSV(h, 1, managed.v)
         let managed = Color::Hsv(HsvColor::new(0.4, 0.2, 0.6));
-        assert_eq!(hsv_wheel_slice_rgb(&managed, 0.1), hsv_to_rgb([0.1, 1.0, 0.6]));
+        assert_eq!(
+            hsv_wheel_slice_rgb(&managed, 0.1),
+            hsv_to_rgb([0.1, 1.0, 0.6])
+        );
         // 外环边缘色 = HSV(h, 1, 1)
         let managed = Color::Hsv(HsvColor::new(0.4, 0.2, 0.6));
-        assert_eq!(hsv_ring_slice_rgb(&managed, 0.1), hsv_to_rgb([0.1, 1.0, 1.0]));
+        assert_eq!(
+            hsv_ring_slice_rgb(&managed, 0.1),
+            hsv_to_rgb([0.1, 1.0, 1.0])
+        );
         // 中心灰 = (v, v, v)
         assert_eq!(hsv_wheel_center_rgb(&managed), [0.6, 0.6, 0.6]);
     }
@@ -1245,7 +1252,10 @@ mod tests {
         assert_eq!(manager.wheel_type_name(), "rygb");
         assert_eq!(manager.hue_ranges(), WheelType::Rygb.ranges());
         // 红→黄那段：1/12 映到 0.125，逆映射回来
-        assert_eq!(manager.distort_hue(1.0 / 12.0).to_bits(), 0.125f64.to_bits());
+        assert_eq!(
+            manager.distort_hue(1.0 / 12.0).to_bits(),
+            0.125f64.to_bits()
+        );
         assert_eq!(
             manager.undistort_hue(0.125).to_bits(),
             (1.0 / 12.0f64).to_bits()

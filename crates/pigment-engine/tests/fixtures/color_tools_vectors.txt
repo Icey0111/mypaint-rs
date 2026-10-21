@@ -1,29 +1,29 @@
 # 由 crates/pigment-engine/tests/tools/gen-color-tools-vectors.py 生成，请勿手改。
-# 事实来源：E:\MyPaint\_mypaint_ref（adjbases.py / sliders.py / util.py 的函数体 ast 抽出后 exec）
+# 事实来源：_mypaint_ref（adjbases.py / sliders.py / util.py 的函数体 ast 抽出后 exec）
 # 浮点 = Python repr（最短往返）；Rust 侧应逐位 assert_eq!。
 # 抽出的函数：
-#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:704  ColorAdjusterWidget____motion_notify_cb
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:276  HCYChromaSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:271  HCYChromaSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:263  HCYHueSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:258  HCYHueSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:299  HCYLumaSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:294  HCYLumaSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:223  HSVHueSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:218  HSVHueSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:238  HSVSaturationSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:233  HSVSaturationSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:250  HSVValueSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:245  HSVValueSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:210  RGBBlueSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:205  RGBBlueSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:193  RGBGreenSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:188  RGBGreenSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:176  RGBRedSlider__get_bar_amount_for_color
-#   E:\MyPaint\_mypaint_ref\gui\colors\sliders.py:171  RGBRedSlider__get_color_for_bar_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:1069  SliderColorAdjuster____scroll_cb
-#   E:\MyPaint\_mypaint_ref\gui\colors\adjbases.py:1055  SliderColorAdjuster__point_to_amount
-#   E:\MyPaint\_mypaint_ref\gui\colors\util.py:18  clamp
+#   _mypaint_ref\gui\colors\adjbases.py:704  ColorAdjusterWidget____motion_notify_cb
+#   _mypaint_ref\gui\colors\sliders.py:276  HCYChromaSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:271  HCYChromaSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:263  HCYHueSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:258  HCYHueSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:299  HCYLumaSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:294  HCYLumaSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:223  HSVHueSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:218  HSVHueSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:238  HSVSaturationSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:233  HSVSaturationSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:250  HSVValueSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:245  HSVValueSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:210  RGBBlueSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:205  RGBBlueSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:193  RGBGreenSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:188  RGBGreenSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\sliders.py:176  RGBRedSlider__get_bar_amount_for_color
+#   _mypaint_ref\gui\colors\sliders.py:171  RGBRedSlider__get_color_for_bar_amount
+#   _mypaint_ref\gui\colors\adjbases.py:1069  SliderColorAdjuster____scroll_cb
+#   _mypaint_ref\gui\colors\adjbases.py:1055  SliderColorAdjuster__point_to_amount
+#   _mypaint_ref\gui\colors\util.py:18  clamp
 slider_amt	RGBRedSlider	rgb	0.3	0.6	0.7	0.3
 slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	0.0	rgb	0.0	0.6	0.7
 slider_set	RGBRedSlider	rgb	0.3	0.6	0.7	0.25	rgb	0.25	0.6	0.7

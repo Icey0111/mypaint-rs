@@ -445,7 +445,10 @@ impl Brushwork {
         state: &mut BrushState,
         ev: StrokeEvent,
     ) -> bool {
-        if self.start_recording(surface, brush, brush_name, state).is_err() {
+        if self
+            .start_recording(surface, brush, brush_name, state)
+            .is_err()
+        {
             return false;
         }
         if let Some(seq) = self.stroke_seq.as_mut() {
@@ -460,8 +463,10 @@ impl Brushwork {
         surface.begin_atomic();
         let painted = ev.apply(brush, state, surface);
         surface.end_atomic();
-        // 见字段文档：暂无切段逻辑
-        self.split_due = false;
+        // 引擎的 split 请求（`mypaint_brush_stroke_to` 的返回值）
+        // 交给 `ModeStack::stroke_to` 在下个事件前提交本段。
+        self.split_due = state.split_due;
+        state.split_due = false;
         painted
     }
 
@@ -485,6 +490,8 @@ impl Brushwork {
         if self.recording_finished {
             return false;
         }
+        // 画后快照必须包含所有已排队的 dab（GPU 后端可能还没同步）。
+        surface.flush_dabs();
         self.recording_finished = true;
         let Some(seq) = self.stroke_seq.as_mut() else {
             return false;
@@ -620,7 +627,6 @@ impl Command for Brushwork {
         true
     }
 }
-
 
 /// `FloodFill`（`lib/command.py:561-645`）：在当前层上做一次洪水填充。
 ///
@@ -842,16 +848,45 @@ impl Command for AddLayer {
         // command.py:1003-1010：导入用 "Import Layers"，否则 "Add {DEFAULT_NAME}"
         if self.is_import {
             "Import Layers".to_string()
-        } else if self
-            .layer
-            .as_ref()
-            .map(|l| l.is_group())
-            .unwrap_or(false)
-        {
+        } else if self.layer.as_ref().map(|l| l.is_group()).unwrap_or(false) {
             "Add Group".to_string() // group.py:63 LayerStack.DEFAULT_NAME = "Group"
+        } else if self.layer.as_ref().map(|l| l.is_vector()).unwrap_or(false) {
+            "Add Vector Layer".to_string() // data.py:1173 VectorLayer.DEFAULT_NAME
         } else {
             "Add Layer".to_string() // data.py PaintingLayer.DEFAULT_NAME = "Layer"
         }
+    }
+}
+
+/// `LoadLayer`（`lib/command.py:734`）：把一张现成的表面作为**新图层**插入，
+/// 用于 Paste Layer / Import Layers（源码 `to_new_layer=True`）。
+///
+/// 插入/撤销直接复用 [`AddLayer`]，因此撤销栈里仍是一条命令。
+pub struct LoadLayer {
+    add: AddLayer,
+    label: &'static str,
+}
+
+impl LoadLayer {
+    pub fn new(insert_path: Vec<usize>, layer: Layer, label: &'static str) -> Self {
+        Self {
+            add: AddLayer::new(insert_path, layer, false),
+            label,
+        }
+    }
+}
+
+impl Command for LoadLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        self.add.redo(ctx)
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        self.add.undo(ctx);
+    }
+
+    fn display_name(&self) -> String {
+        self.label.to_string()
     }
 }
 
@@ -1167,8 +1202,7 @@ impl Command for ActivateLayerView {
     }
 
     fn undo(&mut self, ctx: &mut DocContext<'_>) {
-        ctx.views
-            .activate_by_name(self.prev.as_deref(), ctx.layers);
+        ctx.views.activate_by_name(self.prev.as_deref(), ctx.layers);
         self.applied = false;
     }
 
@@ -1222,7 +1256,11 @@ pub struct RenameLayer {
 
 impl RenameLayer {
     pub fn new(id: u64, new_name: Option<String>) -> Self {
-        Self { id, new_name, old_name: None }
+        Self {
+            id,
+            new_name,
+            old_name: None,
+        }
     }
 }
 
@@ -1251,7 +1289,11 @@ impl Command for RenameLayer {
         let CommandUpdate::Rename(name) = update else {
             return false;
         };
-        let name = if name.is_empty() { None } else { Some((*name).to_string()) };
+        let name = if name.is_empty() {
+            None
+        } else {
+            Some((*name).to_string())
+        };
         if let Some(layer) = ctx.layers.layer_by_id_mut(self.id) {
             layer.name = name.clone();
         }
@@ -1272,7 +1314,11 @@ pub struct SetLayerVisibility {
 
 impl SetLayerVisibility {
     pub fn new(id: u64, visible: bool) -> Self {
-        Self { id, new_visible: visible, old: None }
+        Self {
+            id,
+            new_visible: visible,
+            old: None,
+        }
     }
 }
 
@@ -1328,7 +1374,11 @@ pub struct SetLayerLocked {
 
 impl SetLayerLocked {
     pub fn new(id: u64, locked: bool) -> Self {
-        Self { id, new_locked: locked, old: None }
+        Self {
+            id,
+            new_locked: locked,
+            old: None,
+        }
     }
 }
 
@@ -1379,7 +1429,11 @@ pub struct SetLayerOpacity {
 
 impl SetLayerOpacity {
     pub fn new(id: u64, opacity: f32) -> Self {
-        Self { id, new_opacity: opacity, old: None }
+        Self {
+            id,
+            new_opacity: opacity,
+            old: None,
+        }
     }
 }
 
@@ -1432,7 +1486,11 @@ pub struct SetLayerMode {
 
 impl SetLayerMode {
     pub fn new(id: u64, mode: LayerMode) -> Self {
-        Self { id, new_mode: mode, old: None }
+        Self {
+            id,
+            new_mode: mode,
+            old: None,
+        }
     }
 }
 
@@ -1533,6 +1591,9 @@ pub struct MoveLayer {
     after: SurfaceSnapshot,
     before_strokes: Vec<StrokeShape>,
     after_strokes: Vec<StrokeShape>,
+    /// 撤销栈显示的动词。移动是 `Move Layer`，裁剪是源码独立的
+    /// `TrimLayer` 命令（`command.py:648`，显示名 `Trim Layer`）。
+    label: &'static str,
 }
 
 impl MoveLayer {
@@ -1543,13 +1604,50 @@ impl MoveLayer {
         before_strokes: Vec<StrokeShape>,
         after_strokes: Vec<StrokeShape>,
     ) -> Self {
+        Self::with_label(
+            layer_id,
+            before,
+            after,
+            before_strokes,
+            after_strokes,
+            "Move Layer",
+        )
+    }
+
+    fn with_label(
+        layer_id: u64,
+        before: SurfaceSnapshot,
+        after: SurfaceSnapshot,
+        before_strokes: Vec<StrokeShape>,
+        after_strokes: Vec<StrokeShape>,
+        label: &'static str,
+    ) -> Self {
         Self {
             layer_id,
             before,
             after,
             before_strokes,
             after_strokes,
+            label,
         }
+    }
+
+    /// 同 [`MoveLayer::new`] 的前后快照形态，但用于 `TrimLayer` 命令的显示名。
+    pub fn trim(
+        layer_id: u64,
+        before: SurfaceSnapshot,
+        after: SurfaceSnapshot,
+        before_strokes: Vec<StrokeShape>,
+        after_strokes: Vec<StrokeShape>,
+    ) -> Self {
+        Self::with_label(
+            layer_id,
+            before,
+            after,
+            before_strokes,
+            after_strokes,
+            "Trim Layer",
+        )
     }
 }
 
@@ -1572,7 +1670,304 @@ impl Command for MoveLayer {
     }
 
     fn display_name(&self) -> String {
-        "Move Layer".to_string()
+        self.label.to_string()
+    }
+}
+
+/// 外部编辑的类型（决定临时文件怎么读回）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExternalEditKind {
+    /// 位图：PNG 像素放回 `(x, y)`（对应 `PaintingLayer.load_from_external_edit_tempfile`）。
+    Raster { x: i32, y: i32 },
+    /// 矢量：SVG 文本重新栅格化（对应 `FileBackedLayer.load_from_external_edit_tempfile`）。
+    Vector,
+}
+
+/// `ExternalLayerEdit`（`lib/command.py:1615-1639`）：外部应用改完的图层。
+///
+/// 第一次 redo 读临时文件并保存 after 快照；undo/redo 之后只换图层快照，
+/// 与源码 `_before/_after` 的缓存语义一致。图层用 id 寻址（等价 weakref）。
+pub struct ExternalLayerEdit {
+    layer_id: u64,
+    tmpfile: std::path::PathBuf,
+    kind: ExternalEditKind,
+    before: Option<Layer>,
+    after: Option<Layer>,
+}
+
+impl ExternalLayerEdit {
+    pub fn new(
+        layer_id: u64,
+        tmpfile: impl Into<std::path::PathBuf>,
+        kind: ExternalEditKind,
+    ) -> Self {
+        Self {
+            layer_id,
+            tmpfile: tmpfile.into(),
+            kind,
+            before: None,
+            after: None,
+        }
+    }
+
+    fn load_into(&self, layer: &mut Layer) -> Result<(), String> {
+        match self.kind {
+            ExternalEditKind::Raster { x, y } => {
+                let bytes = std::fs::read(&self.tmpfile)
+                    .map_err(|e| format!("读临时文件 {} 失败：{e}", self.tmpfile.display()))?;
+                let (px, w, h) =
+                    pigment_surface::png::decode_rgba8_png(&bytes).map_err(|e| e.to_string())?;
+                let surface = layer
+                    .surface_mut()
+                    .ok_or_else(|| "外部编辑目标不是表面层".to_string())?;
+                surface.clear();
+                surface.replace_from_rgba8(&px, x, y, w, h);
+                Ok(())
+            }
+            ExternalEditKind::Vector => {
+                let svg = std::fs::read_to_string(&self.tmpfile)
+                    .map_err(|e| format!("读临时文件 {} 失败：{e}", self.tmpfile.display()))?;
+                layer.set_vector_svg(svg)
+            }
+        }
+    }
+}
+
+impl Command for ExternalLayerEdit {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(layer) = ctx.layers.layer_by_id_mut(self.layer_id) else {
+            return false;
+        };
+        if self.before.is_none() {
+            self.before = Some(layer.clone());
+        }
+        if let Some(after) = &self.after {
+            *layer = after.clone();
+            return true;
+        }
+        let mut updated = layer.clone();
+        match self.load_into(&mut updated) {
+            Ok(()) => {
+                *layer = updated;
+                self.after = Some(layer.clone());
+                true
+            }
+            Err(e) => {
+                eprintln!("ExternalLayerEdit: {e}");
+                false
+            }
+        }
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        let Some(before) = &self.before else {
+            return;
+        };
+        if let Some(layer) = ctx.layers.layer_by_id_mut(self.layer_id) {
+            *layer = before.clone();
+        }
+    }
+
+    fn display_name(&self) -> String {
+        "Edit Layer Externally".to_string() // command.py:1618
+    }
+}
+
+/// `ClearLayer`（`lib/command.py:714`）：清空当前层内容，保留层对象/属性。
+///
+/// 绘画层清 surface + strokemap；组清空子层（`group.py:198-204`）。用整层
+/// COW 克隆做前后快照，所以组的子树也能一次撤销恢复。
+pub struct ClearLayer {
+    layer_id: u64,
+    before: Layer,
+    after: Layer,
+}
+
+impl ClearLayer {
+    pub fn new(layer: &Layer) -> Self {
+        let before = layer.clone();
+        let mut after = before.clone();
+        after.clear_content();
+        Self {
+            layer_id: layer.id,
+            before,
+            after,
+        }
+    }
+}
+
+impl Command for ClearLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(layer) = ctx.layers.layer_by_id_mut(self.layer_id) else {
+            return false;
+        };
+        *layer = self.after.clone();
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        let Some(layer) = ctx.layers.layer_by_id_mut(self.layer_id) else {
+            return;
+        };
+        *layer = self.before.clone();
+    }
+
+    fn display_name(&self) -> String {
+        "Clear Layer".to_string()
+    }
+}
+
+/// `NormalizeLayerMode`（`lib/command.py:933-968`）：把当前层/组替换成外观
+/// 等价、全不透明、Normal（光谱源除外）的普通绘画层。
+pub struct NormalizeLayerMode {
+    path: Vec<usize>,
+    before: Layer,
+    after: Layer,
+    old_current: Vec<usize>,
+}
+
+impl NormalizeLayerMode {
+    pub fn new(path: Vec<usize>, before: Layer, after: Layer, old_current: Vec<usize>) -> Self {
+        Self {
+            path,
+            before,
+            after,
+            old_current,
+        }
+    }
+}
+
+impl Command for NormalizeLayerMode {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(slot) = ctx.layers.layer_at_mut(&self.path) else {
+            return false;
+        };
+        *slot = self.after.clone();
+        ctx.layers.set_current_path(&self.path);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some(slot) = ctx.layers.layer_at_mut(&self.path) {
+            *slot = self.before.clone();
+        }
+        ctx.layers.set_current_path(&self.old_current);
+    }
+
+    fn display_name(&self) -> String {
+        "Normalize Layer Mode".to_string()
+    }
+}
+
+/// `MergeVisibleLayers`（`lib/command.py:809-886`）：删除所有可见层，并在
+/// 最高可见根层的位置插入 `layer_new_merge_visible()` 的结果。
+///
+/// 用整棵 `LayerStack` 的 COW 快照做 undo/redo；图层对象与 tile Arc 共享。
+pub struct MergeVisibleLayers {
+    before: LayerStack,
+    after: LayerStack,
+}
+
+impl MergeVisibleLayers {
+    pub fn new(before: LayerStack, after: LayerStack) -> Self {
+        Self { before, after }
+    }
+}
+
+impl Command for MergeVisibleLayers {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        *ctx.layers = self.after.clone();
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        *ctx.layers = self.before.clone();
+    }
+
+    fn display_name(&self) -> String {
+        "Merge Visible Layers".to_string()
+    }
+}
+
+/// `UniqLayer`（`lib/command.py:668-689`）：删除不改变背板的 tile/像素。
+///
+/// 源码 `display_name` 对 tiles/pixels 两种模式都是 "Uniquify Layer Pixels"；
+/// 前后整层 COW 快照用于撤销。
+pub struct UniqLayer {
+    path: Vec<usize>,
+    before: Layer,
+    after: Layer,
+}
+
+impl UniqLayer {
+    pub fn new(path: Vec<usize>, before: Layer, after: Layer) -> Self {
+        Self {
+            path,
+            before,
+            after,
+        }
+    }
+}
+
+impl Command for UniqLayer {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(slot) = ctx.layers.layer_at_mut(&self.path) else {
+            return false;
+        };
+        *slot = self.after.clone();
+        ctx.layers.set_current_path(&self.path);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some(slot) = ctx.layers.layer_at_mut(&self.path) {
+            *slot = self.before.clone();
+        }
+        ctx.layers.set_current_path(&self.path);
+    }
+
+    fn display_name(&self) -> String {
+        "Uniquify Layer Pixels".to_string()
+    }
+}
+
+/// `RefactorGroup`（`lib/command.py:691-712`）：把组内公共 tile/像素抽到
+/// `Common` 层。前后整组 COW 快照用于撤销。
+pub struct RefactorGroup {
+    path: Vec<usize>,
+    before: Layer,
+    after: Layer,
+}
+
+impl RefactorGroup {
+    pub fn new(path: Vec<usize>, before: Layer, after: Layer) -> Self {
+        Self {
+            path,
+            before,
+            after,
+        }
+    }
+}
+
+impl Command for RefactorGroup {
+    fn redo(&mut self, ctx: &mut DocContext<'_>) -> bool {
+        let Some(slot) = ctx.layers.layer_at_mut(&self.path) else {
+            return false;
+        };
+        *slot = self.after.clone();
+        ctx.layers.set_current_path(&self.path);
+        true
+    }
+
+    fn undo(&mut self, ctx: &mut DocContext<'_>) {
+        if let Some(slot) = ctx.layers.layer_at_mut(&self.path) {
+            *slot = self.before.clone();
+        }
+        ctx.layers.set_current_path(&self.path);
+    }
+
+    fn display_name(&self) -> String {
+        "Refactor Group".to_string()
     }
 }
 
@@ -1611,7 +2006,11 @@ impl Command for MergeLayerDown {
             None => {
                 // 首次执行：现场计算合并结果
                 let upper = ctx.layers.layer_at(&self.path).expect("上层丢失").clone();
-                let lower = ctx.layers.layer_at(&self.target_path).expect("下层丢失").clone();
+                let lower = ctx
+                    .layers
+                    .layer_at(&self.target_path)
+                    .expect("下层丢失")
+                    .clone();
                 let merged_mode = if upper.mode.combine() == Some(CombineMode::SpectralWGM) {
                     LayerMode::Standard(CombineMode::SpectralWGM)
                 } else {
@@ -1726,7 +2125,11 @@ fn unique_group_name(layers: &LayerStack) -> String {
 }
 
 impl RestackLayer {
-    pub fn new(ctx: &mut DocContext<'_>, src_path: Vec<usize>, targ_path: Vec<usize>) -> Option<Self> {
+    pub fn new(
+        ctx: &mut DocContext<'_>,
+        src_path: Vec<usize>,
+        targ_path: Vec<usize>,
+    ) -> Option<Self> {
         if targ_path.is_empty() || targ_path.starts_with(&src_path) {
             return None; // 不能挪进自己/自己内部，也不能挪到根
         }
@@ -1942,7 +2345,11 @@ mod tests {
             ]
         );
         assert_eq!(stack.undo_len(), 1, "取消的命令不入栈");
-        assert_eq!(stack.redo_len(), 0, "redo 栈要先被丢弃（A 之后被完好的 B 挡着）");
+        assert_eq!(
+            stack.redo_len(),
+            0,
+            "redo 栈要先被丢弃（A 之后被完好的 B 挡着）"
+        );
     }
 
     #[test]
@@ -1954,10 +2361,22 @@ mod tests {
         stack.do_command(FakeCommand::new(&log, "A"), &mut ctx(&mut st, &mut t));
         stack.do_command(FakeCommand::new(&log, "B"), &mut ctx(&mut st, &mut t));
 
-        assert_eq!(stack.undo(&mut ctx(&mut st, &mut t)).map(|o| o.display_name).as_deref(), Some("B"));
+        assert_eq!(
+            stack
+                .undo(&mut ctx(&mut st, &mut t))
+                .map(|o| o.display_name)
+                .as_deref(),
+            Some("B")
+        );
         assert_eq!(stack.next_redo_name().as_deref(), Some("B"));
         assert_eq!(stack.undo_len(), 1);
-        assert_eq!(stack.redo(&mut ctx(&mut st, &mut t)).map(|o| o.display_name).as_deref(), Some("B"));
+        assert_eq!(
+            stack
+                .redo(&mut ctx(&mut st, &mut t))
+                .map(|o| o.display_name)
+                .as_deref(),
+            Some("B")
+        );
         assert_eq!(stack.undo_len(), 2);
         assert_eq!(stack.redo_len(), 0);
         assert_eq!(
@@ -1992,9 +2411,24 @@ mod tests {
         }
         assert_eq!(stack.undo_len(), 2);
         assert_eq!(stack.get_last_command().unwrap().display_name(), "C");
-        assert_eq!(stack.undo(&mut ctx(&mut st, &mut t)).map(|o| o.display_name).as_deref(), Some("C"));
-        assert_eq!(stack.undo(&mut ctx(&mut st, &mut t)).map(|o| o.display_name).as_deref(), Some("B"));
-        assert!(stack.undo(&mut ctx(&mut st, &mut t)).is_none(), "A 已被丢弃");
+        assert_eq!(
+            stack
+                .undo(&mut ctx(&mut st, &mut t))
+                .map(|o| o.display_name)
+                .as_deref(),
+            Some("C")
+        );
+        assert_eq!(
+            stack
+                .undo(&mut ctx(&mut st, &mut t))
+                .map(|o| o.display_name)
+                .as_deref(),
+            Some("B")
+        );
+        assert!(
+            stack.undo(&mut ctx(&mut st, &mut t)).is_none(),
+            "A 已被丢弃"
+        );
     }
 
     #[test]
@@ -2008,19 +2442,12 @@ mod tests {
         let mut state = BrushState::default();
         let mut bw = Brushwork::new();
         bw.target_layer = Some(stack.current_id());
-        let surface = &mut stack.current_mut().surface_mut().expect("Test: 当前层必须是绘画层");
+        let surface = &mut stack
+            .current_mut()
+            .surface_mut()
+            .expect("Test: 当前层必须是绘画层");
         for i in 0..40 {
-            let ev = StrokeEvent::new(
-                0.016,
-                i as f32 * 2.0,
-                20.0,
-                1.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-            );
+            let ev = StrokeEvent::new(0.016, i as f32 * 2.0, 20.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
             bw.stroke_to(surface, &brush, "Test Brush", &mut state, ev);
         }
         assert!(bw.stop_recording(surface, &state, false));
@@ -2032,10 +2459,18 @@ mod tests {
         let mut st = LayerStack::new();
         let mut t = 0.0;
         let bw = paint_a_stroke(&mut st);
-        assert!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count() > 0, "应先画出内容");
+        assert!(
+            st.current()
+                .surface()
+                .expect("Test: 当前层必须是绘画层")
+                .tile_count()
+                > 0,
+            "应先画出内容"
+        );
         let painted: Vec<_> = st
             .current()
-            .surface().unwrap()
+            .surface()
+            .unwrap()
             .tiles()
             .map(|(c, tile)| (c, tile.pixels().to_vec()))
             .collect();
@@ -2046,15 +2481,32 @@ mod tests {
 
         // 撤销 → 画布清空
         assert!(stack.undo(&mut ctx(&mut st, &mut t)).is_some());
-        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0, "撤销后不该有像素");
+        assert_eq!(
+            st.current()
+                .surface()
+                .expect("Test: 当前层必须是绘画层")
+                .tile_count(),
+            0,
+            "撤销后不该有像素"
+        );
         assert_eq!(t, 0.0);
 
         // 重做 → 像素逐个还原
         assert!(stack.redo(&mut ctx(&mut st, &mut t)).is_some());
-        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), painted.len());
+        assert_eq!(
+            st.current()
+                .surface()
+                .expect("Test: 当前层必须是绘画层")
+                .tile_count(),
+            painted.len()
+        );
         for (coord, px) in &painted {
             assert_eq!(
-                st.current().surface().expect("Test: 当前层必须是绘画层").tile(coord.0, coord.1).map(|t| t.to_vec()),
+                st.current()
+                    .surface()
+                    .expect("Test: 当前层必须是绘画层")
+                    .tile(coord.0, coord.1)
+                    .map(|t| t.to_vec()),
                 Some(px.clone()),
                 "重做应逐像素还原 {coord:?}"
             );
@@ -2089,9 +2541,22 @@ mod tests {
         let state = BrushState::default();
         let mut st = LayerStack::new();
         let mut bw = Brushwork::new();
-        bw.start_recording(&st.current().surface().expect("Test: 当前层必须是绘画层"), &brush, "Test", &state).unwrap();
+        bw.start_recording(
+            &st.current().surface().expect("Test: 当前层必须是绘画层"),
+            &brush,
+            "Test",
+            &state,
+        )
+        .unwrap();
         assert!(
-            !bw.stop_recording(&mut st.current_mut().surface_mut().expect("Test: 当前层必须是绘画层"), &state, false),
+            !bw.stop_recording(
+                &mut st
+                    .current_mut()
+                    .surface_mut()
+                    .expect("Test: 当前层必须是绘画层"),
+                &state,
+                false
+            ),
             "空笔画返回 false"
         );
         assert!(bw.stroke().unwrap().is_empty());
@@ -2104,7 +2569,10 @@ mod tests {
         let mut state = BrushState::default();
         let mut st = LayerStack::new();
         let mut bw = Brushwork::new();
-        let surface = &mut st.current_mut().surface_mut().expect("Test: 当前层必须是绘画层");
+        let surface = &mut st
+            .current_mut()
+            .surface_mut()
+            .expect("Test: 当前层必须是绘画层");
         for i in 0..40 {
             let ev = StrokeEvent::new(0.016, i as f32 * 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
             bw.stroke_to(surface, &brush, "Test", &mut state, ev);
@@ -2113,7 +2581,6 @@ mod tests {
         assert!(!bw.stop_recording(surface, &state, true));
         assert_eq!(surface.tile_count(), 0, "revert 后画布应回到起笔前");
     }
-
 
     /// 未保存作画时长要跨命令累计，undo 回到 `_time_before`
     /// （`lib/command.py:415/544-545/366/374`）。
@@ -2128,17 +2595,7 @@ mod tests {
             bw.set_time_before(doc.unsaved_painting_time);
             let surface = doc.paintable_surface_mut().unwrap();
             for i in 0..40 {
-                let ev = StrokeEvent::new(
-                    0.016,
-                    i as f32 * 2.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                    1.0,
-                    0.0,
-                    0.0,
-                );
+                let ev = StrokeEvent::new(0.016, i as f32 * 2.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
                 bw.stroke_to(surface, &brush, "Test", state, ev);
             }
             let changed = bw.stop_recording(doc.paintable_surface_mut().unwrap(), state, false);
@@ -2171,14 +2628,21 @@ mod tests {
     fn solid_stack() -> LayerStack {
         // 两层：0=红（顶），1=空（底），模式 Normal
         let mut st = LayerStack::new();
-        st.layer_mut(0).set_mode(pigment_surface::layer::LayerMode::Standard(pigment_surface::combine::CombineMode::Normal));
+        st.layer_mut(0)
+            .set_mode(pigment_surface::layer::LayerMode::Standard(
+                pigment_surface::combine::CombineMode::Normal,
+            ));
         let mut red = Layer::new();
-        red.set_mode(pigment_surface::layer::LayerMode::Standard(pigment_surface::combine::CombineMode::Normal));
+        red.set_mode(pigment_surface::layer::LayerMode::Standard(
+            pigment_surface::combine::CombineMode::Normal,
+        ));
         let mut px = Vec::new();
         for _ in 0..64 * 64 {
             px.extend_from_slice(&[255, 0, 0, 255]);
         }
-        red.surface_mut().unwrap().load_from_rgba8(&px, 0, 0, 64, 64);
+        red.surface_mut()
+            .unwrap()
+            .load_from_rgba8(&px, 0, 0, 64, 64);
         st.insert(0, red);
         st
     }
@@ -2341,10 +2805,7 @@ mod tests {
         st.set_current_by_id(b.id);
 
         // 组内顶层 B 上移 → 出组 [A, B, G[C]]
-        assert!(stack.do_command(
-            Box::new(BubbleLayer::up(b.id)),
-            &mut ctx(&mut st, &mut t)
-        ));
+        assert!(stack.do_command(Box::new(BubbleLayer::up(b.id)), &mut ctx(&mut st, &mut t)));
         assert_eq!(st.path_of_id(b.id), Some(vec![1]));
         assert_eq!(st.path_of_id(c.id), Some(vec![2, 0]));
         assert_eq!(st.current_id(), b.id);
@@ -2356,10 +2817,7 @@ mod tests {
         assert_eq!(st.current_id(), b.id);
 
         // 根层 A 下移 → 入组 [G[A, B, C]]
-        assert!(stack.do_command(
-            Box::new(BubbleLayer::down(a.id)),
-            &mut ctx(&mut st, &mut t)
-        ));
+        assert!(stack.do_command(Box::new(BubbleLayer::down(a.id)), &mut ctx(&mut st, &mut t)));
         assert_eq!(st.path_of_id(a.id), Some(vec![0, 0]));
         assert_eq!(st.path_of_id(b.id), Some(vec![0, 1]));
 
@@ -2384,7 +2842,10 @@ mod tests {
         assert_eq!(st.layer_by_id(id).unwrap().opacity, 0.5);
 
         assert!(stack.do_command(
-            Box::new(SetLayerMode::new(id, LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply))),
+            Box::new(SetLayerMode::new(
+                id,
+                LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply)
+            )),
             &mut ctx(&mut st, &mut t)
         ));
         assert_eq!(
@@ -2406,7 +2867,11 @@ mod tests {
             "Set Layer Opacity: 34.5%"
         );
         assert_eq!(
-            SetLayerMode::new(id, LayerMode::Standard(pigment_surface::combine::CombineMode::SpectralWGM)).display_name(),
+            SetLayerMode::new(
+                id,
+                LayerMode::Standard(pigment_surface::combine::CombineMode::SpectralWGM)
+            )
+            .display_name(),
             "Set Layer Mode: Pigment"
         );
     }
@@ -2429,7 +2894,10 @@ mod tests {
 
         stack.undo(&mut ctx(&mut st, &mut t));
         assert_eq!(st.len(), 2);
-        assert!(st.layer(0).surface().unwrap().tile_count() > 0, "上层应带着像素回来");
+        assert!(
+            st.layer(0).surface().unwrap().tile_count() > 0,
+            "上层应带着像素回来"
+        );
         assert_eq!(st.current_id(), st.layer(0).id);
     }
 
@@ -2446,7 +2914,14 @@ mod tests {
         for _ in 0..3 {
             stack.undo(&mut ctx(&mut st, &mut t));
         }
-        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0, "三次撤销后应回到空画布");
+        assert_eq!(
+            st.current()
+                .surface()
+                .expect("Test: 当前层必须是绘画层")
+                .tile_count(),
+            0,
+            "三次撤销后应回到空画布"
+        );
     }
 
     /// 撤销之后再画一笔：redo 栈被清空（新命令顶掉旧的分支）。
@@ -2473,7 +2948,13 @@ mod tests {
         let mut stack = CommandStack::new(8);
         let bw = paint_a_stroke(&mut st);
         stack.do_command(Box::new(bw), &mut ctx(&mut st, &mut t));
-        let before: Vec<(i32, i32)> = st.current().surface().expect("Test: 当前层必须是绘画层").tiles().map(|(c, _)| c).collect();
+        let before: Vec<(i32, i32)> = st
+            .current()
+            .surface()
+            .expect("Test: 当前层必须是绘画层")
+            .tiles()
+            .map(|(c, _)| c)
+            .collect();
 
         // 换成半径更大的笔刷重绘
         let fatter = test_brush(4.0);
@@ -2485,7 +2966,13 @@ mod tests {
             },
         );
         assert!(name.is_some());
-        let after: Vec<(i32, i32)> = st.current().surface().expect("Test: 当前层必须是绘画层").tiles().map(|(c, _)| c).collect();
+        let after: Vec<(i32, i32)> = st
+            .current()
+            .surface()
+            .expect("Test: 当前层必须是绘画层")
+            .tiles()
+            .map(|(c, _)| c)
+            .collect();
         assert_ne!(before, after, "更大的笔刷应铺到更多 tile");
         let display = stack.get_last_command().unwrap().display_name();
         assert!(
@@ -2495,7 +2982,13 @@ mod tests {
 
         // 更新后的状态仍可撤销回起笔前
         stack.undo(&mut ctx(&mut st, &mut t));
-        assert_eq!(st.current().surface().expect("Test: 当前层必须是绘画层").tile_count(), 0);
+        assert_eq!(
+            st.current()
+                .surface()
+                .expect("Test: 当前层必须是绘画层")
+                .tile_count(),
+            0
+        );
     }
 
     /// 不能更新已经被撤销掉的命令：此时命令在 redo 栈上，`undo()` 清掉了

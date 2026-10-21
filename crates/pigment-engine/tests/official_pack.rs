@@ -106,7 +106,11 @@ fn official_pack_parses_completely() {
             failures.push(format!("{}: {err}", e.key));
         }
     }
-    assert!(failures.is_empty(), "以下笔刷解析失败:\n{}", failures.join("\n"));
+    assert!(
+        failures.is_empty(),
+        "以下笔刷解析失败:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]

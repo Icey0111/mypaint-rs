@@ -40,6 +40,7 @@ fn test_dab(x: f32, y: f32, angle: f32, aspect_ratio: f32) -> Dab {
         color: RgbaF32::new(1.0, 0.0, 0.0, 1.0),
         opaque: 0.5,
         hardness: 1.0,
+        softness: 0.0,
         alpha_eraser: 1.0,
         aspect_ratio,
         angle,
@@ -157,6 +158,7 @@ fn stroke_brush() -> Brush {
     set(BrushSetting::DabsPerSecond, 0.0);
     set(BrushSetting::Hardness, 0.8);
     set(BrushSetting::Opaque, 0.8);
+    set(BrushSetting::OpaqueMultiply, 1.0);
     set(BrushSetting::ColorH, 0.1);
     set(BrushSetting::ColorS, 0.9);
     set(BrushSetting::ColorV, 0.9);
@@ -357,12 +359,12 @@ fn snowflake_adds_mirrored_dabs() {
     paint(&mut surface, &[test_dab(20.0, 5.0, 0.0, 1.0)]);
 
     let expected = [
-        (20.0f32, 5.0f32),      // 原始 dab
-        (20.0, -5.0),           // 反射
-        (-14.33, -14.82),       // 反射
-        (-5.67, 19.82),         // 反射
-        (-5.67, -19.82),        // 旋转
-        (-14.33, 14.82),        // 旋转
+        (20.0f32, 5.0f32), // 原始 dab
+        (20.0, -5.0),      // 反射
+        (-14.33, -14.82),  // 反射
+        (-5.67, 19.82),    // 反射
+        (-5.67, -19.82),   // 旋转
+        (-14.33, 14.82),   // 旋转
     ];
     for (x, y) in expected {
         assert!(
@@ -412,8 +414,14 @@ fn center_and_angle_transform_the_result() {
     let mut moved = PigmentSurface::new();
     moved.set_symmetry_state(true, 0.0, 0.0, SymmetryType::Vertical, 2, 0.0);
     paint(&mut moved, &[test_dab(110.0, 40.0, 0.0, 1.0)]);
-    assert!(alpha_at(&moved, -110, 40) > 0.4, "中心在原点时镜像到 (-110,40)");
-    assert!(alpha_at(&moved, 90, 40) < 0.01, "中心挪走后旧镜像位置应为空");
+    assert!(
+        alpha_at(&moved, -110, 40) > 0.4,
+        "中心在原点时镜像到 (-110,40)"
+    );
+    assert!(
+        alpha_at(&moved, 90, 40) < 0.01,
+        "中心挪走后旧镜像位置应为空"
+    );
 }
 
 // ---- ⑤ 退化 dab：源码的早期返回判据也管住对称 pass ----

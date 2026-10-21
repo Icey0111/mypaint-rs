@@ -5,7 +5,7 @@
 `winit 0.31 + egui 0.37 + egui-wgpu` 这条 Plan A 外壳能跑。
 
 ```powershell
-cd E:\MyPaint\pigment
+cd pigment
 cargo run -p tablet-probe
 ```
 

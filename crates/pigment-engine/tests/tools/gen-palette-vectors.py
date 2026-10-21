@@ -92,7 +92,7 @@ import textwrap
 import types
 from pathlib import Path
 
-DEFAULT_REF = r"E:\MyPaint\_mypaint_ref"
+DEFAULT_REF = r"_mypaint_ref"
 HERE = Path(__file__).resolve()
 DEFAULT_OUT = HERE.parents[1] / "fixtures" / "palette_vectors.txt"
 #: 布局向量给 **pigment-app** 的控件层测试用（`crates/pigment-app/tests/`）

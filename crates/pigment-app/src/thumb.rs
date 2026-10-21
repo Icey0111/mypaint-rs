@@ -288,7 +288,20 @@ pub fn render(brush: &Brush) -> Vec<u8> {
         let shape = variable_pressure_scribble(width as f32, width as f32);
         surface.begin_atomic();
         for (dt, x, y, p, xt, yt) in shape {
-            b.stroke_to(&mut state, &mut surface, x, y, p, xt, yt, dt);
+            b.stroke_to_full(
+                &mut state,
+                &mut surface,
+                x,
+                y,
+                p,
+                xt,
+                yt,
+                dt,
+                1.0,
+                0.0,
+                0.0,
+                true,
+            );
         }
         surface.end_atomic();
 

@@ -38,11 +38,11 @@ pub mod line;
 pub mod pick;
 pub mod symmetryedit;
 
-use crate::hokusai::BrushState;
 use crate::command::Brushwork;
-use crate::StrokeEvent;
 use crate::document::Document;
 use crate::hokusai::Brush;
+use crate::hokusai::BrushState;
+use crate::StrokeEvent;
 
 /// 模式对指针/滚轮的"大致行为分类"（`mode.py:63-84`）。
 ///
@@ -70,8 +70,7 @@ impl Behavior {
     /// 非绘画类
     pub const NON_PAINTING: Self = Self(Self::EDIT_OBJECTS.0 | Self::CHANGE_VIEW.0);
     /// 全部绘画类
-    pub const ALL_PAINTING: Self =
-        Self(Self::PAINT_FREEHAND.0 | Self::PAINT_CONSTRAINED.0);
+    pub const ALL_PAINTING: Self = Self(Self::PAINT_FREEHAND.0 | Self::PAINT_CONSTRAINED.0);
     /// 全部
     pub const ALL: Self = Self(Self::NON_PAINTING.0 | Self::ALL_PAINTING.0);
 
@@ -340,6 +339,26 @@ pub trait InteractionMode {
         false
     }
 
+    /// 还没喂给 brushwork 的输入事件数（诊断「不跟手」用）。
+    fn pending_inputs(&self) -> usize {
+        0
+    }
+
+    /// Instant Preview 状态 `(mip 级别, 尚未重放的全分辨率事件数)`。
+    fn instant_preview_state(&self) -> Option<(u32, usize)> {
+        None
+    }
+
+    /// 最后一个已经真正喂给 brushwork 的文档坐标。
+    fn last_painted_pos(&self) -> Option<(f32, f32)> {
+        None
+    }
+
+    /// 对称编辑模式当前拖动的轴线下标（覆盖层高亮用，`symmetry.py:998-1006`）。
+    fn active_symmetry_axis(&self) -> Option<usize> {
+        None
+    }
+
     /// 是否支持笔刷编辑器的实时更新（`IS_LIVE_UPDATEABLE`）。
     fn is_live_updateable(&self) -> bool {
         false
@@ -455,7 +474,11 @@ pub trait InteractionMode {
     }
 
     /// OptionsUI 的编辑操作（滑条/插点/删点）。
-    fn ink_apply(&mut self, _ctx: &mut ModeContext<'_>, _edit: crate::mode::ink::InkNodeEdit) -> bool {
+    fn ink_apply(
+        &mut self,
+        _ctx: &mut ModeContext<'_>,
+        _edit: crate::mode::ink::InkNodeEdit,
+    ) -> bool {
         false
     }
 
@@ -503,6 +526,19 @@ pub trait InteractionMode {
     fn process_pending(&mut self, _ctx: &mut ModeContext<'_>) -> bool {
         false
     }
+
+    /// 带时间预算地处理排队输入：处理到 `deadline` 为止，剩余的留给后续帧。
+    ///
+    /// 低缩放下一个指针事件可能包含上百个 dab；一次性全做完会把 UI 卡住。
+    /// 默认实现忽略预算（大多数模式没有排队输入），只有自由手绘模式覆盖它。
+    /// 返回是否还有未处理的工作。
+    fn process_pending_budgeted(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        _deadline: std::time::Instant,
+    ) -> bool {
+        self.process_pending(ctx)
+    }
 }
 
 /// `BrushworkModeMixin`（`mode.py:659`）的组合实现。
@@ -548,6 +584,10 @@ impl BrushworkState {
         if self.active.is_some() {
             self.commit(ctx, abrupt);
         }
+        // `lib/stroke.py:35` 的 `brush.new_stroke()`：只复位笔画的计时，
+        // 不动 RNG / 位置 / smudge bucket。切段时每段重新累计时长。
+        ctx.brush_state.stroke_total_painting_time = 0.0;
+        ctx.brush_state.stroke_current_idling_time = 0.0;
         let mut cmd = match description {
             Some(d) => Brushwork::with_description(d),
             None => Brushwork::new(),
@@ -570,17 +610,8 @@ impl BrushworkState {
         if abrupt {
             if let Some((x, y, xtilt, ytilt, viewzoom, viewrotation, _br)) = self.last_pos {
                 // 照 `mode.py:748-765`：用零压力补一个收尾事件
-                let ev = StrokeEvent::new(
-                    0.0,
-                    x,
-                    y,
-                    0.0,
-                    xtilt,
-                    ytilt,
-                    viewzoom,
-                    viewrotation,
-                    0.0,
-                );
+                let ev =
+                    StrokeEvent::new(0.0, x, y, 0.0, xtilt, ytilt, viewzoom, viewrotation, 0.0);
                 if let Some(surface) = ctx.doc.paintable_surface_mut() {
                     cmd.stroke_to(surface, ctx.brush, ctx.brush_name, ctx.brush_state, ev);
                 }
@@ -960,6 +991,15 @@ impl ModeStack {
         let more = self.top_mut().process_pending(ctx);
         let _ = more;
     }
+
+    /// 让栈顶在时间预算内处理排队输入；`true` 表示后续帧还需继续。
+    pub fn process_pending_budgeted(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        deadline: std::time::Instant,
+    ) -> bool {
+        self.top_mut().process_pending_budgeted(ctx, deadline)
+    }
 }
 
 #[cfg(test)]
@@ -1021,7 +1061,8 @@ mod tests {
             color: [0.0, 0.0, 0.0],
             picked_color: Some(&mut picked),
         };
-        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut stack = ModeStack::new(|| {
             Box::new(Probe {
                 name: "default",
@@ -1034,17 +1075,38 @@ mod tests {
         assert_eq!(stack.names(), vec!["default"]);
 
         // push 一个非笔刷类：旧栈顶 leave → 新 enter
-        stack.push(Box::new(Probe { name: "pan", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        stack.push(
+            Box::new(Probe {
+                name: "pan",
+                log: std::rc::Rc::clone(&log),
+                behavior: Behavior::CHANGE_VIEW,
+            }),
+            &mut ctx,
+        );
         assert_eq!(stack.names(), vec!["default", "pan"]);
         // 默认模式记的是自己的日志（`leave default` 不在共享日志里）
         assert_eq!(log.borrow().as_slice(), &["enter pan".to_string()]);
 
         // context_push 视图类模式：`stackable_on` 只允许叠在笔刷类之上，
         // 所以先把同样不兼容的 `pan` 弹掉
-        stack.context_push(Box::new(Probe { name: "zoom", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        stack.context_push(
+            Box::new(Probe {
+                name: "zoom",
+                log: std::rc::Rc::clone(&log),
+                behavior: Behavior::CHANGE_VIEW,
+            }),
+            &mut ctx,
+        );
         assert_eq!(stack.names(), vec!["default", "zoom"]);
         // context_push 一个笔刷类：不兼容的栈顶被逐个弹掉
-        stack.context_push(Box::new(Probe { name: "brush2", log: std::rc::Rc::clone(&log), behavior: Behavior::PAINT_FREEHAND }), &mut ctx);
+        stack.context_push(
+            Box::new(Probe {
+                name: "brush2",
+                log: std::rc::Rc::clone(&log),
+                behavior: Behavior::PAINT_FREEHAND,
+            }),
+            &mut ctx,
+        );
         // 笔刷类不能叠在笔刷类之上（issue #530），所以默认模式也被弹掉
         assert_eq!(stack.names(), vec!["brush2"]);
 
@@ -1052,14 +1114,31 @@ mod tests {
         stack.pop(&mut ctx);
         assert_eq!(stack.names(), vec!["default"]);
         let tail = log.borrow().last().cloned().unwrap_or_default();
-        assert_eq!(tail, "leave brush2", "弹空后默认模式会重新 enter（记在它自己的日志里）");
+        assert_eq!(
+            tail, "leave brush2",
+            "弹空后默认模式会重新 enter（记在它自己的日志里）"
+        );
 
         // reset：清空重来 + 替补模式
-        stack.reset(Some(Box::new(Probe { name: "reset-mode", log: std::rc::Rc::clone(&log), behavior: Behavior::PAINT_LINE })), &mut ctx);
+        stack.reset(
+            Some(Box::new(Probe {
+                name: "reset-mode",
+                log: std::rc::Rc::clone(&log),
+                behavior: Behavior::PAINT_LINE,
+            })),
+            &mut ctx,
+        );
         assert_eq!(stack.names(), vec!["reset-mode"]);
 
         // pop_to_behaviour：一直弹到满足标志为止
-        stack.push(Box::new(Probe { name: "pan2", log: std::rc::Rc::clone(&log), behavior: Behavior::CHANGE_VIEW }), &mut ctx);
+        stack.push(
+            Box::new(Probe {
+                name: "pan2",
+                log: std::rc::Rc::clone(&log),
+                behavior: Behavior::CHANGE_VIEW,
+            }),
+            &mut ctx,
+        );
         stack.pop_to_behaviour(Behavior::ALL_PAINTING, &mut ctx);
         assert_eq!(stack.names(), vec!["reset-mode"], "视图类模式被弹掉");
     }

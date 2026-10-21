@@ -260,7 +260,6 @@ impl Accel {
     pub fn label(&self) -> String {
         label(&self.key, self.mods)
     }
-
 }
 
 /// 键值名的规范拼写 —— 单字符只收字母数字并**小写化**，其余必须是
@@ -275,10 +274,8 @@ fn canonical_key_name(token: &str) -> Result<String, AccelError> {
         }
         return Err(AccelError::BadKey(token.to_string()));
     }
-    let shaped = first.is_ascii_alphabetic()
-        && token
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    let shaped =
+        first.is_ascii_alphabetic() && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
     if !shaped {
         return Err(AccelError::BadKey(token.to_string()));
     }
@@ -679,7 +676,10 @@ mod tests {
             "<Shift><Alt>s"
         );
         assert_eq!(Accel::parse("<Mod1>r").unwrap().to_gtk_name(), "<Alt>r");
-        assert_eq!(Accel::parse("<Control>Page_Up").unwrap().to_gtk_name(), "<Primary>Page_Up");
+        assert_eq!(
+            Accel::parse("<Control>Page_Up").unwrap().to_gtk_name(),
+            "<Primary>Page_Up"
+        );
         // 裸键：键名原样
         assert_eq!(Accel::parse("comma").unwrap().to_gtk_name(), "comma");
         assert_eq!(Accel::parse("F12").unwrap().to_gtk_name(), "F12");
@@ -814,7 +814,13 @@ mod tests {
         assert!(parsed.skipped.is_empty(), "{:?}", parsed.skipped);
         assert_eq!(parsed.entries.len(), 4);
         assert_eq!(
-            parsed.get("<Actions>/B").unwrap().accel.as_ref().unwrap().key,
+            parsed
+                .get("<Actions>/B")
+                .unwrap()
+                .accel
+                .as_ref()
+                .unwrap()
+                .key,
             "b"
         );
     }
@@ -837,7 +843,13 @@ mod tests {
         assert_eq!(parsed.entries.len(), 2);
         assert!(parsed.get("<Actions>/Gone").is_none());
         assert_eq!(
-            parsed.get("<Actions>/Two").unwrap().accel.as_ref().unwrap().to_gtk_name(),
+            parsed
+                .get("<Actions>/Two")
+                .unwrap()
+                .accel
+                .as_ref()
+                .unwrap()
+                .to_gtk_name(),
             "<Shift><Alt>t"
         );
     }
@@ -849,7 +861,13 @@ mod tests {
         let parsed = parse_conf(text);
         assert_eq!(parsed.entries.len(), 1);
         assert_eq!(
-            parsed.get("<Actions>/A").unwrap().accel.as_ref().unwrap().to_gtk_name(),
+            parsed
+                .get("<Actions>/A")
+                .unwrap()
+                .accel
+                .as_ref()
+                .unwrap()
+                .to_gtk_name(),
             "<Primary>a"
         );
     }

@@ -13,17 +13,18 @@
 //! - 每次重画都是「回滚 + 从头画」：`brush_prep`（`:768`）先 `brushwork_rollback`
 //!   再把笔刷以零压力送到起点，所以拖动过程中画布上只会留下**一条**线。
 //!
-//! 记账（B3-2 未做）：
+//! 仍未做：
 //! - `CurveLine1/CurveLine2`（贝塞尔曲线，靠 `Shift` 对上一笔做"改线"）需要图层的
 //!   `get_last_stroke_info()`（笔画身份），我们没有这个信息 → 曲线分支未移植，
-//!   见到 `CurveLine*` 时按直线处理；
-//! - `LineModeOptionsWidget` / 曲线控件（压力-距离曲线）未移植，
-//!   [`LineModeSettings`] 取源码默认值（`linemode.py:39-85`）；
-//! - `slow_tracking` 的临时清零（`brush_prep`）未做：我们的笔刷引擎没有 slow
-//!   tracking 参数（hokusai 里对应 `BrushSetting::SlowTracking`，尚未接到 UI）。
+//!   见到 `CurveLine*` 时按直线处理。
+//!
+//! 已接：`LineModeOptionsWidget` / 压力-距离曲线（见
+//! [`LineModeSettings::line_settings`]）；`slow_tracking` 在画线期间临时清零、
+//! 收笔/离开模式时恢复（`linemode.py:400-405`、`:525-530`）。
 
-use super::{Behavior, BrushworkState, DragMode, InteractionMode, Key, ModeContext, Modifiers, PointerEvent};
-use crate::hokusai::BrushState;
+use super::{
+    Behavior, BrushworkState, DragMode, InteractionMode, Key, ModeContext, Modifiers, PointerEvent,
+};
 
 /// 直线工具的五个可调参数（`linemode.py:39-85` 的 `_LINE_MODE_SETTINGS_LIST`）。
 ///
@@ -341,7 +342,12 @@ impl LineMode {
     }
 
     /// 开一条线（`start_command`，`linemode.py:371`）。
-    fn start_command(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent, modifiers: Modifiers) {
+    fn start_command(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        ev: &PointerEvent,
+        modifiers: Modifiers,
+    ) {
         self.viewzoom = ev.viewzoom;
         self.viewrotation = ev.viewrotation;
         self.brushwork
@@ -389,7 +395,11 @@ impl LineMode {
         };
         self.ex = x;
         self.ey = y;
-        *ctx.brush_state = BrushState::default();
+        // `linemode.py` calls `brush.reset()`, which is libmypaint's
+        // brush_reset: states and smudge buckets are cleared but the PRNG
+        // stream survives. `BrushState::reset` mirrors that; assigning a
+        // fresh default would restart the RNG at seed 1000.
+        ctx.brush_state.reset();
     }
 
     /// 算并画出当前这条线（`process_line`，`linemode.py:550`）。
@@ -528,11 +538,22 @@ impl LineMode {
 
     /// 把笔刷送到起点并把画面回滚到这一笔之前（`brush_prep`，`linemode.py:768`）。
     fn brush_prep(&mut self, ctx: &mut ModeContext<'_>, sx: f32, sy: f32) {
-        *ctx.brush_state = BrushState::default();
+        // `self.model.brush.reset()` keeps the PRNG stream; see stop_command.
+        ctx.brush_state.reset();
         self.brushwork.rollback(ctx);
         // 零压力送到起点（dtime=10.0，源码如此）
         self.brushwork.stroke_to(
-            ctx, 10.0, sx, sy, 0.0, 0.0, 0.0, self.viewzoom, self.viewrotation, 0.0, false,
+            ctx,
+            10.0,
+            sx,
+            sy,
+            0.0,
+            0.0,
+            0.0,
+            self.viewzoom,
+            self.viewrotation,
+            0.0,
+            false,
         );
     }
 
@@ -561,6 +582,14 @@ impl InteractionMode for LineMode {
 
     fn usage(&self) -> &str {
         self.kind.usage()
+    }
+
+    /// 直线/序列/椭圆三种模式也必须报出自己的 `resources.xml` 动作 id。
+    ///
+    /// 缺了它，工具条的选中态、底栏“工具”标签、`action_checked` 和外部
+    /// 自动化都只能看到一个匿名的 `LineMode`（`action_name() == None`）。
+    fn action_name(&self) -> Option<&'static str> {
+        Some(self.kind.action_name())
     }
 
     fn set_line_settings(&mut self, settings: LineModeSettings) {
@@ -671,6 +700,25 @@ impl LineMode {
 mod tests {
     use super::*;
     use crate::document::Document;
+    use crate::hokusai::BrushState;
+
+    #[test]
+    fn every_line_kind_reports_its_action_id() {
+        let cases = [
+            (LineKind::Straight, "StraightMode", "Lines and Curves"),
+            (LineKind::Sequence, "SequenceMode", "Connected Lines"),
+            (LineKind::Ellipse, "EllipseMode", "Ellipses and Circles"),
+        ];
+        for (kind, action, name) in cases {
+            let m = LineMode::new(kind);
+            assert_eq!(
+                m.action_name(),
+                Some(action),
+                "{kind:?} 必须报出 resources.xml 的动作 id"
+            );
+            assert_eq!(m.name(), name);
+        }
+    }
 
     #[test]
     fn pressure_curve_points_and_drag_write_back() {
@@ -821,7 +869,9 @@ mod tests {
         let motion = PointerEvent::motion(110.0, 60.0, 16.0);
         InteractionMode::motion(&mut mode, &mut ctx, &motion);
         let release = PointerEvent::button(110.0, 60.0, 32.0, 1);
-        assert!(InteractionMode::button_release(&mut mode, &mut ctx, &release));
+        assert!(InteractionMode::button_release(
+            &mut mode, &mut ctx, &release
+        ));
 
         assert_eq!(
             ctx.doc.command_stack.undo_len(),
@@ -871,7 +921,10 @@ mod tests {
         InteractionMode::motion(&mut mode, &mut ctx, &motion);
         let (ex, ey) = (mode.ex, mode.ey);
         let got = ey.atan2(ex).to_degrees();
-        assert!((got - 15.0).abs() < 0.5, "Ctrl 应把 10° 吸到 15°，实得 {got}");
+        assert!(
+            (got - 15.0).abs() < 0.5,
+            "Ctrl 应把 10° 吸到 15°，实得 {got}"
+        );
     }
 
     /// SequenceMode（Connected Lines）的起点接**上一笔终点**
@@ -886,7 +939,11 @@ mod tests {
 
         let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
         assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
-        InteractionMode::motion(&mut mode, &mut ctx, &PointerEvent::motion(110.0, 40.0, 16.0));
+        InteractionMode::motion(
+            &mut mode,
+            &mut ctx,
+            &PointerEvent::motion(110.0, 40.0, 16.0),
+        );
         InteractionMode::button_release(
             &mut mode,
             &mut ctx,
@@ -921,7 +978,9 @@ mod tests {
         let motion = PointerEvent::motion(50.0, 50.0, 16.0);
         assert!(!InteractionMode::motion(&mut mode, &mut ctx, &motion));
         let release = PointerEvent::button(50.0, 50.0, 32.0, 1);
-        assert!(!InteractionMode::button_release(&mut mode, &mut ctx, &release));
+        assert!(!InteractionMode::button_release(
+            &mut mode, &mut ctx, &release
+        ));
         assert_eq!(ctx.doc.command_stack.undo_len(), before);
     }
 }

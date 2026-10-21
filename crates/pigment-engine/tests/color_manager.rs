@@ -136,7 +136,11 @@ fn push_history_dedupes_across_color_classes() {
     let mut mgr = ColorManager::new();
     let same_as_last = HsvColor::from_color(&hex("#003153"));
     mgr.push_history(Color::Hsv(same_as_last));
-    assert_eq!(mgr.get_history().len(), HIST_LEN, "等价的 HSVColor 不该新增一项");
+    assert_eq!(
+        mgr.get_history().len(),
+        HIST_LEN,
+        "等价的 HSVColor 不该新增一项"
+    );
     assert_eq!(
         mgr.get_history().last().map(|c| c.class_name()),
         Some("HSVColor"),
@@ -168,7 +172,11 @@ fn history_capacity_is_fixed() {
     for i in 0..20 {
         let t = i as f64 / 20.0;
         mgr.push_history(rgb(t, 1.0 - t, 0.5));
-        assert_eq!(mgr.get_history().len(), HIST_LEN, "第 {i} 次压入后长度应恒为 5");
+        assert_eq!(
+            mgr.get_history().len(),
+            HIST_LEN,
+            "第 {i} 次压入后长度应恒为 5"
+        );
     }
 }
 
@@ -185,8 +193,14 @@ fn brighter_and_darker_clamp_asymmetrically() {
     assert!(near(ColorAction::Brighter.apply([0.5, 0.5, 0.95])[2], 1.0));
     assert!(near(ColorAction::Brighter.apply([0.5, 0.5, 0.5])[2], 0.58));
     // Darker：v -= 0.08，下限 0.005（不是 0）
-    assert!(near(ColorAction::Darker.apply([0.5, 0.5, 0.0])[2], LEVEL_FLOOR));
-    assert!(near(ColorAction::Darker.apply([0.5, 0.5, 0.01])[2], LEVEL_FLOOR));
+    assert!(near(
+        ColorAction::Darker.apply([0.5, 0.5, 0.0])[2],
+        LEVEL_FLOOR
+    ));
+    assert!(near(
+        ColorAction::Darker.apply([0.5, 0.5, 0.01])[2],
+        LEVEL_FLOOR
+    ));
     assert!(near(ColorAction::Darker.apply([0.5, 0.5, 0.5])[2], 0.42));
     // 两者都不碰 h/s
     let out = ColorAction::Brighter.apply([0.3, 0.7, 0.5]);
@@ -198,7 +212,10 @@ fn brighter_and_darker_clamp_asymmetrically() {
 fn purer_and_grayer_clamp_asymmetrically() {
     assert!(near(ColorAction::Purer.apply([0.5, 1.0, 0.5])[1], 1.0));
     assert!(near(ColorAction::Purer.apply([0.5, 0.5, 0.5])[1], 0.58));
-    assert!(near(ColorAction::Grayer.apply([0.5, 0.0, 0.5])[1], LEVEL_FLOOR));
+    assert!(near(
+        ColorAction::Grayer.apply([0.5, 0.0, 0.5])[1],
+        LEVEL_FLOOR
+    ));
     assert!(near(ColorAction::Grayer.apply([0.5, 0.5, 0.5])[1], 0.42));
     // 灰色彩度 0 加一档还是 0.08（从 0 起步不会被下限拦住）
     assert!(near(ColorAction::Purer.apply([0.5, 0.0, 0.5])[1], 0.08));
@@ -275,10 +292,7 @@ fn brush_step_targets_match_source() {
     assert_eq!(BrushStep::MoreOpaque.cname(), "opaque");
     assert_eq!(BrushStep::LessOpaque.cname(), "opaque");
     for step in BrushStep::ALL {
-        assert_eq!(
-            BrushStep::from_action_name(step.action_name()),
-            Some(step)
-        );
+        assert_eq!(BrushStep::from_action_name(step.action_name()), Some(step));
     }
     assert_eq!(BrushStep::from_action_name("Brighter"), None);
 }
@@ -300,7 +314,10 @@ fn brush_step_cnames_resolve_to_settings() {
         BrushSetting::from_cname("radius_logarithmic"),
         Some(BrushSetting::Radius)
     );
-    assert_eq!(BrushSetting::from_cname("opaque"), Some(BrushSetting::Opaque));
+    assert_eq!(
+        BrushSetting::from_cname("opaque"),
+        Some(BrushSetting::Opaque)
+    );
 }
 
 /// 尺寸动作：`±0.3`，夹到 `radius_logarithmic` 的 `[-2.0, 6.0]`。
@@ -322,7 +339,10 @@ fn brush_size_steps_clamp_to_setting_bounds() {
 #[test]
 fn brush_opacity_steps_clamp_to_setting_bounds() {
     assert!(near(BrushStep::MoreOpaque.apply(1.0), 1.8), "1.0 乘 1.8");
-    assert!(near(BrushStep::MoreOpaque.apply(1.2), 2.0), "1.2*1.8=2.16 夹到 2.0");
+    assert!(
+        near(BrushStep::MoreOpaque.apply(1.2), 2.0),
+        "1.2*1.8=2.16 夹到 2.0"
+    );
     assert!(near(BrushStep::MoreOpaque.apply(2.0), 2.0), "已在上界不动");
     assert!(near(BrushStep::MoreOpaque.apply(0.0), 0.0));
     assert!(near(BrushStep::LessOpaque.apply(1.8), 1.0), "1.8 除 1.8");

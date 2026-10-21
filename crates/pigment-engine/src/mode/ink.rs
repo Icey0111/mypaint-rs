@@ -9,17 +9,14 @@
 //! - ✅ evdev 零压力/零倾角回退、镜像倾角、假压力 0.5；
 //! - ✅ 每次追加节点后**整条曲线重绘**（源码 `_queue_redraw_curve` 的语义），
 //!   收笔时提交为一条 Brushwork；
-//! - ⏳ 未移植：ADJUST 阶段的节点命中/拖动、接受/拒绝按钮、节点覆盖层、
-//!   `simplify_nodes`/`cull_nodes`、恢复默认点距的选项面板。这些记账在
-//!   比对报告附录 A。
+//! - ✅ ADJUST 阶段：节点命中/拖动、Enter 接受 / Escape 拒绝、节点覆盖层、
+//!   `simplify_nodes`/`cull_nodes`、恢复默认点距的选项面板。
 //!
-//! 因此本模式当前等价于「画完立即固定」的 Inking：曲线形状/压力与源码的
-//! 捕获+插值一致，只是不能在画布上继续调节点。
+//! 曲线形状/压力与源码的捕获+插值一致；画布上的 OK/垃圾桶按钮由
+//! `shell/workspace.rs` 绘制，键盘 Enter/Escape 是等价入口。
 
 use super::freehand::spline_4p;
-use super::{
-    Behavior, BrushworkState, InteractionMode, Key, ModeContext, PointerEvent,
-};
+use super::{Behavior, BrushworkState, InteractionMode, Key, ModeContext, PointerEvent};
 
 /// 中间节点的最大显示像素间距（`MAX_INTERNODE_DISTANCE_MIDDLE`）。
 pub const MAX_INTERNODE_DISTANCE_MIDDLE: f32 = 30.0;
@@ -261,8 +258,7 @@ impl InkingMode {
         if self.nodes.len() < 2 {
             return;
         }
-        self.brushwork
-            .begin(ctx, true, Some("Inking".to_string()));
+        self.brushwork.begin(ctx, true, Some("Inking".to_string()));
         let mut t_abs = self.nodes[0].time;
         for p in spline_iter(&self.nodes) {
             self.draw_segment(ctx, p, &mut t_abs);
@@ -758,7 +754,11 @@ mod tests {
 
     #[test]
     fn spline_iter_doubles_first_and_last() {
-        let nodes = vec![node(0.0, 0.0, 0.0), node(1.0, 0.0, 0.1), node(2.0, 0.0, 0.2)];
+        let nodes = vec![
+            node(0.0, 0.0, 0.0),
+            node(1.0, 0.0, 0.1),
+            node(2.0, 0.0, 0.2),
+        ];
         let segs = spline_iter(&nodes);
         // n=3 → 2 段（首段重复首点、末段重复末点；中间段共用 n0/n1/n2）
         assert_eq!(segs.len(), 2);
@@ -801,8 +801,14 @@ mod tests {
         let node = mode.nodes()[2];
         assert!(mode.button_press(&mut ctx, &PointerEvent::button(node.x, node.y, 500.0, 1)));
         assert_eq!(mode.ink_target_node(), Some(2));
-        mode.motion(&mut ctx, &PointerEvent::motion(node.x + 20.0, node.y + 10.0, 516.0));
-        mode.button_release(&mut ctx, &PointerEvent::button(node.x + 20.0, node.y + 10.0, 532.0, 1));
+        mode.motion(
+            &mut ctx,
+            &PointerEvent::motion(node.x + 20.0, node.y + 10.0, 516.0),
+        );
+        mode.button_release(
+            &mut ctx,
+            &PointerEvent::button(node.x + 20.0, node.y + 10.0, 532.0, 1),
+        );
         assert!((mode.nodes()[2].x - (node.x + 20.0)).abs() < 1e-3);
         assert!((mode.nodes()[2].y - (node.y + 10.0)).abs() < 1e-3);
         assert!(mode.ink_editing(), "拖完仍在 ADJUST");
@@ -922,5 +928,3 @@ mod tests {
         assert_eq!(mode.ink_target_node(), None);
     }
 }
-
-

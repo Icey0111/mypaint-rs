@@ -11,8 +11,8 @@
 
 use pigment_surface::{StrokeShape, SurfaceSnapshot};
 
-use crate::command::MoveLayer;
 use super::{Behavior, InteractionMode, Key, ModeContext, PointerEvent};
+use crate::command::MoveLayer;
 
 /// 交互式移动当前图层。
 pub struct LayerMoveMode {
@@ -70,8 +70,12 @@ impl LayerMoveMode {
             self.before = None;
             return;
         }
-        let Some(id) = self.layer_id.take() else { return };
-        let Some(before) = self.before.take() else { return };
+        let Some(id) = self.layer_id.take() else {
+            return;
+        };
+        let Some(before) = self.before.take() else {
+            return;
+        };
         let Some(surface) = ctx.doc.layers_mut().surface_by_id(id) else {
             return;
         };
@@ -225,9 +229,7 @@ mod tests {
         {
             let c = ctx(&mut doc, &brush, &mut state, &mut picked);
             let red = vec![255u8, 0, 0, 255].repeat(8 * 8);
-            c.doc
-                .surface_mut()
-                .load_from_rgba8(&red, 0, 0, 8, 8);
+            c.doc.surface_mut().load_from_rgba8(&red, 0, 0, 8, 8);
         }
         let mut mode = LayerMoveMode::new();
         {
@@ -237,14 +239,10 @@ mod tests {
             mode.button_release(&mut c, &PointerEvent::button(68.0, 4.0, 32.0, 1));
         }
         assert_eq!(doc.command_stack.undo_len(), 1);
-        let shifted = doc
-            .surface()
-            .tile(1, 0)
-            .expect("红块应移到右侧 tile");
+        let shifted = doc.surface().tile(1, 0).expect("红块应移到右侧 tile");
         assert_eq!(shifted[0][0][3], 1 << 15);
         doc.undo();
         let back = doc.surface().tile(0, 0).expect("撤销后回到原 tile");
         assert_eq!(back[0][0][3], 1 << 15);
     }
 }
-

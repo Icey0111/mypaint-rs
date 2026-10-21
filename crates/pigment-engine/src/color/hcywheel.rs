@@ -252,7 +252,7 @@ pub fn convex_hull(points: &[Point]) -> Vec<Point> {
             .expect("去重后 dist > 0，余弦不会是 NaN")
             .then_with(|| {
                 a.0 .1
-                    .0
+                     .0
                     .partial_cmp(&b.0 .1 .0)
                     .expect("坐标不会是 NaN")
                     .then(a.0 .1 .1.partial_cmp(&b.0 .1 .1).expect("坐标不会是 NaN"))
@@ -862,11 +862,7 @@ pub fn mask_templates() -> Vec<MaskTemplate> {
             name: "Split Complementary",
             description: "Two analogous colors and a complement to them, \
                           with no secondary colors between them.",
-            shapes: vec![
-                coffin(h + 0.5),
-                coffin(1.0 + h - 0.1),
-                coffin(h + 0.1),
-            ],
+            shapes: vec![coffin(h + 0.5), coffin(1.0 + h - 0.1), coffin(h + 0.1)],
         },
     ]
 }
@@ -1063,7 +1059,11 @@ mod tests {
         rotate_mask(&mut mask, 0.25);
         let a = HcyColor::from_color(&mask[0][0]);
         let b = HcyColor::from_color(&mask[0][1]);
-        assert!(close(a.h, 0.15, 1e-9), "0.9+0.25 应回绕到 0.15，实得 {}", a.h);
+        assert!(
+            close(a.h, 0.15, 1e-9),
+            "0.9+0.25 应回绕到 0.15，实得 {}",
+            a.h
+        );
         assert!(close(b.h, 0.35, 1e-9));
         assert!(close(a.c, 0.5, 1e-9) && close(a.y, 0.5, 1e-9));
     }
@@ -1096,13 +1096,14 @@ mod tests {
     #[test]
     fn pairwise_matches_source_edge_cases() {
         assert_eq!(pairwise(&[]).count(), 0);
-        assert_eq!(pairwise(&[(1.0, 2.0)]).count(), 0, "单点无配对（n > 1 才产）");
+        assert_eq!(
+            pairwise(&[(1.0, 2.0)]).count(),
+            0,
+            "单点无配对（n > 1 才产）"
+        );
         assert_eq!(
             pairwise(&[(0.0, 0.0), (1.0, 0.0)]).collect::<Vec<_>>(),
-            vec![
-                ((0.0, 0.0), (1.0, 0.0)),
-                ((1.0, 0.0), (0.0, 0.0)),
-            ],
+            vec![((0.0, 0.0), (1.0, 0.0)), ((1.0, 0.0), (0.0, 0.0)),],
             "两点也是一对半（首尾相接）"
         );
         // 正方形：4 对，最后一对回到起点
@@ -1359,9 +1360,7 @@ mod tests {
         // rygb 轮：色相被逆畸变改掉，彩度/明度不动
         let rygb = crate::color::WheelType::Rygb.ranges();
         let hcy = template_mask(&t[0], rygb);
-        let Color::Hcy(col) = hcy[0][0] else {
-            panic!()
-        };
+        let Color::Hcy(col) = hcy[0][0] else { panic!() };
         assert_eq!(col.h, undistort_hue(0.95, rygb));
         assert_ne!(col.h, 0.95, "rygb 轮上 0.95 应被重映射");
         assert_eq!((col.c, col.y), (0.95, 0.5));

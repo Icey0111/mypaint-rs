@@ -61,11 +61,15 @@ pub fn read_brushpack(path: impl AsRef<Path>) -> Result<Brushpack, String> {
         ));
     }
     let readme = if names.iter().any(|n| n == README) {
-        z.read(README).ok().map(|b| String::from_utf8_lossy(&b).into_owned())
+        z.read(README)
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
     } else {
         None
     };
-    let order = z.read(ORDER_CONF).map_err(|e| format!("读 order.conf 失败：{e}"))?;
+    let order = z
+        .read(ORDER_CONF)
+        .map_err(|e| format!("读 order.conf 失败：{e}"))?;
     let groups = crate::brushlib::parse_order_conf(&String::from_utf8_lossy(&order));
     let mut listed: Vec<String> = Vec::new();
     for (_, brushes) in &groups {
@@ -217,8 +221,7 @@ pub fn export_group(
         .map(|g| g.display.clone())
         .unwrap_or_else(|| group_id.to_string());
     let mut order = format!("Group: {title}\n");
-    let mut z = crate::zip::ZipWriter::create(filename.as_ref())
-        .map_err(io::Error::other)?;
+    let mut z = crate::zip::ZipWriter::create(filename.as_ref()).map_err(io::Error::other)?;
     let mut count = 0;
     for i in lib.group_members(group_id) {
         let entry = &lib.entries[i];
@@ -317,7 +320,10 @@ mod tests {
         make_pack(
             &zip,
             "Group: Test\nTest/one\n",
-            &[("Test/one.myb", b"{\"version\":3}"), ("Test/one_prev.png", b"png")],
+            &[
+                ("Test/one.myb", b"{\"version\":3}"),
+                ("Test/one_prev.png", b"png"),
+            ],
         );
         let pack = read_brushpack(&zip).unwrap();
         let user = dir.join("brushes");
@@ -349,10 +355,7 @@ mod tests {
     fn exported_group_reads_back_as_a_pack() {
         let lib = crate::brushlib::BrushLibrary::embedded();
         let n = lib.group_members("classic").len();
-        let path = std::env::temp_dir().join(format!(
-            "pigment-export-{}.zip",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("pigment-export-{}.zip", std::process::id()));
         let _ = std::fs::remove_file(&path);
         let count = export_group(&lib, "classic", &path).unwrap();
         assert_eq!(count, n);

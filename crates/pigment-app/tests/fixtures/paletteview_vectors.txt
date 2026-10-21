@@ -1,5 +1,5 @@
 # 由 crates/pigment-engine/tests/tools/gen-palette-vectors.py 生成，请勿手改。
-# 事实来源：E:\MyPaint\_mypaint_ref 的 gui/colors/paletteview.py（ast 抽出 _PaletteGridLayout 的方法体后 exec）
+# 事实来源：_mypaint_ref 的 gui/colors/paletteview.py（ast 抽出 _PaletteGridLayout 的方法体后 exec）
 # 一行一类：见脚本 docstring 的 pv_* 说明。浮点 = Python repr。
 pv_constrain	-5	7
 pv_constrain	0	7

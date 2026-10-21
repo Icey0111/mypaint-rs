@@ -1,5 +1,5 @@
 # 由 crates/pigment-engine/tests/tools/gen-palette-vectors.py 生成，请勿手改。
-# 事实来源：E:\MyPaint\_mypaint_ref（真 import lib/palette.py，只把 lib.helpers 换成装着真 clamp() 的替身）
+# 事实来源：_mypaint_ref（真 import lib/palette.py，只把 lib.helpers 换成装着真 clamp() 的替身）
 # 浮点 = Python repr（最短往返）；Rust 侧应逐位 assert_eq!。
 # 行格式见脚本 docstring。
 pal_meta	All_color_choice	All Color choice	16	896

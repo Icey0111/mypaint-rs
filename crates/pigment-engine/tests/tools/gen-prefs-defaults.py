@@ -60,7 +60,7 @@ import posixpath
 import types
 from pathlib import Path
 
-DEFAULT_REF = r"E:\MyPaint\_mypaint_ref"
+DEFAULT_REF = r"_mypaint_ref"
 DEFAULT_DOCS = r"C:\Users\test\Documents"
 
 

@@ -94,7 +94,10 @@ fn color_manager_reads_wheel_type_and_context_restores_color() {
 
     // 未知色轮名 → 源码会 KeyError；这里退回 rgb（保守）
     let prefs = prefs_with(&[("colors.wheels.type", json!("nope"))]);
-    assert_eq!(ColorManager::from_prefs(&prefs).wheel_type(), WheelType::DEFAULT);
+    assert_eq!(
+        ColorManager::from_prefs(&prefs).wheel_type(),
+        WheelType::DEFAULT
+    );
 }
 
 /// 调色板：`prefs[colors.palette]` 是"简单字典"，不是 `.gpl` 文本
@@ -158,8 +161,14 @@ fn color_manager_store_prefs_writes_the_source_keys() {
     assert_eq!(prefs.get_str("colors.wheels.type"), Some("rygb"));
     assert!(!prefs.bool_or("misc.context_restores_color", true));
     let pal = prefs.get("colors.palette").expect("调色板写回了");
-    assert_eq!(pal["entries"].as_array().unwrap().len(), mgr.palette().len());
-    assert_eq!(pal["entries"].as_array().unwrap().last().unwrap()[0], json!("#abcdef"));
+    assert_eq!(
+        pal["entries"].as_array().unwrap().len(),
+        mgr.palette().len()
+    );
+    assert_eq!(
+        pal["entries"].as_array().unwrap().last().unwrap()[0],
+        json!("#abcdef")
+    );
 
     // 用写回后的偏好重建 → 状态一致（往返）
     let again = ColorManager::from_prefs(&prefs);

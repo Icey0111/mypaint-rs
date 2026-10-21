@@ -32,7 +32,10 @@ fn to_greyscale_docstring() {
 fn to_contrasting_docstring() {
     let col = Color::Rgb(RgbColor::new(1.0, 0.8, 0.2));
     let other = col.to_contrasting(CONTRASTING_K);
-    assert!(!colors_match(&col, &Color::Rgb(other)), "反差色不该等于原色");
+    assert!(
+        !colors_match(&col, &Color::Rgb(other)),
+        "反差色不该等于原色"
+    );
 }
 
 /// `to_fill_pixel()`：`lib/color.py:210-220` —— 白色是 `0xffffffff`。
@@ -109,7 +112,11 @@ fn hcy_interpolate_docstring() {
     assert_eq!(r2g, ["#e55353", "#c46f19", "#8c8c19", "#5ea319", "#19c619"]);
     // 源码 `:577-578`：夹在中间的五点彩度都是 0.8
     for c in red.interpolate_hcy(&green, 5) {
-        assert!((c.c - 0.8).abs() < 1e-12, "中间彩度应恒为 0.8，实得 {}", c.c);
+        assert!(
+            (c.c - 0.8).abs() < 1e-12,
+            "中间彩度应恒为 0.8，实得 {}",
+            c.c
+        );
     }
 }
 
@@ -189,7 +196,10 @@ fn hex_parse_docstring() {
         RgbColor::new_from_hex_str("#ff0000")
     );
     // 非法输入不报错，退回默认灰 `[0.5, 0.5, 0.5]`
-    assert_eq!(RgbColor::new_from_hex_str("nope"), RgbColor::new(0.5, 0.5, 0.5));
+    assert_eq!(
+        RgbColor::new_from_hex_str("nope"),
+        RgbColor::new(0.5, 0.5, 0.5)
+    );
     // `0x` 前缀（小写）也算
     assert_eq!(
         RgbColor::new_from_hex_str("0xff0000"),
@@ -214,7 +224,11 @@ fn hcy_black_special_case_docstring() {
     let hsv = black.get_hsv();
     assert_eq!(hsv[0], 0.25, "色相直接用存下的 h");
     assert_eq!(hsv[2], 0.0, "明度仍是 0");
-    assert!(hsv[1] > 0.0, "彩度不为 0 时饱和度必须补出来，实得 {}", hsv[1]);
+    assert!(
+        hsv[1] > 0.0,
+        "彩度不为 0 时饱和度必须补出来，实得 {}",
+        hsv[1]
+    );
     // 而 c == 0 的纯黑：饱和度自然就是 0
     let pure_black = HcyColor::new(0.25, 0.0, 0.0);
     assert_eq!(pure_black.get_hsv()[1], 0.0);
@@ -226,7 +240,11 @@ fn hcy_black_special_case_docstring() {
 fn hcy_from_hsv_keeps_saturation_at_black_docstring() {
     let hsv = HsvColor::new(0.4, 0.7, 0.0);
     let hcy = HcyColor::from_color(&Color::Hsv(hsv));
-    assert!(hcy.c > 0.0, "纯黑但饱和度不为 0 时彩度要保住，实得 {}", hcy.c);
+    assert!(
+        hcy.c > 0.0,
+        "纯黑但饱和度不为 0 时彩度要保住，实得 {}",
+        hcy.c
+    );
     let back = hcy.get_hsv();
     assert_eq!(back[0], 0.4);
     assert!(back[1] > 0.0, "饱和度也要保住，实得 {}", back[1]);

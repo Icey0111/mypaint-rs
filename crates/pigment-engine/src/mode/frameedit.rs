@@ -2,11 +2,11 @@
 //!
 //! 已移植：边/角命中（`EDGE_SENSITIVITY=10` 显示像素）、九种拖拽效果
 //! （`DRAG_EFFECTS`）、`_MIN_FRAME_SIZE=1`、左右/上下边的补偿钳位、
-//! 空白处点击创建画框、`UpdateFrame` 撤销命令。画框按钮（删除）与
-//! 选项面板/光标形状未移植。
+//! 空白处点击创建画框、`UpdateFrame` 撤销命令。画框删除按钮、边/角手柄与
+//! 选项面板在 GUI 层（workspace/overlays），光标为十字。
 
-use crate::command::UpdateFrame;
 use super::{Behavior, InteractionMode, Key, ModeContext, PointerEvent};
+use crate::command::UpdateFrame;
 
 const LEFT: u8 = 1;
 const TOP: u8 = 2;
@@ -54,11 +54,7 @@ impl FrameEditMode {
         let max_d = EDGE_SENSITIVITY / ev.viewzoom.max(1e-6);
         let (x, y) = (ev.x, ev.y);
         let (x2, y2) = ((fx + fw) as f32, (fy + fh) as f32);
-        if x < fx as f32 - max_d
-            || x > x2 + max_d
-            || y < fy as f32 - max_d
-            || y > y2 + max_d
-        {
+        if x < fx as f32 - max_d || x > x2 + max_d || y < fy as f32 - max_d || y > y2 + max_d {
             return 0; // OUTSIDE
         }
         let mut z = 0;
@@ -133,7 +129,8 @@ impl FrameEditMode {
         let before = self.orig;
         let after = ctx.doc.get_frame();
         if before != after {
-            ctx.doc.do_command(Box::new(UpdateFrame::new(before, after)));
+            ctx.doc
+                .do_command(Box::new(UpdateFrame::new(before, after)));
         }
     }
 }
@@ -208,8 +205,10 @@ impl InteractionMode for FrameEditMode {
             let before = ctx.doc.get_frame();
             ctx.doc.set_frame(x, y, NEW_FRAME_SIZE, NEW_FRAME_SIZE);
             ctx.doc.set_frame_enabled(true);
-            ctx.doc
-                .do_command(Box::new(UpdateFrame::new(before, (x, y, NEW_FRAME_SIZE, NEW_FRAME_SIZE))));
+            ctx.doc.do_command(Box::new(UpdateFrame::new(
+                before,
+                (x, y, NEW_FRAME_SIZE, NEW_FRAME_SIZE),
+            )));
             return true;
         }
         if self.dragging {
@@ -222,7 +221,8 @@ impl InteractionMode for FrameEditMode {
 
     fn key_press(&mut self, ctx: &mut ModeContext<'_>, key: Key) -> bool {
         if key == Key::Escape && self.dragging {
-            ctx.doc.set_frame(self.orig.0, self.orig.1, self.orig.2, self.orig.3);
+            ctx.doc
+                .set_frame(self.orig.0, self.orig.1, self.orig.2, self.orig.3);
             self.dragging = false;
             return true;
         }

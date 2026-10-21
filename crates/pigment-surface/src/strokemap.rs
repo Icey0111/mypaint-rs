@@ -55,12 +55,33 @@ impl StrokeShape {
     /// 阈值照 `pixops.cpp:657-710`：颜色变化 > max(alpha)/16，或 alpha 增加 >
     /// 1/4，或相对 alpha 增加 > 1/64 且 > 旧 alpha/2。
     pub fn from_snapshots(before: &SurfaceSnapshot, after: &SurfaceSnapshot) -> Option<Self> {
+        // 只比较 Arc 不同的 tile：快照是写时复制的，未修改的 tile 两边的
+        // Arc 是同一个对象，逐像素扫描它们纯属浪费（大画幅 + 大笔刷时
+        // 会在抬笔瞬间扫描整层）。
         let mut coords: BTreeSet<(i32, i32)> = BTreeSet::new();
-        coords.extend(before.coords());
-        coords.extend(after.coords());
+        for (&c, a) in &before.tiles {
+            if after
+                .tiles
+                .get(&c)
+                .map_or(true, |b| !std::sync::Arc::ptr_eq(a, b))
+            {
+                coords.insert(c);
+            }
+        }
+        for &c in after.tiles.keys() {
+            if !before.tiles.contains_key(&c) {
+                coords.insert(c);
+            }
+        }
         let mut shape = StrokeShape::default();
-        let half = (1u32 << 15) as i32;
-        for c in coords {
+        // 逐 tile 求差彼此独立（掩码只依赖这一格的前后像素），所以按 tile
+        // 并行不改变任何一个字节。抬笔瞬间的 1866 格大笔画实测 30ms，
+        // 瓶颈全在这层逐像素循环上；切到 rayon 后降到毫秒级。
+        // 小笔画（常见情况）不值得付线程池唤醒成本，直接顺序跑。
+        const PARALLEL_MIN_TILES: usize = 8;
+        let coords: Vec<(i32, i32)> = coords.into_iter().collect();
+        let diff = |c: &(i32, i32)| -> Option<((i32, i32), Vec<u8>)> {
+            let half = (1u32 << 15) as i32;
             let a = before.tile(c.0, c.1);
             let b = after.tile(c.0, c.1);
             let mut mask = vec![0u8; N * N];
@@ -93,8 +114,19 @@ impl StrokeShape {
                 }
             }
             if any || changed {
-                shape.tiles.insert(c, mask);
+                Some((*c, mask))
+            } else {
+                None
             }
+        };
+        let tiles: Vec<((i32, i32), Vec<u8>)> = if coords.len() >= PARALLEL_MIN_TILES {
+            use rayon::prelude::*;
+            coords.par_iter().filter_map(diff).collect()
+        } else {
+            coords.iter().filter_map(diff).collect()
+        };
+        for (c, mask) in tiles {
+            shape.tiles.insert(c, mask);
         }
         if shape.tiles.is_empty() {
             None
@@ -115,6 +147,23 @@ impl StrokeShape {
             .get(&(tx, ty))
             .map(|m| m[py * N + px] != 0)
             .unwrap_or(false)
+    }
+
+    /// 丢掉完全落在矩形外的 tile（`StrokeShape.trim`，`lib/strokemap.py:219`）。
+    ///
+    /// 源码只按 **tile** 粒度丢弃，不裁剪部分覆盖 tile 内的 0/1 位；
+    /// 返回“裁剪后是否还剩 tile”，空形状由调用方删除。
+    pub fn trim(&mut self, rect: (i32, i32, i32, i32)) -> bool {
+        let (x, y, w, h) = rect;
+        let n = N as i64;
+        let (x, y, right, bottom) = (x as i64, y as i64, x as i64 + w as i64, y as i64 + h as i64);
+        self.tiles.retain(|&(tx, ty), _| {
+            let x0 = tx as i64 * n;
+            let y0 = ty as i64 * n;
+            // 条件逐字照 `strokemap.py:233`：注意边界相等时**保留** tile。
+            !(x0 + n < x || y0 + n < y || x0 > right || y0 > bottom)
+        });
+        !self.tiles.is_empty()
     }
 
     /// 按像素平移整张形状（`StrokeShape.translate`，`lib/strokemap.py:212`）。
@@ -140,8 +189,7 @@ impl StrokeShape {
                     let nty = ay.div_euclid(n) as i32;
                     let px = ax.rem_euclid(n) as usize;
                     let py = ay.rem_euclid(n) as usize;
-                    out.entry((ntx, nty))
-                        .or_insert_with(|| vec![0u8; N * N])[py * N + px] = 1;
+                    out.entry((ntx, nty)).or_insert_with(|| vec![0u8; N * N])[py * N + px] = 1;
                 }
             }
         }
@@ -196,7 +244,10 @@ impl StrokeShape {
             tiles.insert((tx, ty), mask);
             i += len;
         }
-        Ok(Self { tiles, brush: String::new() })
+        Ok(Self {
+            tiles,
+            brush: String::new(),
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -358,6 +409,30 @@ mod tests {
     }
 
     #[test]
+    fn trim_drops_only_tiles_outside_the_rect() {
+        let mut shape = StrokeShape::default();
+        for (tx, ty) in [(0, 0), (1, 0), (2, 0)] {
+            shape.tiles.insert((tx, ty), vec![1u8; N * N]);
+        }
+        assert!(shape.trim((0, 0, 64, 64)));
+        assert_eq!(
+            shape.tiles.keys().copied().collect::<Vec<_>>(),
+            vec![(0, 0), (1, 0)],
+            "右边界正好等于 tile 起点时源码保留（严格 `<`/`>`）"
+        );
+        assert!(shape.trim((0, 0, 0, 0)), "空矩形仍按同一 tile 条件裁剪");
+        assert_eq!(shape.tiles.len(), 1);
+    }
+
+    #[test]
+    fn trim_reports_when_nothing_remains() {
+        let mut shape = StrokeShape::default();
+        shape.tiles.insert((2, 0), vec![1u8; N * N]);
+        assert!(!shape.trim((0, 0, 64, 64)));
+        assert!(shape.is_empty());
+    }
+
+    #[test]
     fn touches_pixel_handles_negative_coordinates() {
         let mut shape = StrokeShape::default();
         let mut mask = vec![0u8; N * N];
@@ -401,7 +476,10 @@ mod tests {
     fn dot(tx: i32, ty: i32, x: usize, y: usize, brush: &str) -> StrokeShape {
         let mut mask = vec![0u8; N * N];
         mask[y * N + x] = 1;
-        let mut s = StrokeShape { tiles: BTreeMap::new(), brush: brush.to_string() };
+        let mut s = StrokeShape {
+            tiles: BTreeMap::new(),
+            brush: brush.to_string(),
+        };
         s.tiles.insert((tx, ty), mask);
         s
     }
@@ -423,7 +501,10 @@ mod tests {
         // 平移后越界到负 tile 也不能丢：x=10-12=-2 → tile -1, px 62
         let d = read_dat(&dat, -12, 0).unwrap();
         assert_eq!(d[0].tiles[&(-1, 0)][10 * N + 62], 1);
-        assert!(!d[0].tiles.values().any(|m| m.iter().filter(|&&v| v == 1).count() != 1));
+        assert!(!d[0]
+            .tiles
+            .values()
+            .any(|m| m.iter().filter(|&&v| v == 1).count() != 1));
     }
 
     /// 写 ORA 时 tile 下标相对图层 bbox：传 `-x,-y` 后能按 `+x,+y` 读回。
@@ -431,7 +512,7 @@ mod tests {
     fn relative_tile_origin_round_trips() {
         let shape = dot(3, 2, 5, 7, "b");
         let dat = write_dat(&[shape.clone()], -192, -128); // bbox 原点 (192,128)
-        // 'b' + u32 长度 + zlib 笔刷 + 's' + u32 brush_id + u32 长度，之后才是 tile 坐标
+                                                           // 'b' + u32 长度 + zlib 笔刷 + 's' + u32 brush_id + u32 长度，之后才是 tile 坐标
         let b_len = u32::from_be_bytes(dat[1..5].try_into().unwrap()) as usize;
         let s_off = 1 + 4 + b_len;
         assert_eq!(dat[s_off], b's');
@@ -460,11 +541,18 @@ mod tests {
             shapes.iter().map(|s| s.brush.as_str()).collect::<Vec<_>>(),
             ["A", "B", "A"]
         );
-        assert_eq!(shapes[0].tiles.keys().copied().collect::<Vec<_>>(), [(3, 2)]);
+        assert_eq!(
+            shapes[0].tiles.keys().copied().collect::<Vec<_>>(),
+            [(3, 2)]
+        );
         assert_eq!(shapes[0].tiles[&(3, 2)][7 * N + 5], 1);
 
         let ours = write_dat(
-            &[dot(3, 2, 5, 7, "A"), dot(3, 2, 9, 9, "B"), dot(4, 2, 1, 1, "A")],
+            &[
+                dot(3, 2, 5, 7, "A"),
+                dot(3, 2, 9, 9, "B"),
+                dot(4, 2, 1, 1, "A"),
+            ],
             -192,
             -128,
         );
@@ -477,24 +565,40 @@ mod tests {
             assert_eq!(a.tiles, b.tiles);
         }
         assert_eq!(*ours.last().unwrap(), b'}', "结束标记");
-        assert_eq!(ours.iter().filter(|&&b| b == b'b').count(), 2, "brush 表去重");
+        assert_eq!(
+            ours.iter().filter(|&&b| b == b'b').count(),
+            2,
+            "brush 表去重"
+        );
     }
 
     /// brush 表按全文件去重（源码 `brush2id`），空笔迹也以 `}` 结束。
     #[test]
     fn brush_table_dedup_and_empty_terminator() {
         let dat = write_dat(
-            &[dot(0, 0, 1, 1, "A"), dot(0, 0, 2, 2, "B"), dot(0, 0, 3, 3, "A")],
+            &[
+                dot(0, 0, 1, 1, "A"),
+                dot(0, 0, 2, 2, "B"),
+                dot(0, 0, 3, 3, "A"),
+            ],
             0,
             0,
         );
-        assert_eq!(dat.iter().filter(|&&b| b == b'b').count(), 2, "A/B 各写一次");
+        assert_eq!(
+            dat.iter().filter(|&&b| b == b'b').count(),
+            2,
+            "A/B 各写一次"
+        );
         let back = read_dat(&dat, 0, 0).unwrap();
         assert_eq!(
             back.iter().map(|s| s.brush.as_str()).collect::<Vec<_>>(),
             ["A", "B", "A"],
             "第三笔复用 A 的 id"
         );
-        assert_eq!(write_dat(&[], 0, 0), b"}", "空笔迹也要写结束符（源码无条件写）");
+        assert_eq!(
+            write_dat(&[], 0, 0),
+            b"}",
+            "空笔迹也要写结束符（源码无条件写）"
+        );
     }
 }

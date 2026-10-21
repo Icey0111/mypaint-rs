@@ -274,7 +274,8 @@ impl ZipArchive {
                 )));
             }
             let method = u16::from_le_bytes([data[p + 10], data[p + 11]]);
-            let crc32 = u32::from_le_bytes([data[p + 16], data[p + 17], data[p + 18], data[p + 19]]);
+            let crc32 =
+                u32::from_le_bytes([data[p + 16], data[p + 17], data[p + 18], data[p + 19]]);
             let compressed_size =
                 u32::from_le_bytes([data[p + 20], data[p + 21], data[p + 22], data[p + 23]]);
             let uncompressed_size =
@@ -288,8 +289,8 @@ impl ZipArchive {
             if name_start + name_len > data.len() {
                 return Err(ZipError::Corrupt("条目名被截断".into()));
             }
-            let name = String::from_utf8_lossy(&data[name_start..name_start + name_len])
-                .into_owned();
+            let name =
+                String::from_utf8_lossy(&data[name_start..name_start + name_len]).into_owned();
             index.insert(
                 name.clone(),
                 ZipEntry {
@@ -354,7 +355,12 @@ impl ZipArchive {
         if p + 30 > self.data.len() {
             return Err(ZipError::Corrupt("本地文件头越界".into()));
         }
-        let sig = u32::from_le_bytes([self.data[p], self.data[p + 1], self.data[p + 2], self.data[p + 3]]);
+        let sig = u32::from_le_bytes([
+            self.data[p],
+            self.data[p + 1],
+            self.data[p + 2],
+            self.data[p + 3],
+        ]);
         if sig != 0x0403_4b50 {
             return Err(ZipError::Corrupt(format!(
                 "本地文件头签名错误 @{p}: {sig:#x}"
@@ -365,10 +371,7 @@ impl ZipArchive {
         let start = p + 30 + name_len + extra_len;
         let end = start + e.compressed_size as usize;
         if end > self.data.len() {
-            return Err(ZipError::Corrupt(format!(
-                "条目 {:?} 数据越界",
-                e.name
-            )));
+            return Err(ZipError::Corrupt(format!("条目 {:?} 数据越界", e.name)));
         }
         Ok(self.data[start..end].to_vec())
     }
@@ -452,10 +455,7 @@ mod tests {
             w.finish().unwrap();
         }
         let z = ZipArchive::open(&path).unwrap();
-        assert!(matches!(
-            z.read("b"),
-            Err(ZipError::EntryNotFound(_))
-        ));
+        assert!(matches!(z.read("b"), Err(ZipError::EntryNotFound(_))));
         let _ = std::fs::remove_file(&path);
     }
 
@@ -516,7 +516,8 @@ z.close()
         {
             let mut w = ZipWriter::create(&path).unwrap();
             w.add_stored("mimetype", b"image/openraster").unwrap();
-            w.add_stored("stack.xml", b"<image w=\"1\" h=\"1\"/>").unwrap();
+            w.add_stored("stack.xml", b"<image w=\"1\" h=\"1\"/>")
+                .unwrap();
             w.finish().unwrap();
         }
         let py = format!(
@@ -532,7 +533,10 @@ print("PYOK")
 "#,
             p = path.display()
         );
-        let out = std::process::Command::new("python").arg("-c").arg(&py).output();
+        let out = std::process::Command::new("python")
+            .arg("-c")
+            .arg(&py)
+            .output();
         match out {
             Ok(o) if o.status.success() => {
                 assert!(String::from_utf8_lossy(&o.stdout).contains("PYOK"));

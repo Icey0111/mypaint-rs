@@ -11,7 +11,10 @@ use pigment_surface::combine::{tile_combine, CombineMode};
 /// fixture 里 tile 是 8×8（生成器构造）；混合数学逐像素与尺寸无关。
 const FIX_TILE: usize = 8 * 8 * 4;
 
-const FIXTURE: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/combine_vectors.bin");
+const FIXTURE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/combine_vectors.bin"
+);
 
 fn read_u16(buf: &[u8], off: usize) -> u16 {
     u16::from_le_bytes([buf[off], buf[off + 1]])
@@ -26,9 +29,7 @@ fn read_f32(buf: &[u8], off: usize) -> f32 {
 }
 
 fn tile_bytes(buf: &[u8], off: usize) -> Vec<u16> {
-    (0..FIX_TILE)
-        .map(|k| read_u16(buf, off + k * 2))
-        .collect()
+    (0..FIX_TILE).map(|k| read_u16(buf, off + k * 2)).collect()
 }
 
 #[test]
@@ -65,14 +66,9 @@ fn tile_combine_matches_reference_bit_for_bit() {
             }
         }
         assert_eq!(
-            diffs,
-            0,
+            diffs, 0,
             "模式 {:?} dst_has_alpha={} opacity={}: {} 通道不一致，首个 {:?}",
-            mode,
-            dst_has_alpha,
-            opacity,
-            diffs,
-            first_diff,
+            mode, dst_has_alpha, opacity, diffs, first_diff,
         );
     }
     assert_eq!(checked, count);
@@ -85,11 +81,28 @@ fn tile_combine_matches_reference_bit_for_bit() {
 fn mode_metadata_matches_reference() {
     // pixops.cpp:784-811 LUT 的规范名
     let names = [
-        "svg:src-over", "svg:multiply", "svg:screen", "svg:overlay", "svg:darken",
-        "svg:lighten", "svg:hard-light", "svg:soft-light", "svg:color-burn",
-        "svg:color-dodge", "svg:difference", "svg:exclusion", "svg:hue",
-        "svg:saturation", "svg:color", "svg:luminosity", "svg:plus", "svg:dst-in",
-        "svg:dst-out", "svg:src-atop", "svg:dst-atop", "mypaint:spectral-wgm",
+        "svg:src-over",
+        "svg:multiply",
+        "svg:screen",
+        "svg:overlay",
+        "svg:darken",
+        "svg:lighten",
+        "svg:hard-light",
+        "svg:soft-light",
+        "svg:color-burn",
+        "svg:color-dodge",
+        "svg:difference",
+        "svg:exclusion",
+        "svg:hue",
+        "svg:saturation",
+        "svg:color",
+        "svg:luminosity",
+        "svg:plus",
+        "svg:dst-in",
+        "svg:dst-out",
+        "svg:src-atop",
+        "svg:dst-atop",
+        "mypaint:spectral-wgm",
     ];
     for (i, &name) in names.iter().enumerate() {
         let m = CombineMode::from_index(i as u8).unwrap();
@@ -103,7 +116,10 @@ fn mode_metadata_matches_reference() {
         .iter()
         .filter(|m| m.zero_alpha_has_effect())
         .collect();
-    assert_eq!(zahe, [&CombineMode::DestinationIn, &CombineMode::DestinationAtop]);
+    assert_eq!(
+        zahe,
+        [&CombineMode::DestinationIn, &CombineMode::DestinationAtop]
+    );
     let cda: Vec<_> = CombineMode::ALL
         .iter()
         .filter(|m| m.can_decrease_alpha())
@@ -120,9 +136,15 @@ fn mode_metadata_matches_reference() {
         .iter()
         .filter(|m| m.zero_alpha_clears_backdrop())
         .collect();
-    assert_eq!(zacb, [&CombineMode::DestinationIn, &CombineMode::DestinationAtop]);
+    assert_eq!(
+        zacb,
+        [&CombineMode::DestinationIn, &CombineMode::DestinationAtop]
+    );
 
     // lib/modes.py:28 默认模式
-    assert_eq!(pigment_surface::combine::DEFAULT_MODE, CombineMode::SpectralWGM);
+    assert_eq!(
+        pigment_surface::combine::DEFAULT_MODE,
+        CombineMode::SpectralWGM
+    );
     assert_eq!(pigment_surface::combine::PASS_THROUGH_MODE, -1);
 }

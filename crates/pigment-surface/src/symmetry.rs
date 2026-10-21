@@ -44,12 +44,59 @@
 //!    逐行保留。
 
 use std::f32::consts::PI;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-use hokusai::brushmodes::draw_dab_default;
-use hokusai::Dab;
+use hokusai::brushmodes::{draw_prepared_dab, draw_prepared_dab_row, prepare_dab};
+use hokusai::tile::TilePixels;
+use hokusai::{Dab, TiledSurface};
 
 use crate::PigmentSurface;
+
+/// 大 dab 的 tile 并行池。
+///
+/// 低缩放时一个刮刀 dab 的文档半径可达 100px 以上，覆盖 4–16 个 tile；
+/// 每格光栅化互不重叠，正好是安全的并行边界。小 dab（<3 格）仍走顺序路径，
+/// 避免 rayon 调度开销。线程数可用 `PIGMENT_DAB_THREADS` 覆盖。
+pub(crate) fn dab_pool() -> &'static rayon::ThreadPool {
+    static POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::env::var("PIGMENT_DAB_THREADS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or_else(|| {
+                let cores = std::thread::available_parallelism()
+                    .map(|n| n.get())
+                    .unwrap_or(8);
+                // 大刮刀一个 dab 可覆盖上百个 tile；用接近全核的池子能把
+                // 单 dab 渲染时间压到 1/5–1/3。小 dab 不进入并行路径，
+                // 中等 dab 在实测中也没有因池子变大而变慢。
+                (cores * 3 / 4).clamp(2, 16)
+            })
+            .clamp(1, 16);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n)
+            .thread_name(|i| format!("pigment-dab-{i}"))
+            .build()
+            .expect("创建 dab 线程池失败")
+    })
+}
+
+fn dab_threads() -> usize {
+    dab_pool().current_num_threads()
+}
+
+/// 在启动时预热并行池，避免第一笔大刮刀付线程创建延迟。
+pub fn warm_parallel_pool() {
+    let _ = dab_pool();
+}
+
+/// 并行区里的 tile 裸指针。每个 key 唯一、map 在并行期间不再增删，
+/// 因此这些指针互不别名；这是本模块唯一需要 `unsafe` 的原因。
+#[derive(Clone, Copy)]
+struct TilePtr(*mut TilePixels);
+unsafe impl Send for TilePtr {}
+unsafe impl Sync for TilePtr {}
 
 /// 矩阵数组的初始容量 —— `mypaint-symmetry.c:7` 的
 /// `#define DEFAULT_NUM_MATRICES 16`。
@@ -524,7 +571,7 @@ pub fn symmetry_dabs(state: SymmetryState, matrices: &[Transform], dab: &Dab) ->
 /// 它同时是 `draw_dab` 里决定"要不要做对称 pass"的那个 `surface_modified`
 /// （`:711`）。`softness` 那条查不了：hokusai 的 [`Dab`] 没有这个字段。
 fn dab_is_drawable(dab: &Dab) -> bool {
-    dab.radius >= 0.1 && dab.hardness != 0.0 && dab.opaque != 0.0
+    dab.radius >= 0.1 && dab.hardness != 0.0 && dab.opaque != 0.0 && dab.softness < 1.0
 }
 
 impl PigmentSurface {
@@ -592,9 +639,100 @@ impl PigmentSurface {
     /// 但 hokusai 的 `TiledSurface::draw_dab` 契约是"是否改动了像素"，
     /// 所以这里把两个 pass 的结果 OR 起来 —— 源码注释也说明引入选区遮罩后
     /// 必须这样改（`:717-720`）。
+    /// 单个 dab：按 **tile 内的行** 并行，小 dab 顺序执行。
+    ///
+    /// 行与行之间没有共享状态，tile 之间的像素也互不重叠，所以任务
+    /// (tile, row) 彼此独立；每个 row 的处理仍与参考实现逐行一致，
+    /// 因此并行不改变任何像素结果。按行切的意义在于：低缩放大刮刀
+    /// 一个 dab 可覆盖 6–16 个 tile、数百行，按 tile 并行只有 6–16 个
+    /// 任务，按行并行能真正吃满核心。
+    fn draw_dab_one(&mut self, dab: &Dab) -> bool {
+        let Some(prepared) = prepare_dab(dab) else {
+            return false;
+        };
+        // GPU 批量路径：只排队，事件末尾统一执行。遇到无法表达的 dab 时
+        // 先把队列落地，再走 CPU，保证像素顺序与逐 dab 光栅完全一致。
+        if self.gpu_sink.is_some() {
+            if let Some(params) = prepared.gpu_params() {
+                // 只排真正有覆盖的 tile：`tiles()` 给的是外接矩形，
+                // 圆形笔尖的四角（以及细长笔尖的长边）根本不会落笔。
+                // 大笔刷一个事件动辄上千块 tile、每块 32 KiB 回读，
+                // 把这些格子省掉就是直接省 PCIe 带宽。
+                let tiles: Vec<(i32, i32)> = prepared
+                    .tiles()
+                    .filter(|&(tx, ty)| prepared.row_range(tx, ty).is_some())
+                    .collect();
+                let mut sink = self.gpu_sink.take().expect("刚检查过");
+                let queued = sink.queue_dab(dab, &params, &tiles);
+                self.gpu_sink = Some(sink);
+                if queued {
+                    crate::perf::add(&crate::perf::DABS_GPU, 1);
+                    return true;
+                }
+            }
+            self.flush_gpu_dabs();
+            crate::perf::add(&crate::perf::DABS_CPU, 1);
+        }
+        let keys: Vec<(i32, i32)> = prepared.tiles().collect();
+        let mut ranges = Vec::with_capacity(keys.len());
+        let mut total_rows = 0usize;
+        for &(tx, ty) in &keys {
+            if let Some((r0, r1)) = prepared.row_range(tx, ty) {
+                total_rows += r1 - r0 + 1;
+                ranges.push((tx, ty, r0, r1));
+            }
+        }
+        // 用椭圆面积估计像素工作量：细长刮刀可能只有几十行，但每行很宽；
+        // 小 dab（~150 像素）的并行调度开销远大于渲染本身，必须顺序执行。
+        // 只有面积足够大时才值得切分。
+        if prepared.estimated_pixels() < 2048.0 || total_rows < 24 || dab_threads() < 2 {
+            return draw_prepared_dab(self, &prepared);
+        }
+        // 第一遍：确保 tile 存在、做 COW、记 revision/脏区/mipmap 标记。
+        // 不能在这一遍保留引用 —— HashMap 可能因为后续插入而 rehash。
+        for &(tx, ty) in &keys {
+            let _ = TiledSurface::tile_request_start(self, tx, ty);
+            TiledSurface::tile_request_end(self, tx, ty);
+        }
+        // 第二遍：所有 tile 都已存在，map 不再增删；取互不重叠的裸指针，
+        // 并把每个 tile 的行切成若干块。行本身只有 ~0.3µs 的工作量，
+        // 逐行派发会被 rayon 的调度开销吃掉；每块 8–32 行后，任务数
+        // 只比线程数多几倍，负载均衡和调度成本都合理。
+        let threads = dab_threads();
+        let chunk = (total_rows / (threads * 2)).clamp(8, 32);
+        let mut tasks: Vec<(TilePtr, i32, i32, usize, usize)> = Vec::new();
+        for &(tx, ty, r0, r1) in &ranges {
+            let tile = self.tiles.get_mut(&(tx, ty)).expect("刚请求过的 tile");
+            let pixels = Arc::make_mut(&mut tile.pixels);
+            let ptr = TilePtr(pixels as *mut TilePixels);
+            let mut row = r0;
+            while row <= r1 {
+                let end = (row + chunk - 1).min(r1);
+                tasks.push((ptr, tx, ty, row, end));
+                row = end + 1;
+            }
+        }
+        let painted = AtomicBool::new(false);
+        dab_pool().install(|| {
+            use rayon::prelude::*;
+            tasks.par_iter().for_each(|&(ptr, tx, ty, row0, row1)| {
+                // SAFETY: 同一 tile 的不同行、不同 tile 的像素互不重叠；
+                // 并行期间 map 不增删；每个指针指向 Arc 独占像素区。
+                let mut any = false;
+                for row in row0..=row1 {
+                    any |= unsafe { draw_prepared_dab_row(&mut *ptr.0, tx, ty, row, &prepared) };
+                }
+                if any {
+                    painted.store(true, Ordering::Relaxed);
+                }
+            });
+        });
+        painted.load(Ordering::Relaxed)
+    }
+
     pub(crate) fn draw_dab_with_symmetry(&mut self, dab: &Dab) -> bool {
         // 基础 pass（`:711` `gboolean surface_modified = DDI(x, y, angle, 0);`）
-        let base_modified = draw_dab_default(self, dab);
+        let base_modified = self.draw_dab_one(dab);
 
         // 对称 pass（`:715-796`）。`surface_modified` 用源码自己的判据
         // （见 [`dab_is_drawable`]），不是 `base_modified`。
@@ -614,7 +752,7 @@ impl PigmentSurface {
                     angle: d.angle,
                     ..base
                 };
-                symmetry_modified |= draw_dab_default(self, &mirrored);
+                symmetry_modified |= self.draw_dab_one(&mirrored);
             });
         }
 
@@ -626,6 +764,7 @@ impl PigmentSurface {
 mod tests {
     use super::*;
     use hokusai::color::RgbaF32;
+    use hokusai::tile::TILE_SIZE;
     use hokusai::TiledSurface;
 
     /// 一个几何参数都明确的测试 dab（颜色无关紧要，这里取纯红）。
@@ -642,6 +781,7 @@ mod tests {
             },
             opaque: 1.0,
             hardness: 0.9,
+            softness: 0.0,
             alpha_eraser: 0.0,
             aspect_ratio: 1.0,
             angle,
@@ -656,6 +796,46 @@ mod tests {
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    /// 大 dab 会走 tile 并行路径；结果必须与顺序参考实现逐像素一致。
+    #[test]
+    fn large_dab_parallel_matches_sequential_bitwise() {
+        let mut base = PigmentSurface::new();
+        for ty in -4..=4 {
+            for tx in -4..=4 {
+                let t = base.tile_request_start(tx, ty);
+                for y in 0..TILE_SIZE {
+                    for x in 0..TILE_SIZE {
+                        t[y][x] = [
+                            (tx as u16).wrapping_mul(1731).wrapping_add(x as u16),
+                            (ty as u16).wrapping_mul(927).wrapping_add(y as u16),
+                            ((x + y) as u16).wrapping_mul(311),
+                            1 << 15,
+                        ];
+                    }
+                }
+                base.tile_request_end(tx, ty);
+            }
+        }
+        let mut seq = base.clone();
+        let mut par = base;
+        let mut dab = test_dab(32.0, 32.0, -90.0);
+        dab.radius = 140.0;
+        dab.aspect_ratio = 5.0;
+        dab.opaque = 0.9;
+        let seq_any = hokusai::brushmodes::draw_dab_default(&mut seq, &dab);
+        let par_any = par.draw_dab(&dab);
+        assert_eq!(seq_any, par_any);
+        for ty in -4..=4 {
+            for tx in -4..=4 {
+                assert_eq!(
+                    seq.tile(tx, ty),
+                    par.tile(tx, ty),
+                    "tile ({tx},{ty}) differs between sequential and parallel dab"
+                );
+            }
+        }
     }
 
     /// 默认数据照 `mypaint_default_symmetry_data`：垂直轴、原点、2 条线、未激活，
@@ -720,7 +900,11 @@ mod tests {
         // 再设一次一模一样的：pending_changes 又是 true，但状态相等 → 不重算
         data.set_pending(true, 5.0, 5.0, 0.0, SymmetryType::Horizontal, 2);
         data.update();
-        assert_eq!(Arc::as_ptr(&data.matrices), ptr, "状态没变就该复用同一份矩阵");
+        assert_eq!(
+            Arc::as_ptr(&data.matrices),
+            ptr,
+            "状态没变就该复用同一份矩阵"
+        );
         // pending_changes 保持 true（源码这里提前 return，没清标志）
         assert!(data.pending_changes);
     }
@@ -792,8 +976,16 @@ mod tests {
         // 前 3 个是反射（第 0 个就是跨 x 轴镜像：y → -y）
         assert!(approx(out[0].x, 10.0) && approx(out[0].y, 0.0));
         // 后 2 个是 120° / 240° 旋转
-        assert!(approx(out[3].x, -5.0) && approx(out[3].y, -8.660254), "{:?}", out[3]);
-        assert!(approx(out[4].x, -5.0) && approx(out[4].y, 8.660254), "{:?}", out[4]);
+        assert!(
+            approx(out[3].x, -5.0) && approx(out[3].y, -8.660254),
+            "{:?}",
+            out[3]
+        );
+        assert!(
+            approx(out[4].x, -5.0) && approx(out[4].y, 8.660254),
+            "{:?}",
+            out[4]
+        );
     }
 
     /// `symmetry_angle` 把轴整体转过去：90° 让垂直镜像变成水平镜像。
@@ -805,7 +997,11 @@ mod tests {
         let dab = test_dab(0.0, 10.0, 0.0);
         let out = symmetry_dabs(data.state_current, &data.matrices, &dab);
         // 轴转 90° 后垂直镜像 = 原来的水平镜像：y → -y
-        assert!(approx(out[0].x, 0.0) && approx(out[0].y, -10.0), "{:?}", out[0]);
+        assert!(
+            approx(out[0].x, 0.0) && approx(out[0].y, -10.0),
+            "{:?}",
+            out[0]
+        );
     }
 
     /// 表面 API：`set_symmetry_state` 在 `begin_atomic` 之前不改变 current，

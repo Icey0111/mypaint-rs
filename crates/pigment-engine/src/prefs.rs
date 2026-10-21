@@ -110,8 +110,7 @@ pub const KEY_HIDE_CURSOR_WHILE_PAINTING: &str = "ui.hide_cursor_while_painting"
 pub const KEY_BARREL_ROTATION_OFFSET: &str = "input.barrel_rotation_offset";
 /// 桶旋转是否减去倾角方位角 —— `gui/userconfig.py:66`（默认 true）；
 /// 读取处 `gui/freehand.py:467-469`。
-pub const KEY_BARREL_ROTATION_SUBTRACT_ASCENSION: &str =
-    "input.barrel_rotation_subtract_ascension";
+pub const KEY_BARREL_ROTATION_SUBTRACT_ASCENSION: &str = "input.barrel_rotation_subtract_ascension";
 /// 是否使用桶旋转 —— `gui/userconfig.py:65`（默认 true）；读取处 `gui/freehand.py:475-477`。
 pub const KEY_USE_BARREL_ROTATION: &str = "input.use_barrel_rotation";
 /// 对称轴线透明度 —— **默认表里没有这个键**（软键）：默认值
@@ -482,9 +481,7 @@ impl Prefs {
     fn fix_legacy_button_mapping(&mut self) {
         let key = "input.button_mapping";
         let legacy = match self.values.get(key) {
-            Some(Value::Object(m)) => m
-                .values()
-                .any(|v| v.as_str() == Some("ColorPickerPopup")),
+            Some(Value::Object(m)) => m.values().any(|v| v.as_str() == Some("ColorPickerPopup")),
             _ => false,
         };
         if legacy {
@@ -689,9 +686,7 @@ impl Prefs {
 
     /// 取数组，回落（返回借用，缺失时借用 `fallback`）。
     pub fn array_or<'a>(&'a self, key: &str, fallback: &'a [Value]) -> &'a [Value] {
-        self.get_array(key)
-            .map(Vec::as_slice)
-            .unwrap_or(fallback)
+        self.get_array(key).map(Vec::as_slice).unwrap_or(fallback)
     }
 
     /// 写一个浮点数组（例如 `frame.color_rgba`）。
@@ -761,11 +756,13 @@ mod tests {
                 "default" => {
                     let value: Value = serde_json::from_str(cols[4])
                         .unwrap_or_else(|e| panic!("第 4 列不是 JSON：{} ({e})", cols[4]));
-                    rows.entry(cols[1].to_string()).or_default().push(FixtureRow {
-                        key: cols[2].to_string(),
-                        type_label: cols[3].to_string(),
-                        value,
-                    });
+                    rows.entry(cols[1].to_string())
+                        .or_default()
+                        .push(FixtureRow {
+                            key: cols[2].to_string(),
+                            type_label: cols[3].to_string(),
+                            value,
+                        });
                 }
                 other => panic!("fixture 里有未知行类型 {other:?}: {line}"),
             }
@@ -808,11 +805,7 @@ mod tests {
             .get(platform_name)
             .unwrap_or_else(|| panic!("fixture 里没有 {platform_name} 平台"));
         let ours = default_configuration(platform, Some(docs));
-        assert_eq!(
-            ours.len(),
-            *count,
-            "{platform_name}: 默认键数应与源码一致"
-        );
+        assert_eq!(ours.len(), *count, "{platform_name}: 默认键数应与源码一致");
         for row in rows {
             let v = ours
                 .get(&row.key)
@@ -864,10 +857,7 @@ mod tests {
             posix.keys().collect::<Vec<_>>(),
             "两个平台只改值、不增删键（userconfig.py:127-139 只重写 button_mapping）"
         );
-        let differing: Vec<&String> = win
-            .keys()
-            .filter(|k| win[*k] != posix[*k])
-            .collect();
+        let differing: Vec<&String> = win.keys().filter(|k| win[*k] != posix[*k]).collect();
         assert_eq!(
             differing,
             vec!["input.button_mapping", "saving.scrap_prefix"],
@@ -940,7 +930,10 @@ mod tests {
         assert_eq!(config_dir(), Path::new(r"D:\pigment-test-cfg"));
 
         std::env::set_var(SETTINGS_PATH_ENV, r"E:\pigment-test\prefs.json");
-        assert_eq!(settings_path(), PathBuf::from(r"E:\pigment-test\prefs.json"));
+        assert_eq!(
+            settings_path(),
+            PathBuf::from(r"E:\pigment-test\prefs.json")
+        );
 
         // 复原
         match saved_dir {
@@ -974,7 +967,10 @@ mod tests {
         assert!(path.is_file(), "保存要连目录一起建出来");
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with('{'), "json.dumps(indent=2) 的形状");
-        assert!(text.contains("\n  \"saving.default_format\": \"openraster\""), "{text}");
+        assert!(
+            text.contains("\n  \"saving.default_format\": \"openraster\""),
+            "{text}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1093,7 +1089,10 @@ mod tests {
         prefs.set_str("colors.current", "#123456");
         prefs.set_str_array("colors.history", ["#111111", "#222222"]);
         prefs.set_bool("misc.context_restores_color", false);
-        prefs.set("colors.palette", json!({"name": null, "columns": 0, "entries": []}));
+        prefs.set(
+            "colors.palette",
+            json!({"name": null, "columns": 0, "entries": []}),
+        );
         assert_eq!(prefs.len(), 36);
         let removed = prefs.remove("ui.feedback.scale");
         assert_eq!(removed, Some(json!(false)));
@@ -1127,7 +1126,10 @@ mod tests {
         let path = dir.join("settings.json");
         let mut prefs = Prefs::load(&path);
         prefs.set_button_mapping_pairs([
-            ("<Control><Shift>Button2".to_string(), "ShowPopupMenu".to_string()),
+            (
+                "<Control><Shift>Button2".to_string(),
+                "ShowPopupMenu".to_string(),
+            ),
             ("Button3".to_string(), "PanViewMode".to_string()),
             ("".to_string(), "Undo".to_string()),
             ("Button9".to_string(), "".to_string()),
@@ -1183,10 +1185,7 @@ mod tests {
         assert_eq!(format_extension("nope"), ".ora");
 
         let mut values = BTreeMap::new();
-        values.insert(
-            KEY_SAVING_DEFAULT_FORMAT.to_string(),
-            json!("png-solid"),
-        );
+        values.insert(KEY_SAVING_DEFAULT_FORMAT.to_string(), json!("png-solid"));
         assert_eq!(save_extension(&Prefs::from_values(values)), ".png");
     }
 }

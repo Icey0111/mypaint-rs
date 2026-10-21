@@ -26,7 +26,7 @@
 //! 因此备份目录写成：
 //!
 //! ```text
-//! <cache>/mypaint/doc.NN/
+//! <cache>/pigment/mypaint/doc.NN/
 //!   active
 //!   autosave/
 //!     backup.ora          # 完整快照（AUTOSAVE_ORA_NAME）
@@ -34,10 +34,14 @@
 //!     thumbnail.png       # 恢复对话框的预览图
 //! ```
 //!
-//! 与源码的差异**只有写入粒度**：源码逐层增量写、可中断；这里每次全量写
-//! 一个 ORA。目录结构、`active` 金丝雀、`cache_in_use` 判据、恢复后要求
-//! 另存、删除备份的语义都照搬。全量写在大文档上会比源码慢，故只在用户
-//! 停止操作 `autosave_interval` 秒后触发一次。
+//! 多出的 `pigment` 这一层是**应用本地隔离**：源码直接用 `<cache>/mypaint`，
+//! 与已安装 MyPaint 的备份目录相同；两个程序同时跑时，对方的恢复对话框会把
+//! 本程序的 `doc.*` 当成自己的崩溃残留。`PIGMENT_CACHE_DIR` 可覆盖整个根。
+//!
+//! 与源码的差异**只有写入粒度与缓存根前缀**：源码逐层增量写、可中断；
+//! 这里每次全量写一个 ORA。目录结构、`active` 金丝雀、`cache_in_use` 判据、
+//! 恢复后要求另存、删除备份的语义都照搬。全量写在大文档上会比源码慢，故只在
+//! 用户停止操作 `autosave_interval` 秒后触发一次。
 //!
 //! `AutosaveInfo::valid` 的判据也照源码：备份存在且能读出元数据才算有效；
 //! 读不出时仍列出来（源码 `:221-225` 的 "Incomplete backup" 文案）。
@@ -46,15 +50,27 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use pigment_surface::LayerStack;
 use serde::{Deserialize, Serialize};
 
 use crate::document::Document;
-use crate::fileio::FileError;
+use crate::fileio::{self, FileError, OraSaveOptions};
 
 // ---- 源码常量（`lib/document.py:61-67`）----
 
 /// `CACHE_APP_SUBDIR_NAME = "mypaint"`（`:63`）。
+///
+/// 这是 MyPaint 源码里的子目录名；本移植把它放在
+/// [`CACHE_ROOT_SUBDIR_NAME`] 之下，避免与已安装的 MyPaint 共用
+/// `%LOCALAPPDATA%\mypaint\doc.*`，导致对方的恢复对话框把本程序的
+/// 备份当成自己的崩溃残留。
 pub const CACHE_APP_SUBDIR_NAME: &str = "mypaint";
+/// 本移植的缓存根目录名 —— **应用本地扩展**，源码没有这一层。
+///
+/// 最终路径：`<user cache>/pigment/mypaint/doc.NN/`。
+pub const CACHE_ROOT_SUBDIR_NAME: &str = "pigment";
+/// 覆盖缓存根目录 —— **应用本地扩展**（与 `PIGMENT_CONFIG_DIR` 同风格）。
+pub const CACHE_DIR_ENV: &str = "PIGMENT_CACHE_DIR";
 /// `CACHE_DOC_SUBDIR_PREFIX = "doc."`（`:64`）。
 pub const CACHE_DOC_SUBDIR_PREFIX: &str = "doc.";
 /// `CACHE_DOC_AUTOSAVE_SUBDIR = "autosave"`（`:65`）。
@@ -101,8 +117,19 @@ pub fn user_cache_dir() -> PathBuf {
 }
 
 /// 应用缓存根（`get_app_cache_root`，`:2168-2183`），**会建目录**。
+///
+/// 路径是 `<user cache>/pigment/mypaint`；`PIGMENT_CACHE_DIR` 可覆盖
+/// 整个根目录。多出 `pigment` 这一层是本移植的隔离措施 —— 源码直接
+/// 用 `<user cache>/mypaint`，与真实 MyPaint 的自动备份目录相同，
+/// 两个程序同时跑时对方的恢复对话框会列出本程序的备份。
 pub fn app_cache_root() -> io::Result<PathBuf> {
-    let root = user_cache_dir().join(CACHE_APP_SUBDIR_NAME);
+    let root = if let Some(dir) = std::env::var_os(CACHE_DIR_ENV).filter(|v| !v.is_empty()) {
+        PathBuf::from(dir)
+    } else {
+        user_cache_dir()
+            .join(CACHE_ROOT_SUBDIR_NAME)
+            .join(CACHE_APP_SUBDIR_NAME)
+    };
     std::fs::create_dir_all(&root)?;
     Ok(root)
 }
@@ -278,9 +305,7 @@ impl AutosaveInfo {
             self.width,
             self.height,
             self.num_layers,
-            human_time_period_abbr(Duration::from_secs_f64(
-                self.unsaved_painting_time.max(0.0)
-            )),
+            human_time_period_abbr(Duration::from_secs_f64(self.unsaved_painting_time.max(0.0))),
         )
     }
 }
@@ -333,14 +358,34 @@ pub fn cache_activity_fresh(doc_cache_dir: &Path) -> bool {
 
 // ---- 写备份 ----
 
+/// 交给后台线程的一份自动备份快照。
+///
+/// `LayerStack::clone` 只复制 tile 的 `Arc`（像素写时复制），所以拍快照
+/// 很便宜，后台线程读到的也是一份**不会随继续作画而改变**的稳定视图。
+pub struct AutosaveSnapshot {
+    pub layers: LayerStack,
+    pub bbox: (i32, i32, i32, i32),
+    pub options: OraSaveOptions,
+    pub num_layers: usize,
+    pub unsaved_painting_time: f64,
+}
+
 /// 把文档写进备份目录 —— `_queue_autosave_writes`（`:601-787`）的单文件版。
 ///
-/// 返回写好的 [`AutosaveInfo`]。`unsaved_painting_time` 由调用方在
-/// `Document::save` 把它清零**之前**取出并传入。
-pub fn write_backup(
-    doc: &mut Document,
+/// 走 [`Document::autosave_snapshot`]；**不清零** `unsaved_painting_time`
+/// （源码的自动备份也不清零，只有显式 `Document.save` 才清）。
+pub fn write_backup(doc: &Document, doc_cache_dir: &Path) -> Result<AutosaveInfo, FileError> {
+    write_backup_snapshot(doc.autosave_snapshot(), doc_cache_dir)
+}
+
+/// 后台线程入口：把快照写进 `doc_cache_dir/autosave/`。
+///
+/// 与手动 `save_ora` 的区别只在于省掉 `mergedimage.png` 和整幅
+/// `background.png`（恢复不读它们），大幅降低超大画幅备份的内存与时间；
+/// 图层 PNG / stack.xml / 缩略图仍然完整。
+pub fn write_backup_snapshot(
+    snapshot: AutosaveSnapshot,
     doc_cache_dir: &Path,
-    unsaved_painting_time: f64,
 ) -> Result<AutosaveInfo, FileError> {
     let dir = autosave_dir(doc_cache_dir);
     std::fs::create_dir_all(&dir)?;
@@ -349,15 +394,15 @@ pub fn write_backup(
     // 有这样的效果 —— 任务队列只在完整层数据写完后才更新 manifest）。
     let tmp = dir.join(format!("{AUTOSAVE_ORA_NAME}.tmp.ora"));
     let _ = std::fs::remove_file(&tmp);
-    let (_, _, w, h) = doc.get_user_bbox();
-    doc.save(&tmp, Some(true))?;
+    let saved = fileio::save_ora(&snapshot.layers, &tmp, &snapshot.options, snapshot.bbox)?;
     std::fs::rename(&tmp, &ora_path)?;
 
+    let (_, _, w, h) = saved.bbox;
     let meta = AutosaveMeta {
         width: w.max(0) as u32,
         height: h.max(0) as u32,
-        num_layers: doc.layers().len(),
-        unsaved_painting_time,
+        num_layers: snapshot.num_layers,
+        unsaved_painting_time: snapshot.unsaved_painting_time,
         saved_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -365,19 +410,15 @@ pub fn write_backup(
     };
     let text = serde_json::to_string_pretty(&meta).unwrap_or_else(|_| "{}".into());
     std::fs::write(dir.join(AUTOSAVE_META_NAME), text)?;
-    // 缩略图：与 ORA 内的 `Thumbnails/thumbnail.png` 同源
-    // （`fileio::render_thumbnail`，上限 256×256）。
-    let (px, tw, th) = crate::fileio::render_thumbnail(doc.layers(), doc.get_user_bbox());
+    // 缩略图：`save_ora` 已经渲染过同一份 `Thumbnails/thumbnail.png`
+    // （上限 256×256），直接用返回值，别再对整栈跑第二遍。
+    let (px, tw, th) = saved.thumbnail;
     if let Some(img) = image::RgbaImage::from_raw(tw, th, px) {
-        let _ = img.save_with_format(
-            dir.join(AUTOSAVE_THUMB_NAME),
-            image::ImageFormat::Png,
-        );
+        let _ = img.save_with_format(dir.join(AUTOSAVE_THUMB_NAME), image::ImageFormat::Png);
     }
     touch_activity(doc_cache_dir)?;
-    AutosaveInfo::new_for_path(&dir).ok_or_else(|| {
-        FileError::Malformed(format!("备份目录不完整：{}", dir.display()))
-    })
+    AutosaveInfo::new_for_path(&dir)
+        .ok_or_else(|| FileError::Malformed(format!("备份目录不完整：{}", dir.display())))
 }
 
 /// 列出所有可恢复的备份 —— `get_available_autosaves()`（`:2186-2208`）。
@@ -426,7 +467,10 @@ mod tests {
         assert_eq!(human_time_period_abbr(Duration::from_secs(60)), "1m");
         assert_eq!(human_time_period_abbr(Duration::from_secs(125)), "2m5s");
         assert_eq!(human_time_period_abbr(Duration::from_secs(3600)), "1h");
-        assert_eq!(human_time_period_abbr(Duration::from_secs(3 * 3600 + 42 * 60)), "3h42m");
+        assert_eq!(
+            human_time_period_abbr(Duration::from_secs(3 * 3600 + 42 * 60)),
+            "3h42m"
+        );
         assert_eq!(human_time_period_abbr(Duration::from_secs(86400)), "1d");
         assert_eq!(
             human_time_period_abbr(Duration::from_secs(2 * 86400 + 3 * 3600)),
@@ -444,7 +488,8 @@ mod tests {
 
         let mut doc = Document::new();
         doc.add_layer();
-        let info = write_backup(&mut doc, &doc_dir, 42.0).unwrap();
+        doc.unsaved_painting_time = 42.0;
+        let info = write_backup(&doc, &doc_dir).unwrap();
         assert!(info.valid);
         // 写备份的那一刻本进程还活着，`active` 是新鲜的 → 源码同样把它算作
         // "可能仍在使用"（恢复对话框据此跳过当前文档的缓存目录）。
@@ -462,6 +507,21 @@ mod tests {
         assert!(desc.contains("Layers:"), "{desc}");
         assert!(desc.contains("42s of unsaved painting"), "{desc}");
 
+        // 自动备份省掉两份画幅级预览：merged 和整幅 background。
+        // 图层 PNG / tile / stack.xml 仍必须齐全，且能被载入。
+        let zip = crate::zip::ZipArchive::open(&info.ora_path).unwrap();
+        let names = zip.names();
+        assert!(
+            !names.iter().any(|n| n == "mergedimage.png"),
+            "自动备份不应写 mergedimage.png：{names:?}"
+        );
+        assert!(
+            !names.iter().any(|n| {
+                n.starts_with("data/background-") && n.ends_with(".png") && !n.contains("tile")
+            }),
+            "自动备份不应写整幅 background.png：{names:?}"
+        );
+
         // 快照是能真正载入的 ORA
         let mut restored = Document::new();
         restored.load(&info.ora_path).unwrap();
@@ -478,7 +538,9 @@ mod tests {
         std::fs::write(dir.join(AUTOSAVE_ORA_NAME), b"not a zip").unwrap();
         let info = AutosaveInfo::new_for_path(&dir).unwrap();
         assert!(!info.valid);
-        assert!(info.description(SystemTime::now()).contains("Incomplete backup"));
+        assert!(info
+            .description(SystemTime::now())
+            .contains("Incomplete backup"));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -501,6 +563,13 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .starts_with(CACHE_DOC_SUBDIR_PREFIX));
+        // 缓存根必须带 `pigment/mypaint` 命名空间，不能直接落到真实
+        // MyPaint 的 `%LOCALAPPDATA%\mypaint`（否则对方恢复对话框会
+        // 把本程序的备份列出来）。
+        assert!(dir
+            .parent()
+            .unwrap()
+            .ends_with(Path::new(CACHE_ROOT_SUBDIR_NAME).join(CACHE_APP_SUBDIR_NAME)));
         assert!(dir.join(CACHE_ACTIVITY_FILE).is_file());
         cleanup_doc_cache_dir(&dir);
         assert!(!dir.exists());

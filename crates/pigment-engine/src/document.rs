@@ -23,9 +23,8 @@
 //! | `:1770`/`:1804` `save_ora`/`load_ora`、`:1646`/`:1732` `save_png`/`load_png` | [`Document::save_ora`] 等（实现在 `fileio`） |
 //! | `:452` `settings`（随 ORA 往返的 JSON 字典） | [`Document::settings`] |
 //!
-//! 尚未移植（属后续里程碑）：`layer_stack`（P1 图层）、`sync_pending_changes`
-//! 的异步收尾（我们的作画是同步落盘的，见同名方法）、自动保存与缓存目录、
-//! `.jpg`、`strokemap`。
+//! 图层栈、自动保存/缓存目录、JPEG、strokemap 均已接线；`sync_pending_changes`
+//! 的异步收尾在这里是同步落盘（见同名方法），语义等价。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,8 +35,8 @@ use pigment_surface::symmetry::SymmetryType;
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
 use crate::command::{
-    Brushwork, Command, CommandStack, CommandUpdate, DocContext, LayerProp, MoveLayer,
-    DEFAULT_UNDO_STACK_SIZE,
+    Brushwork, ClearLayer, Command, CommandStack, CommandUpdate, DocContext, LayerProp, LoadLayer,
+    MoveLayer, NormalizeLayerMode, RefactorGroup, UniqLayer, DEFAULT_UNDO_STACK_SIZE,
 };
 use crate::fileio::{self, FileError, Format, OraSaveOptions};
 use crate::layer_views::LayerViews;
@@ -47,8 +46,13 @@ fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
     nodes
         .into_iter()
         .map(|d| {
+            let mut vector = None;
             let content = match d.content {
                 fileio::OraContent::Painting(surface) => LayerContent::Painting(surface),
+                fileio::OraContent::Vector(data, surface) => {
+                    vector = Some(data);
+                    LayerContent::Painting(surface)
+                }
                 fileio::OraContent::Group(children) => {
                     // 组：子层递归建栈（组可以是空栈，group.py:78）
                     LayerContent::Group(LayerStack::from_children(ora_layers_to_layers(children)))
@@ -56,6 +60,7 @@ fn ora_layers_to_layers(nodes: Vec<fileio::OraLayerData>) -> Vec<Layer> {
             };
             let mut layer = Layer::new();
             layer.content = content;
+            layer.vector = vector;
             layer.name = d.name;
             layer.mode = d.mode;
             layer.opacity = d.opacity;
@@ -308,6 +313,29 @@ impl Document {
         self.add_layer_at(path, Layer::new_group(), false)
     }
 
+    /// 在当前层**下方**新建绘画层/组（`NewPaintingLayerBelow` /
+    /// `NewLayerGroupBelow`，`gui/document.py:1409-1446` 的 `new_layer_cb`）。
+    ///
+    /// 插入路径 = `path_below(path, insert=True)`；当前层是组时插到组内顶部。
+    pub fn add_layer_below(&mut self, group: bool) -> bool {
+        let current = self.layers.current_path().to_vec();
+        let Some(insert_path) = self.layers.path_below_insert(&current) else {
+            return false;
+        };
+        if group {
+            return self.add_layer_at(insert_path, Layer::new_group(), false);
+        }
+        let mut layer = Layer::new();
+        layer.set_mode(pigment_surface::layer::LayerMode::Standard(
+            if self.default_layer_pigment {
+                pigment_surface::combine::CombineMode::SpectralWGM
+            } else {
+                pigment_surface::combine::CombineMode::Normal
+            },
+        ));
+        self.add_layer_at(insert_path, layer, false)
+    }
+
     /// 移除当前层（`RemoveLayer`）。
     pub fn remove_layer(&mut self) -> bool {
         let (stack, mut ctx) = self.split();
@@ -438,7 +466,9 @@ impl Document {
             self.update_last_command(&crate::command::CommandUpdate::LayerVisibility(visible));
             return true;
         }
-        self.do_command(Box::new(crate::command::SetLayerVisibility::new(id, visible)))
+        self.do_command(Box::new(crate::command::SetLayerVisibility::new(
+            id, visible,
+        )))
     }
 
     /// 设置图层锁定（`SetLayerLocked`）。
@@ -447,7 +477,10 @@ impl Document {
             return false;
         };
         // 合并语义（document.py:1380-1390）
-        if self.command_stack.top_is_layer_update(LayerProp::Locked, id) {
+        if self
+            .command_stack
+            .top_is_layer_update(LayerProp::Locked, id)
+        {
             self.update_last_command(&crate::command::CommandUpdate::LayerLocked(locked));
             return true;
         }
@@ -460,7 +493,10 @@ impl Document {
             return false;
         };
         // 合并语义（document.py:1392-1410）：滑条连续拖动只在栈顶更新
-        if self.command_stack.top_is_layer_update(LayerProp::Opacity, id) {
+        if self
+            .command_stack
+            .top_is_layer_update(LayerProp::Opacity, id)
+        {
             self.update_last_command(&crate::command::CommandUpdate::LayerOpacity(opacity));
             return true;
         }
@@ -482,8 +518,7 @@ impl Document {
         };
         // 合并语义（document.py:1305-1317）：连续重命名只留栈顶一条
         if self.command_stack.top_is_layer_update(LayerProp::Name, id) {
-            let update =
-                crate::command::CommandUpdate::Rename(name.as_deref().unwrap_or(""));
+            let update = crate::command::CommandUpdate::Rename(name.as_deref().unwrap_or(""));
             self.update_last_command(&update);
             return true;
         }
@@ -561,55 +596,37 @@ impl Document {
         self.command_stack.get_last_command()
     }
 
-    /// 裁剪当前图层：丢弃完全在画框之外的 tile（`trim_layer_cb` →
-    /// `Document.trim_current_layer`，`gui/document.py:1007-1013`）。
+    /// 裁剪当前图层：丢弃画框外的 tile，并清掉部分覆盖 tile 的画框外像素
+    /// （`trim_layer_cb` → `Document.trim_current_layer`，`gui/document.py:1007`，
+    /// 落到 `lib/tiledsurface.py:204` 的 `trim`）。
     ///
-    /// 源码按 tile 粒度丢；含画框边缘的部分 tile 保留。用前后快照做撤销。
+    /// 源码的 `get_trimmable()` 只对绘画层为真（组/文件层为假），**不检查
+    /// 锁定状态**；锁定只阻止绘画，不阻止裁剪。这里照此排除组与矢量层
+    /// （`data.py:749-753` FileBackedLayer.get_trimmable = False）。
     pub fn trim_current_layer(&mut self) -> bool {
-        const TILE: i32 = 64;
-        let path = self.layers.current_path().to_vec();
-        if self.layers.branch_locked(&path) {
+        let current = self.layers.current();
+        if current.is_group() || current.is_vector() {
             return false;
         }
-        let Some(current) = self.layers.paintable_at(&path) else {
-            return false;
-        };
-        if !current.paintable_self() {
-            return false;
-        }
-        let layer_id = current.id;
         let (fx, fy, fw, fh) = self.get_frame();
         if fw <= 0 || fh <= 0 {
             return false;
         }
-        let Some(surface) = self.layers.paintable_surface_mut() else {
+        let layer_id = self.layers.current_id();
+        // 源码 `TrimLayer` 直接拿 `layer_stack.current` 调 `trim()`，不经过
+        // `get_paintable`；锁定层也能裁剪，所以这里按 id 取表面而不是走
+        // `paintable_surface_mut()`。
+        let Some(surface) = self.layers.surface_by_id(layer_id) else {
             return false;
         };
         let before = surface.save_snapshot();
         let before_strokes = surface.strokes().to_vec();
-        let mut trimmed = PigmentSurface::new();
-        for ((tx, ty), tile) in surface.tiles() {
-            let x0 = tx * TILE;
-            let y0 = ty * TILE;
-            let inside = x0 < fx + fw
-                && x0 + TILE > fx
-                && y0 < fy + fh
-                && y0 + TILE > fy;
-            if inside {
-                trimmed.paste_tile(
-                    tx,
-                    ty,
-                    tile.pixels().as_flattened().as_flattened(),
-                );
-            }
-        }
-        if trimmed.tile_count() == surface.tile_count() {
+        if !surface.trim((fx, fy, fw, fh)) {
             return false;
         }
-        surface.load_from_surface(&trimmed);
         let after = surface.save_snapshot();
         let after_strokes = surface.strokes().to_vec();
-        self.do_command(Box::new(MoveLayer::new(
+        self.do_command(Box::new(MoveLayer::trim(
             layer_id,
             before,
             after,
@@ -617,6 +634,221 @@ impl Document {
             after_strokes,
         )));
         true
+    }
+
+    /// 清空当前图层（`clear_layer_cb` → `Document.clear_current_layer`，
+    /// `gui/document.py:1189` / `lib/document.py:1011`）。
+    ///
+    /// 源码只对“当前层不是根栈且表面非空”执行命令；组由 `Group.clear()`
+    /// 删除全部子层，本实现暂不支持组（返回 false，面板按组禁用）。
+    pub fn clear_current_layer(&mut self) -> bool {
+        let layer = self.layers.current().clone();
+        if layer.is_empty() {
+            return false;
+        }
+        self.do_command(Box::new(ClearLayer::new(&layer)))
+    }
+
+    /// 归一化当前层的模式/不透明度（`normalize_layer_mode_cb`，
+    /// `gui/document.py:1219-1229`；命令 `command.py:933-968`）。
+    ///
+    /// 只有 `get_mode_normalizable()` 为真的层可做；结果层外观不变，
+    /// 但模式变 Normal（光谱源除外）、opacity=1。
+    pub fn normalize_current_layer(&mut self) -> bool {
+        let path = self.layers.current_path().to_vec();
+        let before = self.layers.current().clone();
+        if !crate::command::normalizable(&before) {
+            return false;
+        }
+        let Some(after) = self.layers.layer_new_normalized(&path) else {
+            return false;
+        };
+        self.do_command(Box::new(NormalizeLayerMode::new(
+            path,
+            before,
+            after,
+            self.layers.current_path().to_vec(),
+        )))
+    }
+
+    /// 外部应用编辑完成后更新图层（`lib/document.py:1360-1364`）。
+    pub fn update_layer_from_external_edit(
+        &mut self,
+        layer_id: u64,
+        tmpfile: impl Into<std::path::PathBuf>,
+        kind: crate::command::ExternalEditKind,
+    ) -> Result<bool, String> {
+        if self.layers.layer_by_id(layer_id).is_none() {
+            return Err(format!("图层 {layer_id} 不存在"));
+        }
+        let cmd = crate::command::ExternalLayerEdit::new(layer_id, tmpfile, kind);
+        Ok(self.do_command(Box::new(cmd)))
+    }
+
+    /// 新建一张“所有可见层的合并结果”层（`NewLayerMergedFromVisible`，
+    /// `lib/command.py:769-806`）。插入点是最高可见根层之前。
+    pub fn new_layer_from_visible(&mut self) -> bool {
+        let merged = self.layers.layer_new_merge_visible();
+        let insert_path = self.visible_insert_path();
+        self.do_command(Box::new(LoadLayer::new(
+            insert_path,
+            merged,
+            "New Layer from Visible",
+        )))
+    }
+
+    /// 把所有可见层合并成一张层，并删除原可见层
+    /// （`MergeVisibleLayers`，`lib/command.py:809-886`）。
+    pub fn merge_visible_layers(&mut self) -> bool {
+        let visible: Vec<Vec<usize>> = self
+            .layers
+            .walk()
+            .into_iter()
+            .filter(|(p, l)| l.visible && self.layers.branch_visible(p))
+            .map(|(p, _)| p)
+            .collect();
+        if visible.is_empty() {
+            return false;
+        }
+        let insert_path = self
+            .layers
+            .walk()
+            .iter()
+            .filter(|(p, l)| l.visible && self.layers.branch_visible(p))
+            .map(|(p, _)| p[0])
+            .min()
+            .map(|i| vec![i])
+            .unwrap_or_else(|| vec![self.layers.len()]);
+        let merged = self.layers.layer_new_merge_visible();
+        let before = self.layers.clone();
+        let mut after = before.clone();
+        for path in visible.iter().rev() {
+            after.remove_at(path);
+        }
+        let Some(final_path) = after.insert_at(&insert_path, merged) else {
+            return false;
+        };
+        after.set_current_path(&final_path);
+        self.do_command(Box::new(crate::command::MergeVisibleLayers::new(
+            before, after,
+        )))
+    }
+
+    fn visible_insert_path(&self) -> Vec<usize> {
+        self.layers
+            .walk()
+            .iter()
+            .filter(|(p, l)| l.visible && self.layers.branch_visible(p))
+            .map(|(p, _)| p[0])
+            .min()
+            .map(|i| vec![i])
+            .unwrap_or_else(|| vec![self.layers.len()])
+    }
+
+    /// 把剪贴板/文件解出的 RGBA8 作为**新绘画层**插入当前层位置
+    /// （`load_layer_from_pixbuf(..., to_new_layer=True)`，`gui/document.py:985`，
+    /// 命令是 `command.LoadLayer`，`lib/command.py:734`）。
+    ///
+    /// `(x, y)` 是图像左上角的模型坐标；全透明像素不分配 tile。
+    pub fn paste_layer_rgba8(&mut self, pixels: &[u8], x: i32, y: i32, w: u32, h: u32) -> bool {
+        if w == 0 || h == 0 || pixels.len() != (w as usize) * (h as usize) * 4 {
+            return false;
+        }
+        let mut surface = PigmentSurface::new();
+        surface.load_from_rgba8(pixels, x, y, w, h);
+        let mut layer = Layer::with_surface(surface);
+        layer.set_mode(pigment_surface::layer::LayerMode::Standard(
+            if self.default_layer_pigment {
+                pigment_surface::combine::CombineMode::SpectralWGM
+            } else {
+                pigment_surface::combine::CombineMode::Normal
+            },
+        ));
+        let path = self.layers.current_path().to_vec();
+        self.do_command(Box::new(LoadLayer::new(path, layer, "Paste Layer")))
+    }
+
+    /// 从若干文件导入图层，作为一个 **Imported layers** 组插入当前位置
+    /// （`lib/document.py:1575-1636`）。
+    ///
+    /// 语义：
+    /// - 单层文件：层直接进 import 组；层名不“有趣”时改成文件名；
+    /// - 多层 `.ora`：为该文件建一个以文件名为名的子组；
+    /// - 所有文件最终只用一条 `AddLayer(is_import=True)` 命令，撤销一次全删。
+    pub fn import_layers(&mut self, filenames: &[std::path::PathBuf]) -> Result<bool, String> {
+        if filenames.is_empty() {
+            return Ok(false);
+        }
+        let mut import_group = Layer::new_group();
+        import_group.name = Some("Imported layers".to_string());
+        let mut children = Vec::new();
+        for filename in filenames {
+            let mut tmp = Document::new();
+            tmp.load(filename).map_err(|e| e.to_string())?;
+            let layers: Vec<Layer> = tmp
+                .layers
+                .iter_top_down()
+                .map(|(_, layer)| layer.clone())
+                .collect();
+            if layers.is_empty() {
+                continue;
+            }
+            let basename = filename
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| filename.display().to_string());
+            if layers.len() == 1 {
+                let mut layer = layers.into_iter().next().unwrap();
+                if !layer.has_interesting_name() {
+                    layer.name = Some(basename);
+                }
+                children.push(layer);
+            } else {
+                let mut subgroup = Layer::new_group();
+                subgroup.name = Some(basename);
+                *subgroup.stack_mut().expect("new_group has a stack") =
+                    LayerStack::from_children(layers);
+                children.push(subgroup);
+            }
+        }
+        if children.is_empty() {
+            return Ok(false);
+        }
+        *import_group.stack_mut().expect("new_group has a stack") =
+            LayerStack::from_children(children);
+        let path = self.layers.current_path().to_vec();
+        Ok(self.add_layer_at(path, import_group, true))
+    }
+
+    /// `uniq_current_layer`（`gui/document.py:1021-1029`）：删除当前绘画层里
+    /// 不改变背板的 tile（`pixels=false`）或像素（`pixels=true`）。
+    pub fn uniq_current_layer(&mut self, pixels: bool) -> bool {
+        let path = self.layers.current_path().to_vec();
+        let before = self.layers.current().clone();
+        if before.surface().is_none() {
+            return false;
+        }
+        let Some(after) = self.layers.uniq_layer(&path, pixels) else {
+            return false;
+        };
+        self.do_command(Box::new(UniqLayer::new(path, before, after)))
+    }
+
+    /// `refactor_current_layer_group`（`gui/document.py:1026-1039`）：
+    /// 把当前隔离组的公共 tile/像素抽到 `Common`。
+    pub fn refactor_current_group(&mut self, pixels: bool) -> bool {
+        let path = self.layers.current_path().to_vec();
+        let before = self.layers.current().clone();
+        let Some(after) = self.layers.refactor_layer_group(&path, pixels) else {
+            return false;
+        };
+        self.do_command(Box::new(RefactorGroup::new(path, before, after)))
+    }
+
+    /// `VacuumDocument`（`gui/document.py:2095-2106`）：删除所有空 tile，
+    /// 返回 `(removed, total)`。源码是 Debug 动作，不入撤销栈。
+    pub fn vacuum(&mut self) -> (usize, usize) {
+        self.layers.remove_empty_tiles()
     }
 
     /// 内容外接框（`lib/document.py:1191` 的 `get_bbox()` 的 tile 对齐版）：
@@ -627,6 +859,16 @@ impl Document {
     /// 整棵树逐层取 [`Layer::data_bbox`] 再并（照 `helpers.coordinate_bounds`）。
     pub fn data_bbox(&self) -> (i32, i32, i32, i32) {
         self.layers.data_bbox()
+    }
+
+    /// 有效外接框（`lib/document.py:1220` 的 `get_effective_bbox()`）：
+    /// 画框启用时用画框，否则用内容外接框。FitView 以它为准。
+    pub fn get_effective_bbox(&self) -> (i32, i32, i32, i32) {
+        if self.frame_enabled {
+            self.get_frame()
+        } else {
+            self.data_bbox()
+        }
     }
 
     /// 清空文档（`lib/document.py:922`）：丢内容、清栈、作画时长归零。
@@ -1028,11 +1270,7 @@ impl Document {
                 n += 1.0;
             }
         }
-        Some([
-            acc[0] / n / 255.0,
-            acc[1] / n / 255.0,
-            acc[2] / n / 255.0,
-        ])
+        Some([acc[0] / n / 255.0, acc[1] / n / 255.0, acc[2] / n / 255.0])
     }
 
     pub fn pick_color(&self, x: f32, y: f32) -> Option<[f32; 3]> {
@@ -1067,6 +1305,31 @@ impl Document {
 
     // ---- 文档 I/O（照搬 `lib/document.py:1432` save / `:1488` load 的分派）----
 
+    /// 拍一份自动备份快照 —— 图层栈按 `Arc` 共享、写时复制，代价只有
+    /// 一份 HashMap 指针表；随后可以安全地丢给后台线程慢慢写。
+    ///
+    /// 选项里关掉 `mergedimage.png` 和整幅背景：恢复只读图层 PNG /
+    /// `mypaint:background-tile`，这两份画幅级缓冲只会让超大文档的自动
+    /// 备份多占一倍内存并多花一次 PNG 编码时间。
+    pub fn autosave_snapshot(&self) -> crate::autosave::AutosaveSnapshot {
+        crate::autosave::AutosaveSnapshot {
+            layers: self.layers.clone(),
+            bbox: self.get_user_bbox(),
+            options: OraSaveOptions {
+                bbox: None,
+                xres: self.xres,
+                yres: self.yres,
+                frame_active: self.frame_enabled,
+                settings_json: Some(self.settings_json()),
+                eotf: self.save_eotf,
+                include_merged: false,
+                include_full_background: false,
+            },
+            num_layers: self.layers.len(),
+            unsaved_painting_time: self.unsaved_painting_time,
+        }
+    }
+
     /// 保存到文件，按扩展名分派（`lib/document.py:1432` 的 `save`）。
     ///
     /// 与源码一致：成功后把 `unsaved_painting_time` 归零（`:1485`）。
@@ -1090,6 +1353,8 @@ impl Document {
                     frame_active: self.frame_enabled,
                     settings_json: Some(self.settings_json()),
                     eotf: self.save_eotf,
+                    include_merged: true,
+                    include_full_background: true,
                 };
                 // `save_ora` 传的是 `get_user_bbox()`（`document.py:1778`）：
                 // 画框启用时就是画框本身，否则才是内容外接框。
@@ -1117,7 +1382,10 @@ impl Document {
     /// 从文件载入，按扩展名分派（`lib/document.py:1488` 的 `load`）。
     ///
     /// 与源码一致：成功后清空命令栈并把作画时长归零（`:1554-1555`）。
-    pub fn load(&mut self, filename: impl AsRef<std::path::Path>) -> Result<LoadOutcome, FileError> {
+    pub fn load(
+        &mut self,
+        filename: impl AsRef<std::path::Path>,
+    ) -> Result<LoadOutcome, FileError> {
         let path = filename.as_ref();
         // 源码的前置检查（`:1513` / `:1519`）
         if !path.is_file() {
@@ -1193,10 +1461,7 @@ impl Document {
             .iter()
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        obj.insert(
-            "layervis".to_string(),
-            self.views.to_json(&self.layers),
-        );
+        obj.insert("layervis".to_string(), self.views.to_json(&self.layers));
         serde_json::to_string_pretty(&serde_json::Value::Object(obj))
             .unwrap_or_else(|_| "{}".to_string())
     }
@@ -1452,6 +1717,367 @@ mod tests {
         assert_eq!(doc.layers.current().surface().unwrap().tile_count(), 2);
     }
     #[test]
+    fn trim_current_layer_clips_partial_tiles_and_strokes() {
+        use pigment_surface::StrokeShape;
+
+        let mut doc = Document::new();
+        doc.set_frame(0, 0, 32, 64);
+        doc.set_frame_enabled(true);
+        let red = [255u8, 0, 0, 255].repeat(64 * 64);
+        {
+            let surface = doc.layers.paintable_surface_mut().unwrap();
+            surface.load_from_rgba8(&red, 0, 0, 64, 64);
+            surface.load_from_rgba8(&red, 128, 0, 64, 64);
+            let mut shape = StrokeShape::default();
+            shape.tiles.insert((0, 0), vec![1u8; 64 * 64]);
+            shape.tiles.insert((2, 0), vec![1u8; 64 * 64]);
+            surface.push_stroke(shape);
+        }
+        assert!(doc.trim_current_layer());
+        let surface = doc.layers.current().surface().unwrap();
+        assert_eq!(surface.tile_count(), 1, "画框外的 (2,0) 应删除");
+        assert_eq!(surface.tile(0, 0).unwrap()[0][31][3], 1 << 15);
+        assert_eq!(surface.tile(0, 0).unwrap()[0][32], [0; 4]);
+        assert_eq!(surface.strokes().len(), 1);
+        assert!(surface.strokes()[0].tiles.contains_key(&(0, 0)));
+        assert!(!surface.strokes()[0].tiles.contains_key(&(2, 0)));
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Trim Layer",
+            "源码里 TrimLayer 是独立命令（command.py:648）"
+        );
+
+        assert!(doc.undo().is_some());
+        let surface = doc.layers.current().surface().unwrap();
+        assert_eq!(surface.tile_count(), 2, "撤销恢复画框外的整块 tile");
+        assert_eq!(surface.tile(0, 0).unwrap()[0][32][3], 1 << 15);
+        assert_eq!(surface.strokes()[0].tiles.len(), 2);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers.current().surface().unwrap().tile_count(), 1);
+    }
+
+    #[test]
+    fn trim_current_layer_refuses_groups_but_not_locked_layers() {
+        let mut doc = Document::new();
+        doc.set_frame(0, 0, 32, 32);
+        doc.set_frame_enabled(true);
+        let red = [255u8, 0, 0, 255].repeat(64 * 64);
+        doc.layers
+            .paintable_surface_mut()
+            .unwrap()
+            .load_from_rgba8(&red, 0, 0, 64, 64);
+        let path = doc.current_path().to_vec();
+        doc.set_layer_locked(&path, true);
+        assert!(
+            doc.trim_current_layer(),
+            "源码 get_trimmable 不看锁定，锁定层仍可裁剪"
+        );
+
+        // 新建的父组本身没有表面：get_trimmable() 为 False。
+        assert!(doc.add_group());
+        assert!(!doc.trim_current_layer());
+    }
+
+    #[test]
+    fn paste_layer_rgba8_inserts_a_new_layer_undoably() {
+        let mut doc = Document::new();
+        let red = [255u8, 0, 0, 255];
+        assert!(doc.paste_layer_rgba8(&red, 10, 20, 1, 1));
+        assert_eq!(doc.layers().len(), 2, "应插入一个新层");
+        {
+            let surface = doc.layers.current().surface().unwrap();
+            assert_eq!(surface.tile_count(), 1);
+            assert_eq!(surface.tile(0, 0).unwrap()[20][10][3], 1 << 15);
+        }
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Paste Layer"
+        );
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().len(), 1, "撤销删除新层");
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().len(), 2, "重做恢复新层");
+        assert_eq!(
+            doc.layers.current().surface().unwrap().tile(0, 0).unwrap()[20][10][3],
+            1 << 15
+        );
+    }
+
+    #[test]
+    fn import_layers_wraps_single_and_multi_layer_files() {
+        let tmp =
+            std::env::temp_dir().join(format!("pigment-import-layers-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let single = tmp.join("single.png");
+        let mut surface = PigmentSurface::new();
+        let red = [255u8, 0, 0, 255].repeat(64 * 64);
+        surface.load_from_rgba8(&red, 0, 0, 64, 64);
+        surface
+            .save_as_png(&single, (0, 0, 64, 64), true, [255, 255, 255])
+            .unwrap();
+        let multi = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../_mypaint_ref/tests/bigimage.ora");
+
+        let mut doc = Document::new();
+        assert!(doc.import_layers(&[single.clone(), multi.clone()]).unwrap());
+        let current = doc.layers().current();
+        assert!(current.is_group(), "导入结果应是一个组");
+        assert_eq!(
+            current.name.as_deref(),
+            Some("Imported layers"),
+            "document.py:1599-1602"
+        );
+        let group = current.stack().unwrap();
+        let kids: Vec<&Layer> = group.iter_top_down().map(|(_, l)| l).collect();
+        assert_eq!(kids.len(), 2);
+        assert!(!kids[0].is_group(), "单层 PNG 直接进 import 组");
+        assert_eq!(
+            kids[0].name.as_deref(),
+            Some("single.png"),
+            "不有趣的层名改成文件名"
+        );
+        assert!(kids[1].is_group(), "多层 .ora 建同名子组");
+        assert_eq!(kids[1].name.as_deref(), Some("bigimage.ora"));
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Import Layers"
+        );
+
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().len(), 1, "一次撤销删除整组");
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().len(), 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_current_layer_preserves_composite_and_undoes() {
+        let mut doc = Document::new();
+        // 原层（底部）蓝色
+        {
+            let bottom = doc.layers.layer_at_mut(&[0]).unwrap();
+            bottom.set_mode(pigment_surface::layer::LayerMode::Standard(
+                pigment_surface::combine::CombineMode::Normal,
+            ));
+            let blue = [0u8, 0, 255, 255].repeat(64 * 64);
+            bottom
+                .surface_mut()
+                .unwrap()
+                .load_from_rgba8(&blue, 0, 0, 64, 64);
+        }
+        // 新层（顶部）红色 50% Normal
+        assert!(doc.add_layer());
+        {
+            let top = doc.layers.layer_at_mut(&[0]).unwrap();
+            top.set_mode(pigment_surface::layer::LayerMode::Standard(
+                pigment_surface::combine::CombineMode::Normal,
+            ));
+            top.opacity = 0.5;
+            let red = [255u8, 0, 0, 255].repeat(64 * 64);
+            top.surface_mut()
+                .unwrap()
+                .load_from_rgba8(&red, 0, 0, 64, 64);
+        }
+        let mut before = vec![0u16; 64 * 64 * 4];
+        doc.layers()
+            .composite_tile_with_background(0, 0, &mut before, false);
+
+        assert!(doc.normalize_current_layer());
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Normalize Layer Mode"
+        );
+        assert_eq!(doc.layers().current().opacity, 1.0);
+        let mut after = vec![0u16; 64 * 64 * 4];
+        doc.layers()
+            .composite_tile_with_background(0, 0, &mut after, false);
+        assert_eq!(before, after, "归一化前后的显示外观应一致");
+
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().current().opacity, 0.5);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().current().opacity, 1.0);
+    }
+
+    #[test]
+    fn new_layer_from_visible_inserts_and_undoes() {
+        let mut doc = Document::new();
+        assert!(doc.new_layer_from_visible());
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "New Layer from Visible"
+        );
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().len(), 1);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().len(), 2);
+    }
+
+    #[test]
+    fn merge_visible_layers_preserves_composite_and_undoes() {
+        let mut doc = Document::new();
+        {
+            let bottom = doc.layers.layer_at_mut(&[0]).unwrap();
+            bottom.set_mode(pigment_surface::layer::LayerMode::Standard(
+                pigment_surface::combine::CombineMode::Normal,
+            ));
+            let blue = [0u8, 0, 255, 255].repeat(64 * 64);
+            bottom
+                .surface_mut()
+                .unwrap()
+                .load_from_rgba8(&blue, 0, 0, 64, 64);
+        }
+        assert!(doc.add_layer());
+        {
+            let top = doc.layers.layer_at_mut(&[0]).unwrap();
+            top.set_mode(pigment_surface::layer::LayerMode::Standard(
+                pigment_surface::combine::CombineMode::Normal,
+            ));
+            top.opacity = 0.5;
+            let red = [255u8, 0, 0, 255].repeat(64 * 64);
+            top.surface_mut()
+                .unwrap()
+                .load_from_rgba8(&red, 0, 0, 64, 64);
+        }
+        let mut before = vec![0u16; 64 * 64 * 4];
+        doc.layers()
+            .composite_tile_with_background(0, 0, &mut before, false);
+
+        assert!(doc.merge_visible_layers());
+        assert_eq!(doc.layers().len(), 1);
+        let mut after = vec![0u16; 64 * 64 * 4];
+        doc.layers()
+            .composite_tile_with_background(0, 0, &mut after, false);
+        assert_eq!(before, after, "合并可见层后显示外观应一致");
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Merge Visible Layers"
+        );
+
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().len(), 2);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().len(), 1);
+    }
+
+    #[test]
+    fn add_layer_below_inserts_after_current_and_inside_groups() {
+        let mut doc = Document::new();
+        assert!(doc.add_layer_below(false));
+        assert_eq!(doc.layers().len(), 2);
+        assert_eq!(doc.layers().current_path(), &[1], "插到当前层下方");
+        assert!(!doc.layers().current().is_group());
+
+        assert!(doc.add_layer_below(true));
+        assert_eq!(doc.layers().len(), 3);
+        assert!(doc.layers().current().is_group());
+
+        // 当前是组时，path_below(insert=True) 指向组内顶部。
+        let mut doc = Document::new();
+        assert!(doc.add_group());
+        let group_id = doc.layers().current_id();
+        assert!(doc.add_layer_below(false));
+        assert_eq!(doc.layers().current_path(), &[0, 0]);
+        assert_eq!(doc.layers().layer_at(&[0]).unwrap().id, group_id);
+        assert_eq!(doc.layers().layer_at(&[0]).unwrap().child_count(), 1);
+    }
+
+    #[test]
+    fn uniq_current_layer_is_undoable() {
+        let mut doc = Document::new();
+        let blue = [0u8, 0, 255, 255].repeat(64 * 64);
+        doc.layers
+            .layer_at_mut(&[0])
+            .unwrap()
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&blue, 0, 0, 64, 64);
+        assert!(doc.add_layer());
+        doc.layers
+            .layer_at_mut(&[0])
+            .unwrap()
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&blue, 0, 0, 64, 64);
+        assert!(doc.uniq_current_layer(false));
+        assert_eq!(doc.layers().current().surface().unwrap().tile_count(), 0);
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Uniquify Layer Pixels"
+        );
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().current().surface().unwrap().tile_count(), 1);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().current().surface().unwrap().tile_count(), 0);
+    }
+
+    #[test]
+    fn effective_bbox_uses_the_frame_only_when_enabled() {
+        let mut doc = Document::new();
+        assert_eq!(doc.get_effective_bbox(), (0, 0, 0, 0));
+        doc.set_frame(10, 20, 30, 40);
+        assert_eq!(
+            doc.get_effective_bbox(),
+            (0, 0, 0, 0),
+            "画框未启用时仍用内容 bbox（document.py:1220）"
+        );
+        doc.set_frame_enabled(true);
+        assert_eq!(doc.get_effective_bbox(), (10, 20, 30, 40));
+    }
+
+    #[test]
+    fn clear_current_layer_clears_pixels_and_strokes_undoably() {
+        use pigment_surface::StrokeShape;
+
+        let mut doc = Document::new();
+        let red = [255u8, 0, 0, 255].repeat(64 * 64);
+        {
+            let surface = doc.layers.paintable_surface_mut().unwrap();
+            surface.load_from_rgba8(&red, 0, 0, 64, 64);
+            let mut shape = StrokeShape::default();
+            shape.tiles.insert((0, 0), vec![1u8; 64 * 64]);
+            surface.push_stroke(shape);
+        }
+        assert!(doc.clear_current_layer());
+        {
+            let surface = doc.layers.current().surface().unwrap();
+            assert_eq!(surface.tile_count(), 0);
+            assert!(surface.strokes().is_empty());
+        }
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Clear Layer"
+        );
+        // 空层再清一次：源码 `not current.is_empty()` 直接返回，不入栈。
+        assert!(!doc.clear_current_layer());
+
+        assert!(doc.undo().is_some());
+        let surface = doc.layers.current().surface().unwrap();
+        assert_eq!(surface.tile_count(), 1);
+        assert_eq!(surface.strokes().len(), 1);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers.current().surface().unwrap().tile_count(), 0);
+    }
+
+    #[test]
+    fn clear_current_layer_clears_group_children_undoably() {
+        let mut doc = Document::new();
+        assert!(doc.add_group());
+        assert!(doc.add_layer_at(vec![0, 0], Layer::new(), false));
+        doc.select_layer(&[0]);
+        assert_eq!(doc.layers().current().child_count(), 1);
+
+        assert!(doc.clear_current_layer());
+        assert_eq!(doc.layers().current().child_count(), 0);
+        assert!(doc.layers().current().is_group(), "组对象本身保留");
+        assert!(doc.undo().is_some());
+        assert_eq!(doc.layers().current().child_count(), 1);
+        assert!(doc.redo().is_some());
+        assert_eq!(doc.layers().current().child_count(), 0);
+    }
+
+    #[test]
     fn undo_and_redo_round_trip_pixels() {
         let mut doc = Document::new();
         assert!(paint_and_commit(&mut doc, 2.0));
@@ -1526,7 +2152,11 @@ mod tests {
         });
         assert!(name.is_some());
         assert!(doc.surface().tile_count() >= tile_before);
-        assert!(doc.get_last_command().unwrap().display_name().ends_with("with Fatter"));
+        assert!(doc
+            .get_last_command()
+            .unwrap()
+            .display_name()
+            .ends_with("with Fatter"));
     }
 
     // ---- B2-5：DuplicateLayer 与图层属性命令的合并 ----
@@ -1690,7 +2320,10 @@ mod tests {
         doc.set_layer_opacity(&[idx], 0.5);
         let r2 = doc.layers().composite_revision();
         assert_ne!(r1, r2, "不透明度变化要抬高水位线");
-        doc.set_layer_mode(&[idx], LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply));
+        doc.set_layer_mode(
+            &[idx],
+            LayerMode::Standard(pigment_surface::combine::CombineMode::Multiply),
+        );
         let r3 = doc.layers().composite_revision();
         assert_ne!(r2, r3, "混合模式变化要抬高水位线");
 
@@ -1713,7 +2346,9 @@ mod tests {
         let after = after.expect("背景可见时 tile 仍有内容");
         assert_ne!(&before[..], &after[..], "隐藏后合成像素应变化");
         assert!(
-            after.chunks_exact(4).all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255),
+            after
+                .chunks_exact(4)
+                .all(|p| p[0] == 255 && p[1] == 255 && p[2] == 255),
             "画布只剩背景层 → 全白"
         );
     }
@@ -1737,10 +2372,7 @@ mod tests {
     }
 
     fn bg_tmpdir(tag: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "pigment-bg-{}-{tag}",
-            std::process::id()
-        ));
+        let p = std::env::temp_dir().join(format!("pigment-bg-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
@@ -1875,9 +2507,21 @@ mod tests {
         let want_r = (204.0 + 128.0 + 51.0) / 3.0 / 255.0;
         let want_g = (51.0 + 128.0 + 51.0) / 3.0 / 255.0;
         let want_b = (51.0 + 128.0 + 204.0) / 3.0 / 255.0;
-        assert!((got[0] - want_r).abs() < 2.0 / 255.0, "R {} vs {want_r}", got[0]);
-        assert!((got[1] - want_g).abs() < 2.0 / 255.0, "G {} vs {want_g}", got[1]);
-        assert!((got[2] - want_b).abs() < 2.0 / 255.0, "B {} vs {want_b}", got[2]);
+        assert!(
+            (got[0] - want_r).abs() < 2.0 / 255.0,
+            "R {} vs {want_r}",
+            got[0]
+        );
+        assert!(
+            (got[1] - want_g).abs() < 2.0 / 255.0,
+            "G {} vs {want_g}",
+            got[1]
+        );
+        assert!(
+            (got[2] - want_b).abs() < 2.0 / 255.0,
+            "B {} vs {want_b}",
+            got[2]
+        );
 
         // 只铺了单像素时更能看出方块的位置：取样点 (0,0) → 方块 (-1,-1)-(1,1)
         // 里只有 1 个红像素，其余 8 格是背景白
@@ -1885,7 +2529,11 @@ mod tests {
         fill_block(&mut doc, 0, 0, 1, 1, [204, 51, 51, 255]);
         let got = doc.pick_color(0.0, 0.0).expect("有限坐标永远有值");
         let want_r = (204.0 + 8.0 * 255.0) / 9.0 / 255.0;
-        assert!((got[0] - want_r).abs() < 2.0 / 255.0, "R {} vs {want_r}", got[0]);
+        assert!(
+            (got[0] - want_r).abs() < 2.0 / 255.0,
+            "R {} vs {want_r}",
+            got[0]
+        );
     }
 
     /// 取样源是**合成结果**（含背景、跳过隐藏层），不是当前层：
@@ -1899,7 +2547,10 @@ mod tests {
         let a = doc.pick_color(1.0, 1.0).unwrap();
         let b = doc.pick_color_scaled(1.0, 1.0, 1.0).unwrap();
         for i in 0..3 {
-            assert!((a[i] - b[i]).abs() < 1.0 / 255.0, "通道 {i}: {a:?} vs {b:?}");
+            assert!(
+                (a[i] - b[i]).abs() < 1.0 / 255.0,
+                "通道 {i}: {a:?} vs {b:?}"
+            );
         }
         // 放大 4 倍：取样间距 0.25 模型像素 → 9 个样本都落在同一个源像素，
         // 结果应等于该像素本身的颜色（(1,1) 是灰色那一列）。
@@ -1920,18 +2571,30 @@ mod tests {
         doc.layers_mut().set_background_color([10, 200, 30]);
         let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
         assert!((got[0] * 255.0 - 10.0).abs() <= 2.0, "R {}", got[0] * 255.0);
-        assert!((got[1] * 255.0 - 200.0).abs() <= 2.0, "G {}", got[1] * 255.0);
+        assert!(
+            (got[1] * 255.0 - 200.0).abs() <= 2.0,
+            "G {}",
+            got[1] * 255.0
+        );
 
         // 有内容的层盖住背景
         fill_block(&mut doc, 0, 0, 8, 8, [204, 51, 51, 255]);
         let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
-        assert!((got[0] * 255.0 - 204.0).abs() <= 2.0, "应取到红，R {}", got[0] * 255.0);
+        assert!(
+            (got[0] * 255.0 - 204.0).abs() <= 2.0,
+            "应取到红，R {}",
+            got[0] * 255.0
+        );
 
         // 隐藏这层 → 它不再参与合成，回到背景色
         let idx = doc.layers().current_index();
         doc.set_layer_visible(&[idx], false);
         let got = doc.pick_color(4.0, 4.0).expect("有限坐标永远有值");
-        assert!((got[0] * 255.0 - 10.0).abs() <= 2.0, "隐藏后应回到背景，R {}", got[0] * 255.0);
+        assert!(
+            (got[0] * 255.0 - 10.0).abs() <= 2.0,
+            "隐藏后应回到背景，R {}",
+            got[0] * 255.0
+        );
     }
 
     /// 非有限坐标没有对应的像素，返回 `None`（源码此处永远有值，但那是
@@ -1965,10 +2628,8 @@ mod tests {
         );
 
         // 1.x 保存写 mypaint:eotf="1.0"，peek 能读回
-        let path = std::env::temp_dir().join(format!(
-            "pigment-compat-save-{}.ora",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("pigment-compat-save-{}.ora", std::process::id()));
         let _ = std::fs::remove_file(&path);
         doc.save_eotf = Some(1.0);
         doc.save(&path, None).unwrap();
@@ -1978,6 +2639,86 @@ mod tests {
         doc.save_eotf = None;
         doc.save(&path, None).unwrap();
         assert_eq!(crate::fileio::peek_ora(&path).unwrap().eotf, None);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn external_layer_edit_is_undoable() {
+        let mut doc = Document::new();
+        let red = vec![255u8, 0, 0, 255];
+        doc.surface_mut().load_from_rgba8(&red, 0, 0, 1, 1);
+        let id = doc.current_layer().id;
+
+        // 外部程序写出的绿块 PNG。
+        let mut tmp_surface = PigmentSurface::new();
+        let green = vec![
+            0u8, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255, 0, 255,
+        ];
+        tmp_surface.load_from_rgba8(&green, 0, 0, 2, 2);
+        let path =
+            std::env::temp_dir().join(format!("pigment-external-edit-{}.png", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        tmp_surface
+            .save_as_png(&path, (0, 0, 2, 2), true, [255, 255, 255])
+            .unwrap();
+
+        let kind = crate::command::ExternalEditKind::Raster { x: 0, y: 0 };
+        assert!(doc
+            .update_layer_from_external_edit(id, &path, kind)
+            .unwrap());
+        let px = doc.surface().tile(0, 0).unwrap()[0][0];
+        assert!(px[1] > 30000 && px[0] < 3000, "应换成绿色：{px:?}");
+        assert_eq!(doc.command_stack.undo_len(), 1);
+        assert_eq!(
+            doc.command_stack.get_last_command().unwrap().display_name(),
+            "Edit Layer Externally"
+        );
+
+        doc.undo();
+        let px = doc.surface().tile(0, 0).unwrap()[0][0];
+        assert!(px[0] > 30000 && px[1] < 3000, "撤销后应回红色：{px:?}");
+        doc.redo();
+        let px = doc.surface().tile(0, 0).unwrap()[0][0];
+        assert!(px[1] > 30000 && px[0] < 3000, "重做后应回绿色：{px:?}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn vector_external_edit_updates_svg_and_is_undoable() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6">
+            <rect width="8" height="6" fill="#00ff00"/></svg>"##;
+        let mut doc = Document::new();
+        assert!(doc.add_layer_at(vec![0], Layer::new_vector(svg, 4, 5).unwrap(), false));
+        let id = doc.current_layer().id;
+        assert!(doc.current_layer().is_vector());
+        assert!(doc.paintable_surface_mut().is_none(), "矢量层不可直接画");
+
+        let edited = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6">
+            <rect width="8" height="6" fill="#ff0000"/></svg>"##;
+        let path =
+            std::env::temp_dir().join(format!("pigment-vector-edit-{}.svg", std::process::id()));
+        std::fs::write(&path, edited).unwrap();
+        assert!(doc
+            .update_layer_from_external_edit(id, &path, crate::command::ExternalEditKind::Vector)
+            .unwrap());
+        assert!(doc
+            .current_layer()
+            .vector_data()
+            .unwrap()
+            .svg
+            .contains("#ff0000"));
+        let px = doc.surface().tile(0, 0).unwrap()[5][4];
+        assert!(px[0] > 30000 && px[1] < 3000, "预览应变红：{px:?}");
+
+        doc.undo();
+        assert!(doc
+            .current_layer()
+            .vector_data()
+            .unwrap()
+            .svg
+            .contains("#00ff00"));
+        let px = doc.surface().tile(0, 0).unwrap()[5][4];
+        assert!(px[1] > 30000 && px[0] < 3000, "撤销应变回绿：{px:?}");
         let _ = std::fs::remove_file(&path);
     }
 }

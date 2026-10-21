@@ -18,12 +18,7 @@ use std::path::Path;
 /// 写出 RGBA8 像素为 PNG。
 ///
 /// `pixels` 必须是 `w * h * 4` 字节、行主序。
-pub fn write_rgba8_png(
-    path: &Path,
-    pixels: Vec<u8>,
-    w: u32,
-    h: u32,
-) -> Result<(), String> {
+pub fn write_rgba8_png(path: &Path, pixels: Vec<u8>, w: u32, h: u32) -> Result<(), String> {
     write_png(path, pixels, w, h, true)
 }
 
@@ -32,13 +27,7 @@ pub fn write_rgba8_png(
 ///
 /// `alpha=false` 时写 **RGB8**（丢弃 alpha 通道，与 libpng 的 RGB 写出
 /// 一致），`alpha=true` 时写 RGBA8。
-pub fn write_png(
-    path: &Path,
-    pixels: Vec<u8>,
-    w: u32,
-    h: u32,
-    alpha: bool,
-) -> Result<(), String> {
+pub fn write_png(path: &Path, pixels: Vec<u8>, w: u32, h: u32, alpha: bool) -> Result<(), String> {
     let expected = (w as usize) * (h as usize) * 4;
     if pixels.len() != expected {
         return Err(format!(
@@ -87,17 +76,31 @@ pub fn write_png(
 }
 
 /// 读取 PNG 为 RGBA8 像素，返回 `(pixels, w, h)`。
+///
+/// `image` crate 默认给解码器设了约 512 MiB 的内存上限。无限画布的一张
+/// 18k×10k 图层 PNG 本身就是 745 MiB，会被误判成恶意图片而拒绝载入
+/// （报 `Memory limit exceeded`）。文档载入路径必须显式关掉这个上限。
 pub fn read_rgba8_png(path: &Path) -> Result<(Vec<u8>, u32, u32), String> {
-    let img = image::open(path).map_err(|e| format!("读 PNG 失败 {}：{e}", path.display()))?;
+    let mut reader = image::ImageReader::open(path)
+        .map_err(|e| format!("读 PNG 失败 {}：{e}", path.display()))?;
+    reader.limits(image::Limits::no_limits());
+    let img = reader
+        .decode()
+        .map_err(|e| format!("读 PNG 失败 {}：{e}", path.display()))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Ok((rgba.into_raw(), w, h))
 }
 
 /// 从内存字节解码 PNG（测试与 zip 内嵌场景）。
+///
+/// 与 [`read_rgba8_png`] 一样关掉 `image` 的默认分配上限：ORA 的图层
+/// PNG 可以合法地超过 512 MiB。
 pub fn decode_rgba8_png(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
-    let img = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
-        .map_err(|e| format!("解码 PNG 失败：{e}"))?;
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes));
+    reader.set_format(image::ImageFormat::Png);
+    reader.limits(image::Limits::no_limits());
+    let img = reader.decode().map_err(|e| format!("解码 PNG 失败：{e}"))?;
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     Ok((rgba.into_raw(), w, h))

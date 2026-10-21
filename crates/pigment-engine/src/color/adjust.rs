@@ -200,9 +200,7 @@ impl BrushStep {
 
     /// 由动作 id 取动作。
     pub fn from_action_name(name: &str) -> Option<BrushStep> {
-        BrushStep::ALL
-            .into_iter()
-            .find(|a| a.action_name() == name)
+        BrushStep::ALL.into_iter().find(|a| a.action_name() == name)
     }
 
     /// 这个动作作用在哪个笔刷设置上（内部名 = `BrushSetting::cname()`）。
@@ -249,4 +247,3 @@ impl BrushStep {
 // `HSVColor(*brush.get_color_hsv())` 回填管理器 —— 于是"共享颜色的类型跟着
 // 调整器所在的色彩空间变"（`lib/color.py:13-18`）。具体落地在
 // [`super::ColorManager::adjust`]。
-

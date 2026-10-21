@@ -52,8 +52,8 @@
 use std::path::Path;
 
 use hokusai::tile::TILE_SIZE;
-use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::color::{self, CANVAS_BG};
+use pigment_surface::combine::{CombineMode, DEFAULT_MODE};
 use pigment_surface::layer::{BackgroundImage, LayerContent, LayerMode};
 use pigment_surface::{Layer, LayerStack, PigmentSurface};
 
@@ -575,10 +575,8 @@ pub fn save_jpg(
         rgb.extend_from_slice(&p[..3]);
     }
     let file = std::fs::File::create(filename.as_ref()).map_err(FileError::Io)?;
-    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(
-        std::io::BufWriter::new(file),
-        quality,
-    );
+    let mut enc =
+        image::codecs::jpeg::JpegEncoder::new_with_quality(std::io::BufWriter::new(file), quality);
     enc.encode(&rgb, w as u32, h as u32, image::ExtendedColorType::Rgb8)
         .map_err(|e| FileError::Jpg(format!("JPEG 编码失败: {e}")))?;
     Ok(PngSaved { bbox: (x, y, w, h) })
@@ -618,6 +616,18 @@ pub struct OraSaveOptions {
     /// `mypaint:eotf` 的值；`None` 不写该属性
     /// （`display.colorspace == "unknown"` 时"不做转换也不打标签"）。
     pub eotf: Option<f32>,
+    /// 写 `mergedimage.png`（整栈摊平预览）。
+    ///
+    /// 自动备份用它省掉一份「画幅像素数 × 4」的缓冲和一次 PNG 编码：
+    /// 恢复只读各层 PNG，不读 merged。手动保存仍为 `true`，保证给外部
+    /// 阅读器的 ORA 完整。
+    pub include_merged: bool,
+    /// 写整幅 `background.png`（背景层 `src`）。
+    ///
+    /// 自动备份关掉它，只写 `mypaint:background-tile`；本程序的载入器
+    /// 以 tile 为准（`build_ora_layers` 命中 tile 后直接 `continue`）。
+    /// 大幅省掉一份画幅级背景缓冲 + PNG 编码。
+    pub include_full_background: bool,
 }
 
 impl Default for OraSaveOptions {
@@ -632,6 +642,8 @@ impl Default for OraSaveOptions {
             settings_json: Some("{}".to_string()),
             // `lib/eotf.py:16` 的 `DEFAULT_EOTF = 2.2`
             eotf: Some(EOTF_2X),
+            include_merged: true,
+            include_full_background: true,
         }
     }
 }
@@ -698,30 +710,32 @@ pub fn save_ora(
     let fw = bw.max(1) as usize;
     let fh = bh.max(1) as usize;
     let bg_image = layers.background_image();
-    let mut bg_full = vec![0u8; fw * fh * 4];
-    match bg_image {
-        Some(img) => {
-            for y in 0..fh {
-                for x in 0..fw {
-                    let px = img.pixel_rgba8(bx as i64 + x as i64, by as i64 + y as i64);
-                    let o = (y * fw + x) * 4;
-                    bg_full[o..o + 4].copy_from_slice(&px);
+    if opts.include_full_background {
+        let mut bg_full = vec![0u8; fw * fh * 4];
+        match bg_image {
+            Some(img) => {
+                for y in 0..fh {
+                    for x in 0..fw {
+                        let px = img.pixel_rgba8(bx as i64 + x as i64, by as i64 + y as i64);
+                        let o = (y * fw + x) * 4;
+                        bg_full[o..o + 4].copy_from_slice(&px);
+                    }
+                }
+            }
+            None => {
+                for px in bg_full.chunks_exact_mut(4) {
+                    px[..3].copy_from_slice(&bg_rgb);
+                    px[3] = 255;
                 }
             }
         }
-        None => {
-            for px in bg_full.chunks_exact_mut(4) {
-                px[..3].copy_from_slice(&bg_rgb);
-                px[3] = 255;
-            }
-        }
+        let tmp_bg = temp_sibling(filename.as_ref(), "background.png");
+        pigment_surface::png::write_png(&tmp_bg, bg_full, fw as u32, fh as u32, false)
+            .map_err(FileError::Png)?;
+        let bytes = std::fs::read(&tmp_bg)?;
+        let _ = std::fs::remove_file(&tmp_bg);
+        zip.add_stored(&bg_full_entry, &bytes)?;
     }
-    let tmp_bg = temp_sibling(filename.as_ref(), "background.png");
-    pigment_surface::png::write_png(&tmp_bg, bg_full, fw as u32, fh as u32, false)
-        .map_err(FileError::Png)?;
-    let bytes = std::fs::read(&tmp_bg)?;
-    let _ = std::fs::remove_file(&tmp_bg);
-    zip.add_stored(&bg_full_entry, &bytes)?;
 
     let (bg_tile, tile_w, tile_h) = match bg_image {
         Some(img) => (img.rgba8().to_vec(), img.width(), img.height()),
@@ -741,6 +755,13 @@ pub fn save_ora(
     let bytes = std::fs::read(&tmp_tile)?;
     let _ = std::fs::remove_file(&tmp_tile);
     zip.add_stored(&bg_tile_entry, &bytes)?;
+    // 省掉整幅背景时，`src` 指向已经写进去的 tile：本程序按
+    // `mypaint:background-tile` 还原，外部阅读器至少不会遇到悬空引用。
+    let bg_src_entry = if opts.include_full_background {
+        bg_full_entry
+    } else {
+        bg_tile_entry.clone()
+    };
 
     // BackgroundLayer.mode 在源码里是 `CombineNormal`（`data.py:1059`），
     // `core.py:842-846` 因此写 `svg:src-over`；真实 MyPaint 文件
@@ -753,7 +774,7 @@ pub fn save_ora(
         // 源码属性顺序：visibility 之后才 composite-op
         ("composite-op", "svg:src-over".to_string()),
         ("name", "background".to_string()),
-        ("src", bg_full_entry),
+        ("src", bg_src_entry),
         (ATTR_NS_BG_TILE, bg_tile_entry),
     ];
 
@@ -775,14 +796,16 @@ pub fn save_ora(
     zip.add_stored("Thumbnails/thumbnail.png", &bytes)?;
 
     // 6. mergedimage.png —— 整栈摊平、无 alpha（源码 `alpha=False, background=True`）
-    let mut merged = vec![0u8; fw * fh * 4];
-    layers.render_rect_rgba8((bx, by, fw as u32, fh as u32), false, &mut merged);
-    let tmp_merged = temp_sibling(filename.as_ref(), "merged.png");
-    pigment_surface::png::write_png(&tmp_merged, merged, fw as u32, fh as u32, false)
-        .map_err(FileError::Png)?;
-    let bytes = std::fs::read(&tmp_merged)?;
-    let _ = std::fs::remove_file(&tmp_merged);
-    zip.add_stored("mergedimage.png", &bytes)?;
+    if opts.include_merged {
+        let mut merged = vec![0u8; fw * fh * 4];
+        layers.render_rect_rgba8((bx, by, fw as u32, fh as u32), false, &mut merged);
+        let tmp_merged = temp_sibling(filename.as_ref(), "merged.png");
+        pigment_surface::png::write_png(&tmp_merged, merged, fw as u32, fh as u32, false)
+            .map_err(FileError::Png)?;
+        let bytes = std::fs::read(&tmp_merged)?;
+        let _ = std::fs::remove_file(&tmp_merged);
+        zip.add_stored("mergedimage.png", &bytes)?;
+    }
 
     // 7. stack.xml
     let xml = build_stack_xml(
@@ -799,7 +822,10 @@ pub fn save_ora(
     zip.add_stored("stack.xml", xml.as_bytes())?;
 
     zip.finish()?;
-    Ok(OraSaved { bbox, thumbnail: thumb })
+    Ok(OraSaved {
+        bbox,
+        thumbnail: thumb,
+    })
 }
 
 /// 递归写出层的 PNG 与 XML 元素（`group.py:487-530` + `data.py:471-484`）。
@@ -822,6 +848,35 @@ fn save_layer_elems(
             if !n.is_empty() {
                 attrs.push(("name", n.clone()));
             }
+        }
+        // VectorLayer（`data.py:755-778`）：把 SVG 工作文件原样写进 ORA，
+        // stack.xml 的 x/y 是矢量文件原点（不是预览 tile 的 bbox）。
+        if let Some(vector) = &layer.vector {
+            let entry = format!("data/{}", make_refname("layer", &p, ".svg"));
+            zip.add_stored(&entry, vector.svg.as_bytes())?;
+            attrs.push(("x", (vector.x - bx).to_string()));
+            attrs.push(("y", (vector.y - by).to_string()));
+            attrs.push(("opacity", fmt_float_py(layer.opacity)));
+            attrs.push((
+                "visibility",
+                if layer.visible { "visible" } else { "hidden" }.to_string(),
+            ));
+            if let Some(name) = layer.mode.ora_name() {
+                attrs.push(("composite-op", name.to_string()));
+            }
+            attrs.push(("src", entry));
+            if layer.locked {
+                attrs.push(("edit-locked", "true".to_string()));
+            }
+            if selected {
+                attrs.push(("selected", "true".to_string()));
+            }
+            out.push(OraElement {
+                tag: "layer",
+                attrs,
+                children: Vec::new(),
+            });
+            continue;
         }
         match &layer.content {
             LayerContent::Painting(surface) => {
@@ -896,7 +951,12 @@ fn save_layer_elems(
                 }
                 attrs.push((
                     "isolation",
-                    if layer.mode.is_pass_through() { "auto" } else { "isolate" }.to_string(),
+                    if layer.mode.is_pass_through() {
+                        "auto"
+                    } else {
+                        "isolate"
+                    }
+                    .to_string(),
                 ));
                 let mut children: Vec<OraElement> = Vec::new();
                 save_layer_elems(zip, &mut children, sub, filename, &p, bx, by, current_path)?;
@@ -912,7 +972,8 @@ fn save_layer_elems(
 }
 
 /// 图层自身的数据外接框（tile 对齐；`SurfaceBackedLayer.get_bbox` 的平栈版）。
-fn surface_tile_bbox(s: &PigmentSurface) -> (i32, i32, i32, i32) {    let ts = TILE_SIZE as i32;
+fn surface_tile_bbox(s: &PigmentSurface) -> (i32, i32, i32, i32) {
+    let ts = TILE_SIZE as i32;
     let mut it = s.tiles().map(|(c, _)| c);
     let Some(first) = it.next() else {
         return (0, 0, 0, 0);
@@ -968,6 +1029,8 @@ pub fn load_png(
 /// 载入的一层的内容：绘画层的数据，或组的子层（`group.py:138-149`）。
 pub enum OraContent {
     Painting(PigmentSurface),
+    /// 矢量层（`data.py:1153-1239` `VectorLayer`）：SVG 源 + 预览表面。
+    Vector(pigment_surface::VectorLayerData, PigmentSurface),
     Group(Vec<OraLayerData>),
 }
 
@@ -989,7 +1052,7 @@ impl OraLayerData {
     /// 本节点及其后代的层数（`walk()` 的条目数，用于状态栏）。
     pub fn descendant_count(&self) -> usize {
         match &self.content {
-            OraContent::Painting(_) => 1,
+            OraContent::Painting(_) | OraContent::Vector(_, _) => 1,
             OraContent::Group(children) => {
                 1 + children.iter().map(|c| c.descendant_count()).sum::<usize>()
             }
@@ -1009,6 +1072,19 @@ impl std::fmt::Debug for OraLayerData {
         match &self.content {
             OraContent::Painting(surface) => {
                 d.field("tiles", &surface.tile_count());
+            }
+            OraContent::Vector(data, surface) => {
+                d.field(
+                    "vector",
+                    &format_args!(
+                        "{}x{} @ {},{}",
+                        surface.data_bbox().2,
+                        surface.data_bbox().3,
+                        data.x,
+                        data.y
+                    ),
+                );
+                d.field("svg_bytes", &data.svg.len());
             }
             OraContent::Group(children) => {
                 d.field("children", &children.len());
@@ -1102,8 +1178,16 @@ pub fn load_ora(filename: impl AsRef<Path>) -> Result<OraLoaded, FileError> {
     let image_h = img.height.max(0);
 
     // 分辨率：源码 `if image_xres and image_yres`（`:1845`）
-    let xres = if img.xres > 0 { Some(img.xres as u32) } else { None };
-    let yres = if img.yres > 0 { Some(img.yres as u32) } else { None };
+    let xres = if img.xres > 0 {
+        Some(img.xres as u32)
+    } else {
+        None
+    };
+    let yres = if img.yres > 0 {
+        Some(img.yres as u32)
+    } else {
+        None
+    };
 
     // 设置 JSON（`:1869`）：它可能指向一个 zip 条目
     let settings_json = img
@@ -1252,26 +1336,41 @@ fn build_ora_layers(
             continue;
         }
         let Some(src) = &l.src else { continue };
-        let png = z
+        let bytes = z
             .read(src)
             .map_err(|e| FileError::Malformed(format!("读图层数据 {src:?} 失败：{e}")))?;
-        let (px, w, h) = pigment_surface::png::decode_rgba8_png(&png).map_err(FileError::Png)?;
-        let mut surface = PigmentSurface::new();
-        surface.replace_from_rgba8(&px, x, y, w, h);
-        if let Some(name) = &l.strokemap {
-            if let Ok(dat) = z.read(name) {
-                surface
-                    .load_strokemap_dat(&dat, x, y)
-                    .map_err(|e| FileError::Malformed(format!("strokemap {name:?}: {e}")))?;
+        // FileBackedLayer（`data.py:669-699`）按扩展名选 loader；`.svg` 走
+        // VectorLayer 的 SVG 栅格化，其余仍按 PNG。
+        let is_svg = src
+            .rsplit('.')
+            .next()
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"));
+        let content = if is_svg {
+            let svg = String::from_utf8_lossy(&bytes).into_owned();
+            let surface =
+                pigment_surface::vector::rasterize_svg(&svg, x, y).map_err(FileError::Malformed)?;
+            OraContent::Vector(pigment_surface::VectorLayerData::new(svg, x, y), surface)
+        } else {
+            let (px, w, h) =
+                pigment_surface::png::decode_rgba8_png(&bytes).map_err(FileError::Png)?;
+            let mut surface = PigmentSurface::new();
+            surface.replace_from_rgba8(&px, x, y, w, h);
+            if let Some(name) = &l.strokemap {
+                if let Ok(dat) = z.read(name) {
+                    surface
+                        .load_strokemap_dat(&dat, x, y)
+                        .map_err(|e| FileError::Malformed(format!("strokemap {name:?}: {e}")))?;
+                }
             }
-        }
+            OraContent::Painting(surface)
+        };
         let mode = l
             .composite_op
             .as_deref()
             .and_then(CombineMode::from_ora_name)
             .unwrap_or(DEFAULT_MODE);
         out.push(OraLayerData {
-            content: OraContent::Painting(surface),
+            content,
             name: l.name.clone().filter(|s| !s.is_empty()),
             mode: LayerMode::Standard(mode),
             opacity: l.opacity.unwrap_or(1.0).clamp(0.0, 1.0),
@@ -1600,7 +1699,10 @@ mod tests {
             "layer-00-00-strokemap.dat"
         );
         // 背景层
-        assert_eq!(make_refname("background", &[1], ".png"), "background-01.png");
+        assert_eq!(
+            make_refname("background", &[1], ".png"),
+            "background-01.png"
+        );
         // 空路径（源码里的边界情形：`"layer" + "-" + "" + ".png"`）
         assert_eq!(make_refname("layer", &[], ".png"), "layer-.png");
         // 两位以上要大写补零，不能截断
@@ -1613,7 +1715,10 @@ mod tests {
           <stack><layer src="data/a.png" x="0" y="0"/></stack>
         </image>"#;
         let img = parse_stack_xml(xml).unwrap();
-        assert_eq!(img.mypaint_version, None, "OpenRaster 0.0.5 不是 MyPaint 版本");
+        assert_eq!(
+            img.mypaint_version, None,
+            "OpenRaster 0.0.5 不是 MyPaint 版本"
+        );
         assert_eq!(
             compatibility(img.mypaint_version.as_deref().unwrap_or("")),
             None,
@@ -1641,7 +1746,10 @@ mod tests {
             parse_version_string("1.0.2-alpha"),
             Some((1, 0, 2, "-alpha".to_string()))
         );
-        assert_eq!(parse_version_string("3.1.5"), Some((3, 1, 5, String::new())));
+        assert_eq!(
+            parse_version_string("3.1.5"),
+            Some((3, 1, 5, String::new()))
+        );
         assert_eq!(
             parse_version_string("2.0.1-alpha"),
             Some((2, 0, 1, "-alpha".to_string()))
@@ -1686,10 +1794,14 @@ mod tests {
 
     /// 测试辅助：构造一个 `<layer>` 的属性向量（按 save_ora 的写法）。
     fn test_layer_elem(attrs: Vec<(&'static str, String)>) -> OraElement {
-    OraElement { tag: "layer", attrs, children: Vec::new() }
-}
+        OraElement {
+            tag: "layer",
+            attrs,
+            children: Vec::new(),
+        }
+    }
 
-fn test_layer_attrs(
+    fn test_layer_attrs(
         src: &str,
         x: i32,
         y: i32,
@@ -1738,7 +1850,16 @@ fn test_layer_attrs(
     #[test]
     fn eotf_attribute_roundtrips_and_can_be_omitted() {
         // 1.x 写 "1.0"（Python str(1.0)），2.x 写 "2.2"
-        let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
+        let layer = test_layer_attrs(
+            "data/layer-00.png",
+            0,
+            0,
+            1.0,
+            true,
+            true,
+            "svg:src-over",
+            None,
+        );
         let xml = build_stack_xml(
             1,
             1,
@@ -1754,7 +1875,16 @@ fn test_layer_attrs(
         assert_eq!(parse_stack_xml(&xml).unwrap().eotf, Some(1.0));
 
         // `display.colorspace == "unknown"`：不写标签
-        let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
+        let layer = test_layer_attrs(
+            "data/layer-00.png",
+            0,
+            0,
+            1.0,
+            true,
+            true,
+            "svg:src-over",
+            None,
+        );
         let xml = build_stack_xml(
             1,
             1,
@@ -1773,9 +1903,22 @@ fn test_layer_attrs(
     #[test]
     fn stack_xml_writes_opacity_as_python_float() {
         let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(1, 1, None, None, false, None, Some(2.2), &[test_layer_elem(layer)], None);
+        let xml = build_stack_xml(
+            1,
+            1,
+            None,
+            None,
+            false,
+            None,
+            Some(2.2),
+            &[test_layer_elem(layer)],
+            None,
+        );
         assert!(xml.contains("opacity=\"1.0\""), "opacity 应写成 1.0：{xml}");
-        assert!(!xml.contains("opacity=\"1\""), "不该出现 Python 不会写的 \"1\"：{xml}");
+        assert!(
+            !xml.contains("opacity=\"1\""),
+            "不该出现 Python 不会写的 \"1\"：{xml}"
+        );
     }
 
     #[test]
@@ -1802,8 +1945,25 @@ fn test_layer_attrs(
     /// 空元素 `<x />`、无命名空间属性在前、组内按局部名排序。
     #[test]
     fn stack_xml_matches_real_sample_layout() {
-        let layer = test_layer_attrs("data/layer-00.png", 0, 0, 1.0, true, true, "svg:src-over", None);
-        let xml = build_stack_xml(128, 128, None, None, false, None, Some(2.2), &[test_layer_elem(layer)],
+        let layer = test_layer_attrs(
+            "data/layer-00.png",
+            0,
+            0,
+            1.0,
+            true,
+            true,
+            "svg:src-over",
+            None,
+        );
+        let xml = build_stack_xml(
+            128,
+            128,
+            None,
+            None,
+            false,
+            None,
+            Some(2.2),
+            &[test_layer_elem(layer)],
             Some(&test_bg_attrs()),
         );
         assert!(
@@ -1853,7 +2013,17 @@ fn test_layer_attrs(
             "svg:src-over",
             Some("a <b> \"c\""),
         );
-        let xml = build_stack_xml(1, 1, None, None, false, None, Some(2.2), &[test_layer_elem(layer)], None);
+        let xml = build_stack_xml(
+            1,
+            1,
+            None,
+            None,
+            false,
+            None,
+            Some(2.2),
+            &[test_layer_elem(layer)],
+            None,
+        );
         assert!(xml.contains("data/a&amp;b.png"));
         assert!(xml.contains("name=\"a &lt;b&gt; &quot;c&quot;\""));
     }
@@ -1862,10 +2032,23 @@ fn test_layer_attrs(
     fn stack_xml_omits_xres_when_zero() {
         let mk = |x: Option<u32>, y: Option<u32>| {
             let layer = test_layer_attrs("s", 0, 0, 1.0, true, true, "svg:src-over", None);
-            build_stack_xml(1, 1, x, y, false, None, Some(2.2), &[test_layer_elem(layer)], None)
+            build_stack_xml(
+                1,
+                1,
+                x,
+                y,
+                false,
+                None,
+                Some(2.2),
+                &[test_layer_elem(layer)],
+                None,
+            )
         };
         let xml = mk(Some(0), Some(0));
-        assert!(!xml.contains("xres"), "xres=0 时不该写出（源码 `if xres and yres`）");
+        assert!(
+            !xml.contains("xres"),
+            "xres=0 时不该写出（源码 `if xres and yres`）"
+        );
         let xml2 = mk(Some(72), Some(72));
         assert!(xml2.contains("xres=\"72\""));
         assert!(xml2.contains("yres=\"72\""));
@@ -1899,7 +2082,10 @@ fn test_layer_attrs(
         assert_eq!((img.xres, img.yres), (300, 300));
         assert!(img.frame_active);
         assert_eq!(img.mypaint_version.as_deref(), Some(MYPAINT_VERSION));
-        assert_eq!(img.json_settings.as_deref(), Some(ORA_JSON_SETTINGS_ZIP_PATH));
+        assert_eq!(
+            img.json_settings.as_deref(),
+            Some(ORA_JSON_SETTINGS_ZIP_PATH)
+        );
         // 图层 + 背景层
         assert_eq!(img.layers.len(), 2);
         assert_eq!(img.layers[0].src.as_deref(), Some("data/layer-00.png"));
@@ -1996,7 +2182,11 @@ fn test_layer_attrs(
     fn thumbnail_halves_like_mypaint() {
         let st = LayerStack::new();
         let (_, w, h) = render_thumbnail(&st, (0, 0, 3456, 3008));
-        assert_eq!((w, h), (216, 188), "应与 fill_outlines.ora 的缩略图尺寸一致");
+        assert_eq!(
+            (w, h),
+            (216, 188),
+            "应与 fill_outlines.ora 的缩略图尺寸一致"
+        );
     }
 
     /// 小画幅不缩放：64×64 → 64×64（`scale_proportionally` 是 shrink_only）。
@@ -2043,7 +2233,10 @@ fn test_layer_attrs(
         for p in block.chunks_exact_mut(4) {
             p.copy_from_slice(&[255, 0, 0, 255]);
         }
-        layer.surface_mut().unwrap().load_from_rgba8(&block, 0, 0, 8, 8);
+        layer
+            .surface_mut()
+            .unwrap()
+            .load_from_rgba8(&block, 0, 0, 8, 8);
 
         let (out, w, h) = render_layer_thumbnail(&layer, (0, 0, 64, 64));
         assert_eq!((w, h), (64, 64));
@@ -2059,6 +2252,36 @@ fn test_layer_attrs(
         let (_, w, h) = render_layer_thumbnail(&layer, (0, 0, 3456, 3008));
         assert_eq!((w, h), (216, 188));
     }
+
+    #[test]
+    fn vector_layers_roundtrip_through_openraster() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6">
+            <rect width="8" height="6" fill="#ff0000"/></svg>"##;
+        let mut st = LayerStack::new();
+        st.insert(0, Layer::new_vector(svg, 10, 20).expect("SVG 应能栅格化"));
+        st.set_current_path(&[0]);
+        let mut path = std::env::temp_dir();
+        path.push(format!("pigment-vector-{}.ora", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        save_ora(&st, &path, &OraSaveOptions::default(), (0, 0, 128, 128)).expect("保存矢量 ORA");
+        let z = ZipArchive::open(&path).unwrap();
+        let xml = String::from_utf8_lossy(&z.read("stack.xml").unwrap()).into_owned();
+        assert!(xml.contains("src=\"data/layer-00.svg\""), "stack.xml={xml}");
+        drop(z);
+        let loaded = load_ora(&path).unwrap();
+        let vector = loaded
+            .layers
+            .iter()
+            .find(|l| matches!(l.content, OraContent::Vector(_, _)))
+            .expect("载入后仍是矢量层");
+        match &vector.content {
+            OraContent::Vector(data, surface) => {
+                assert_eq!((data.x, data.y), (10, 20));
+                assert!(data.svg.contains("#ff0000"));
+                assert_eq!(surface.data_bbox(), (0, 0, 64, 64));
+            }
+            _ => unreachable!(),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
 }
-
-

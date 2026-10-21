@@ -12,9 +12,7 @@
 
 use std::collections::BTreeSet;
 
-use pigment_engine::accelmap::{
-    self, format_conf, parse_conf, Accel, Entry, PROGRAM_NAME,
-};
+use pigment_engine::accelmap::{self, format_conf, parse_conf, Accel, Entry, PROGRAM_NAME};
 
 fn fixture_path(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -25,8 +23,12 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
 
 fn read_fixture(name: &str) -> String {
     let path = fixture_path(name);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("读不到 fixture {}：{e}（重跑 tests/tools/gen-accelmap-fixtures.py）", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "读不到 fixture {}：{e}（重跑 tests/tools/gen-accelmap-fixtures.py）",
+            path.display()
+        )
+    })
 }
 
 /// 把一份 conf 拆成"配置行"（去掉注释与空行、去掉行尾 `\r`）。
@@ -68,7 +70,10 @@ fn gtk_saved_conf_round_trips_through_our_parser_and_generator() {
         "我们多写的：{only_ours:?}\nGTK 有而我们没有的：{only_gtk:?}"
     );
     // 头三行同样逐字节
-    assert_eq!(ours.lines().take(3).collect::<Vec<_>>(), text.lines().take(3).collect::<Vec<_>>());
+    assert_eq!(
+        ours.lines().take(3).collect::<Vec<_>>(),
+        text.lines().take(3).collect::<Vec<_>>()
+    );
 }
 
 /// GTK 把"被清空的条目"写成**注释行**，解析器必须跳过它 —— 于是"删掉一个默认
@@ -87,7 +92,9 @@ fn cleared_entries_are_comments_and_never_come_back() {
     assert!(cleared.contains(r#"""#), "注释行里带空加速键：{cleared:?}");
     let parsed = parse_conf(&text);
     assert!(
-        parsed.get("<Actions>/GenAccelMapFixture/ClearedEntry").is_none(),
+        parsed
+            .get("<Actions>/GenAccelMapFixture/ClearedEntry")
+            .is_none(),
         "注释行不该被读成条目"
     );
 }
@@ -114,7 +121,11 @@ fn source_accel_specs_match_gtks_name_and_label() {
             continue;
         }
         let cols: Vec<&str> = line.split('\t').collect();
-        assert_eq!(cols.len(), 4, "fixture 行格式：spec<TAB>name<TAB>label<TAB>origin");
+        assert_eq!(
+            cols.len(),
+            4,
+            "fixture 行格式：spec<TAB>name<TAB>label<TAB>origin"
+        );
         let (spec, want_name, want_label) = (cols[0], cols[1], cols[2]);
         let origin = cols[3];
         let parsed = Accel::parse(spec);
@@ -136,7 +147,10 @@ fn source_accel_specs_match_gtks_name_and_label() {
         }
         if REJECTED_BY_US_ON_PURPOSE.contains(&spec) {
             assert!(
-                matches!(parsed, Err(pigment_engine::accelmap::AccelError::UnsupportedModifier(_))),
+                matches!(
+                    parsed,
+                    Err(pigment_engine::accelmap::AccelError::UnsupportedModifier(_))
+                ),
                 "GTK 收 {spec:?} 但我们有意拒绝它（egui 无对应修饰位），实得 {parsed:?}"
             );
             exceptions += 1;
@@ -157,7 +171,10 @@ fn source_accel_specs_match_gtks_name_and_label() {
     }
     // 105 条 XML + 20 条槽位（去重后 125）+ 别名/捕获表/GTK 显示名样本
     assert_eq!(checked_valid, 164, "有效样本数（fixture 变了就同步这里）");
-    assert_eq!(checked_invalid, 4, "GTK 拒绝的样本数（!、空格、空串、<Shift>）");
+    assert_eq!(
+        checked_invalid, 4,
+        "GTK 拒绝的样本数（!、空格、空串、<Shift>）"
+    );
     assert_eq!(
         exceptions,
         SHAPE_OK_BUT_NOT_A_GDK_NAME.len() + REJECTED_BY_US_ON_PURPOSE.len()
@@ -206,7 +223,13 @@ fn entries_without_a_key_are_written_as_comments() {
         Entry::new("<Actions>/B", Some(Accel::parse("F5").unwrap())),
     ];
     let text = format_conf(PROGRAM_NAME, &entries);
-    assert!(text.contains("; (gtk_accel_path \"<Actions>/A\" \"\")"), "{text}");
-    assert!(text.contains("(gtk_accel_path \"<Actions>/B\" \"F5\")"), "{text}");
+    assert!(
+        text.contains("; (gtk_accel_path \"<Actions>/A\" \"\")"),
+        "{text}"
+    );
+    assert!(
+        text.contains("(gtk_accel_path \"<Actions>/B\" \"F5\")"),
+        "{text}"
+    );
     assert_eq!(config_lines(&text).len(), 1, "注释掉的条目不算配置行");
 }

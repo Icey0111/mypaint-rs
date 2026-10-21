@@ -57,14 +57,13 @@
 //!   [`LayerSource`] 按路径渲染单层/组）。
 //! - **进度/取消对话框**（`fill.py:316`、`floodfill.py:116` 的 `FillHandler`）：
 //!   我们的填充是同步的，没有线程与取消点；形态学/模糊同样同步。
-//! - **种子叠加预览**（`fill.py:361` 的 `FloodFillOverlay`，黑白虚线）与
-//!   光标族（`fill.py:61-72`）：GUI 叠加层与光标是另一块，未移植。
+//! - **种子叠加预览**（`fill.py:361` 的 `FloodFillOverlay`，黑白虚线）未移植；
+//!   光标族已由 `shell/workspace.rs` 绘制 `mypaint-fill[-gc]-symbolic`。
 //! - **Gap Detection 的进度/取消**：`_GCTileHandler` 每块 tile 都可能做
 //!   9 邻域缺口搜索，源码可取消；本移植同步执行，只有选项没有取消按钮。
-//! - **BlendModes 管理器**（`gui/blendmodehandler.py`，决定"橡皮/锁 alpha/
-//!   着色"三个修饰键的当前态）：未移植，[`FillOptions::blend_mode`] 由调用方
-//!   直接给（默认 Normal），[`FillArgs::blend_parameters`] 的映射逻辑则逐行
-//!   照抄 `fill.py:180-201`。
+//! - **BlendModes 管理器**（`gui/blendmodehandler.py`）已接
+//!   [`crate::blend_modes`]；[`FillOptions::blend_mode`] 由调用方给，
+//!   [`FillArgs::blend_parameters`] 的映射逻辑逐行照抄 `fill.py:180-201`。
 //! - **预乘色的均匀"空 tile"复用**（`_TileFillSkipper.uniform_tiles` 缓存）：
 //!   纯性能优化，本移植用 [`AlphaTile::Uniform`] 表达，不需要缓存。
 
@@ -348,10 +347,7 @@ impl Filler {
         let mut origin = Edge::None;
         match seeds {
             Seeds::Initial(list) => self.queue_seeds(list, src, dst),
-            Seeds::Ranges {
-                origin: o,
-                ranges,
-            } => {
+            Seeds::Ranges { origin: o, ranges } => {
                 origin = o;
                 self.queue_ranges(o, ranges, &mut input_seeds, src, dst);
             }
@@ -442,14 +438,7 @@ impl Filler {
     ///
     /// 返回值语义：**"本行还能继续往队列里加相邻像素"** —— 遇到不匹配或
     /// 已填过的像素就重新置位，同段里只入队第一个可填像素。
-    fn check_enqueue(
-        &mut self,
-        x: i32,
-        y: i32,
-        check: bool,
-        src_px: &Rgba,
-        dst_px: u16,
-    ) -> bool {
+    fn check_enqueue(&mut self, x: i32, y: i32, check: bool, src_px: &Rgba, dst_px: u16) -> bool {
         if dst_px != 0 {
             return true;
         }
@@ -656,7 +645,10 @@ impl<'a> LayerSource<'a> {
 impl TileSource for LayerSource<'_> {
     fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
         let mut flat = vec![0u16; TILE_SIZE * TILE_SIZE * 4];
-        if !self.stack.composite_layer_tile(&self.path, tx, ty, &mut flat) {
+        if !self
+            .stack
+            .composite_layer_tile(&self.path, tx, ty, &mut flat)
+        {
             return None;
         }
         Some(TileRef::Owned(owned_tile(&flat)))
@@ -668,7 +660,12 @@ impl TileSource for LayerSource<'_> {
 /// `div_euclid` / `rem_euclid`。
 pub fn starting_coordinates(x: i32, y: i32) -> (i32, i32, i32, i32) {
     let n = TILE_SIZE as i32;
-    (x.div_euclid(n), y.div_euclid(n), x.rem_euclid(n), y.rem_euclid(n))
+    (
+        x.div_euclid(n),
+        y.div_euclid(n),
+        x.rem_euclid(n),
+        y.rem_euclid(n),
+    )
 }
 
 /// 按 tile 分组的种子：`(tile 坐标, tile 内像素坐标列表)`，组序 = 首次出现序。
@@ -702,13 +699,7 @@ pub fn seeds_by_tile(seeds: &[(i32, i32)]) -> SeedLists {
 
 /// `get_target_color`（`floodfill.py:103-110`）：取样点的预乘像素；
 /// 全透明时 rgb 归零（源码如此，这样"透明目标色"只有一个）。
-pub fn get_target_color(
-    src: &impl TileSource,
-    tx: i32,
-    ty: i32,
-    px: i32,
-    py: i32,
-) -> Rgba {
+pub fn get_target_color(src: &impl TileSource, tx: i32, ty: i32, px: i32, py: i32) -> Rgba {
     let mut pixel = src
         .tile(tx, ty)
         .map(|t| t[py as usize][px as usize])
@@ -770,8 +761,16 @@ impl TileBoundingBox {
         let (tx, ty) = tc;
         let min_x = if tx == self.min_tx { self.min_px } else { 0 };
         let min_y = if ty == self.min_ty { self.min_py } else { 0 };
-        let max_x = if tx == self.max_tx { self.max_px } else { n - 1 };
-        let max_y = if ty == self.max_ty { self.max_py } else { n - 1 };
+        let max_x = if tx == self.max_tx {
+            self.max_px
+        } else {
+            n - 1
+        };
+        let max_y = if ty == self.max_ty {
+            self.max_py
+        } else {
+            n - 1
+        };
         (min_x, min_y, max_x, max_y)
     }
 
@@ -849,10 +848,7 @@ impl QueuedSeeds {
     fn as_seeds(&self, origin: Edge) -> Seeds<'_> {
         match self {
             QueuedSeeds::Pixels(p) => Seeds::Initial(p),
-            QueuedSeeds::Ranges(r) => Seeds::Ranges {
-                origin,
-                ranges: r,
-            },
+            QueuedSeeds::Ranges(r) => Seeds::Ranges { origin, ranges: r },
         }
     }
 }
@@ -983,9 +979,7 @@ pub fn scanline_fill(
             Some(o) => o,
             None => {
                 // 真正跑一块 tile 的填充（floodfill.py:519-528）
-                let entry = filled
-                    .entry(item.coord)
-                    .or_insert_with(AlphaTile::new_data);
+                let entry = filled.entry(item.coord).or_insert_with(AlphaTile::new_data);
                 let dst = entry.as_data_mut();
                 let src_tile = src
                     .tile(item.coord.0, item.coord.1)
@@ -1015,6 +1009,18 @@ pub enum FillBlendMode {
     Erase = 1,
     LockAlpha = 2,
     Colorize = 3,
+}
+
+impl FillBlendMode {
+    /// `BlendModes` 的 `mode_type` 数值 → 填充修饰键（`fill.py:184`）。
+    pub fn from_index(i: u8) -> Self {
+        match i {
+            1 => Self::Erase,
+            2 => Self::LockAlpha,
+            3 => Self::Colorize,
+            _ => Self::Normal,
+        }
+    }
 }
 
 /// `_blend_parameters` 的结果：合成模式 + 是否锁 alpha（`fill.py:180-201`）。
@@ -1187,11 +1193,7 @@ pub fn flood_fill_surface(surface: &mut PigmentSurface, args: &FillArgs) -> usiz
 /// `bounds = (min_x, min_y, max_x, max_y)` 是源码的四个裁剪参数：只写这块
 /// 矩形，其余保持 0。bbox 不跨界时是整块 `(0,0,N-1,N-1)`；膨胀/模糊之后
 /// 跨界的 tile 用 bbox 的 `tile_bounds`。未写区域在源码里也是 0。
-fn rgba_tile_from_alpha(
-    alpha: &[u16],
-    fill: [f64; 3],
-    bounds: (i32, i32, i32, i32),
-) -> Vec<u16> {
+fn rgba_tile_from_alpha(alpha: &[u16], fill: [f64; 3], bounds: (i32, i32, i32, i32)) -> Vec<u16> {
     let (min_x, min_y, max_x, max_y) = bounds;
     let mut out = vec![0u16; PIXELS * 4];
     for y in min_y..=max_y {
@@ -1314,10 +1316,7 @@ fn composite(
             .collect();
         for coord in untouched {
             let dst_tile = dst.tile_request_start(coord.0, coord.1);
-            dst_tile
-                .as_flattened_mut()
-                .as_flattened_mut()
-                .fill(0);
+            dst_tile.as_flattened_mut().as_flattened_mut().fill(0);
             dst.tile_request_end(coord.0, coord.1);
             count += 1;
         }
@@ -1479,8 +1478,7 @@ impl FillMode {
     /// 因为命令会自动新建一层）。勾了 "New Layer" 时目标层不存在，
     /// 源码直接 `permitted = True`。画框启用时，点还必须落在画框里。
     fn permitted_at(&self, ctx: &ModeContext<'_>, x: f32, y: f32) -> bool {
-        let permitted = self.options.make_new_layer
-            || ctx.doc.layers().current_fill_permitted();
+        let permitted = self.options.make_new_layer || ctx.doc.layers().current_fill_permitted();
         if !permitted {
             return false;
         }
@@ -1530,8 +1528,7 @@ impl FillMode {
         // `fill.py:213-216`：勾了 "New Layer" 或当前层 `get_fillable()` False
         // （组/锁定层）时，命令会先建一层再填。隐藏层在 `_fill_permitted`
         // 那一步就收不到种子，与源码一致。
-        let make_new_layer =
-            self.options.make_new_layer || !ctx.doc.layers().current_is_fillable();
+        let make_new_layer = self.options.make_new_layer || !ctx.doc.layers().current_is_fillable();
         let color = current_color_linear(ctx.brush);
         // 包围盒（document.py:1064-1089）：必须在拿可变 surface 之前算好
         let view_bbox = if self.options.limit_to_view {
@@ -1771,7 +1768,9 @@ mod tests {
 
     impl TileSource for TestSource {
         fn tile(&self, tx: i32, ty: i32) -> Option<TileRef<'_>> {
-            self.tiles.get(&(tx, ty)).map(|t| TileRef::Borrowed(t.as_ref()))
+            self.tiles
+                .get(&(tx, ty))
+                .map(|t| TileRef::Borrowed(t.as_ref()))
         }
     }
 
@@ -1976,10 +1975,7 @@ mod tests {
                     opaque(0, 20000, 0)
                 }
             });
-        let args = args_over(
-            (0, 0, 2 * TILE_SIZE as i32, TILE_SIZE as i32),
-            vec![(5, 5)],
-        );
+        let args = args_over((0, 0, 2 * TILE_SIZE as i32, TILE_SIZE as i32), vec![(5, 5)]);
         let mut dst = PigmentSurface::new();
         let n = flood_fill(&src, &args, &mut dst);
         assert_eq!(n, 2, "两块 tile 都该被填");
@@ -2210,7 +2206,9 @@ mod tests {
         let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
         assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
         let release = PointerEvent::button(10.0, 10.0, 16.0, 1);
-        assert!(InteractionMode::button_release(&mut mode, &mut ctx, &release));
+        assert!(InteractionMode::button_release(
+            &mut mode, &mut ctx, &release
+        ));
 
         assert_eq!(
             ctx.doc.command_stack.undo_len(),
@@ -2282,18 +2280,18 @@ mod tests {
             before + 1,
             "组上填充应产生一条命令"
         );
-        assert_eq!(
-            ctx.doc.layers().len(),
-            layers_before + 1,
-            "应自动新建一层"
-        );
+        assert_eq!(ctx.doc.layers().len(), layers_before + 1, "应自动新建一层");
         // 当前层切到了新的绘画层，且填上了内容
         let surface = ctx.doc.layers().current().surface().expect("新绘画层");
         assert!(surface.tile_count() > 0, "新层应有填充结果");
         // 撤回：层数恢复、当前层回到组
         ctx.doc.undo();
         assert_eq!(ctx.doc.layers().len(), layers_before, "撤销应删掉新层");
-        assert_eq!(ctx.doc.current_path(), group_path.as_slice(), "当前层应恢复");
+        assert_eq!(
+            ctx.doc.current_path(),
+            group_path.as_slice(),
+            "当前层应恢复"
+        );
         assert!(ctx.doc.layers().current().is_group());
     }
 
@@ -2379,10 +2377,7 @@ mod tests {
             surface.tile_request_end(0, 0);
         }
         let src = LayerSource::new(doc.layers(), doc.current_path());
-        let px = src
-            .tile(0, 0)
-            .map(|t| t[3][3])
-            .expect("该层应有 tile");
+        let px = src.tile(0, 0).map(|t| t[3][3]).expect("该层应有 tile");
         assert_eq!(px, opaque(0, 0, 12000));
         assert!(src.tile(1, 0).is_none(), "没有内容的 tile 应返回 None");
     }
@@ -2663,11 +2658,7 @@ mod tests {
                 &mut ctx,
                 &PointerEvent::button(10.0, 10.0, 48.0, 1),
             );
-            assert_eq!(
-                ctx.doc.layers().len(),
-                before_layers + 1,
-                "应新建一层"
-            );
+            assert_eq!(ctx.doc.layers().len(), before_layers + 1, "应新建一层");
         }
     }
 
@@ -2692,7 +2683,11 @@ mod tests {
             };
             let mut mode = FillMode::new();
             mode.options.blend_mode = FillBlendMode::Erase;
-            InteractionMode::button_press(&mut mode, &mut ctx, &PointerEvent::button(8.0, 8.0, 0.0, 1));
+            InteractionMode::button_press(
+                &mut mode,
+                &mut ctx,
+                &PointerEvent::button(8.0, 8.0, 0.0, 1),
+            );
             InteractionMode::button_release(
                 &mut mode,
                 &mut ctx,
@@ -2708,6 +2703,10 @@ mod tests {
         // 撤销能恢复内容
         doc.undo();
         let surface = doc.layers().current().surface().expect("绘画层");
-        assert_eq!(dst_px(surface, 8, 8)[3], OPAQUE, "撤销应恢复原来的不透明像素");
+        assert_eq!(
+            dst_px(surface, 8, 8)[3],
+            OPAQUE,
+            "撤销应恢复原来的不透明像素"
+        );
     }
 }

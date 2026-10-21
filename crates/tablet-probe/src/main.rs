@@ -8,9 +8,7 @@ use std::sync::Arc;
 
 use egui::{Event, Modifiers, PointerButton, Pos2, RawInput, Rect, Vec2};
 use winit::application::ApplicationHandler;
-use winit::event::{
-    ButtonSource, ElementState, MouseScrollDelta, PointerSource, WindowEvent,
-};
+use winit::event::{ButtonSource, ElementState, MouseScrollDelta, PointerSource, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
@@ -73,8 +71,8 @@ impl ApplicationHandler for Probe {
         if self.state.is_some() {
             return;
         }
-        let attrs = WindowAttributes::default()
-            .with_title("pigment tablet probe (winit 0.31 + egui-wgpu)");
+        let attrs =
+            WindowAttributes::default().with_title("pigment tablet probe (winit 0.31 + egui-wgpu)");
         let window: Arc<dyn Window> = match event_loop.create_window(attrs) {
             Ok(w) => Arc::from(w),
             Err(e) => {
@@ -84,9 +82,7 @@ impl ApplicationHandler for Probe {
             }
         };
         let size = window.surface_size();
-        let instance = wgpu::Instance::new(
-            wgpu::InstanceDescriptor::new_without_display_handle(),
-        );
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let surface = match instance.create_surface(window.clone()) {
             Ok(s) => s,
             Err(e) => {
@@ -95,35 +91,33 @@ impl ApplicationHandler for Probe {
                 return;
             }
         };
-        let adapter = match pollster::block_on(instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
+        let adapter =
+            match pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
-            },
-        )) {
-            Ok(a) => a,
-            Err(e) => {
-                eprintln!("request_adapter failed: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
-        let (device, queue) = match pollster::block_on(adapter.request_device(
-            &wgpu::DeviceDescriptor {
+            })) {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("request_adapter failed: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
+        let (device, queue) =
+            match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 label: Some("tablet-probe"),
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
                 ..Default::default()
-            },
-        )) {
-            Ok(dq) => dq,
-            Err(e) => {
-                eprintln!("request_device failed: {e}");
-                event_loop.exit();
-                return;
-            }
-        };
+            })) {
+                Ok(dq) => dq,
+                Err(e) => {
+                    eprintln!("request_device failed: {e}");
+                    event_loop.exit();
+                    return;
+                }
+            };
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
@@ -138,11 +132,8 @@ impl ApplicationHandler for Probe {
         config.present_mode = wgpu::PresentMode::AutoVsync;
         config.alpha_mode = wgpu::CompositeAlphaMode::Opaque;
         surface.configure(&device, &config);
-        let renderer = egui_wgpu::Renderer::new(
-            &device,
-            format,
-            egui_wgpu::RendererOptions::default(),
-        );
+        let renderer =
+            egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
         let mut raw = RawInput::default();
         raw.screen_rect = Some(Rect::from_min_size(
             Pos2::ZERO,
@@ -235,8 +226,7 @@ impl ApplicationHandler for Probe {
                             st.pen.kind = format!("{kind:?}");
                             st.pen.pressure =
                                 data.force.map(|f| f.normalized(None) as f32).unwrap_or(0.0);
-                            st.pen.tilt =
-                                data.tilt.map(tilt_to_unit).unwrap_or((0.0, 0.0));
+                            st.pen.tilt = data.tilt.map(tilt_to_unit).unwrap_or((0.0, 0.0));
                             st.pen.pos = (p.x, p.y);
                         }
                     }
@@ -246,9 +236,7 @@ impl ApplicationHandler for Probe {
             WindowEvent::MouseWheel { delta, .. } => {
                 let d = match delta {
                     MouseScrollDelta::LineDelta(x, y) => Vec2::new(x * 50.0, y * 50.0),
-                    MouseScrollDelta::PixelDelta(p) => {
-                        Vec2::new(p.x as f32, p.y as f32)
-                    }
+                    MouseScrollDelta::PixelDelta(p) => Vec2::new(p.x as f32, p.y as f32),
                     _ => Vec2::ZERO,
                 };
                 st.raw.events.push(Event::MouseWheel {

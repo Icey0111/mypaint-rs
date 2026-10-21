@@ -238,9 +238,7 @@ impl CombineMode {
     pub fn can_decrease_alpha(self) -> bool {
         matches!(
             self,
-            CombineMode::DestinationIn
-                | CombineMode::DestinationOut
-                | CombineMode::DestinationAtop
+            CombineMode::DestinationIn | CombineMode::DestinationOut | CombineMode::DestinationAtop
         )
     }
 
@@ -291,13 +289,7 @@ pub fn tile_combine(
 }
 
 /// 通用模板路径（`compositing.hpp:81-178`）：按模式取 Blend/Composite 函数对。
-fn generic(
-    mode: CombineMode,
-    dst_has_alpha: bool,
-    src: &[u16],
-    dst: &mut [u16],
-    opac: u16,
-) {
+fn generic(mode: CombineMode, dst_has_alpha: bool, src: &[u16], dst: &mut [u16], opac: u16) {
     let blend: fn(u32, u32, u32, &mut u32, &mut u32, &mut u32) = match mode {
         CombineMode::Normal => blend_normal,
         CombineMode::Multiply => blend_multiply,
@@ -331,9 +323,23 @@ fn generic(
     }
 
     if dst_has_alpha {
-        generic_loop::<true>(src, dst, opac, blend, composite, composite_zero_alpha_has_effect);
+        generic_loop::<true>(
+            src,
+            dst,
+            opac,
+            blend,
+            composite,
+            composite_zero_alpha_has_effect,
+        );
     } else {
-        generic_loop::<false>(src, dst, opac, blend, composite, composite_zero_alpha_has_effect);
+        generic_loop::<false>(
+            src,
+            dst,
+            opac,
+            blend,
+            composite,
+            composite_zero_alpha_has_effect,
+        );
     }
 }
 
@@ -408,10 +414,18 @@ fn srcover_premul<const DSTALPHA: bool>(src: &[u16], dst: &mut [u16], opac: u16)
         let sa = fix15::mul(src[i + 3] as u32, opac as u32);
         let one_minus_sa = fix15::ONE - sa;
         dst[i] = fix15::sumprods(src[i] as u32, opac as u32, one_minus_sa, dst[i] as u32) as u16;
-        dst[i + 1] =
-            fix15::sumprods(src[i + 1] as u32, opac as u32, one_minus_sa, dst[i + 1] as u32) as u16;
-        dst[i + 2] =
-            fix15::sumprods(src[i + 2] as u32, opac as u32, one_minus_sa, dst[i + 2] as u32) as u16;
+        dst[i + 1] = fix15::sumprods(
+            src[i + 1] as u32,
+            opac as u32,
+            one_minus_sa,
+            dst[i + 1] as u32,
+        ) as u16;
+        dst[i + 2] = fix15::sumprods(
+            src[i + 2] as u32,
+            opac as u32,
+            one_minus_sa,
+            dst[i + 2] as u32,
+        ) as u16;
         if DSTALPHA {
             dst[i + 3] = fix15::short_clamp(sa + fix15::mul(dst[i + 3] as u32, one_minus_sa));
         }
@@ -425,13 +439,20 @@ fn wgm<const DSTALPHA: bool>(src: &[u16], dst: &mut [u16], opac: u16) {
         let one_minus_sa = fix15::ONE - sa;
         // 退化情形走普通 src-over：dst 无 alpha、或源全透/全不透
         if (DSTALPHA && dst[i + 3] == 0) || sa == fix15::ONE || sa == 0 {
-            dst[i] = fix15::sumprods(src[i] as u32, opac as u32, one_minus_sa, dst[i] as u32) as u16;
-            dst[i + 1] =
-                fix15::sumprods(src[i + 1] as u32, opac as u32, one_minus_sa, dst[i + 1] as u32)
-                    as u16;
-            dst[i + 2] =
-                fix15::sumprods(src[i + 2] as u32, opac as u32, one_minus_sa, dst[i + 2] as u32)
-                    as u16;
+            dst[i] =
+                fix15::sumprods(src[i] as u32, opac as u32, one_minus_sa, dst[i] as u32) as u16;
+            dst[i + 1] = fix15::sumprods(
+                src[i + 1] as u32,
+                opac as u32,
+                one_minus_sa,
+                dst[i + 1] as u32,
+            ) as u16;
+            dst[i + 2] = fix15::sumprods(
+                src[i + 2] as u32,
+                opac as u32,
+                one_minus_sa,
+                dst[i + 2] as u32,
+            ) as u16;
             if DSTALPHA {
                 dst[i + 3] = fix15::short_clamp(sa + fix15::mul(dst[i + 3] as u32, one_minus_sa));
             }
@@ -442,8 +463,7 @@ fn wgm<const DSTALPHA: bool>(src: &[u16], dst: &mut [u16], opac: u16) {
         // C++ `fac_a = (float)Sa / (Sa + one_minus_Sa * dst[i+3] / (1<<15))`：
         // 分母全是 **uint32 整数运算**（乘、整除、加），仅最后转 float 相除。
         let fac_a: f32 = if DSTALPHA {
-            sa as f32
-                / (sa + one_minus_sa * (dst[i + 3] as u32) / fix15::ONE) as f32
+            sa as f32 / (sa + one_minus_sa * (dst[i + 3] as u32) / fix15::ONE) as f32
         } else {
             sa as f32 / (fix15::ONE as f32)
         };
@@ -940,38 +960,80 @@ const WGM_EPSILON_F64: f64 = 0.001;
 /// RGB→光谱上采样矩阵（`blending.hpp:21-29`，10 通道）。
 const T_MATRIX_SMALL: [[f32; 10]; 3] = [
     [
-        0.026595621243689, 0.049779426257903, 0.022449850859496, -0.218453689278271,
-        -0.256894883201278, 0.445881722194840, 0.772365886289756, 0.194498761382537,
-        0.014038157587820, 0.007687264480513,
+        0.026595621243689,
+        0.049779426257903,
+        0.022449850859496,
+        -0.218453689278271,
+        -0.256894883201278,
+        0.445881722194840,
+        0.772365886289756,
+        0.194498761382537,
+        0.014038157587820,
+        0.007687264480513,
     ],
     [
-        -0.032601672674412, -0.061021043498478, -0.052490001018404, 0.206659098273522,
-        0.572496335158169, 0.317837248815438, -0.021216624031211, -0.019387668756117,
-        -0.001521339050858, -0.000835181622534,
+        -0.032601672674412,
+        -0.061021043498478,
+        -0.052490001018404,
+        0.206659098273522,
+        0.572496335158169,
+        0.317837248815438,
+        -0.021216624031211,
+        -0.019387668756117,
+        -0.001521339050858,
+        -0.000835181622534,
     ],
     [
-        0.339475473216284, 0.635401374177222, 0.771520797089589, 0.113222640692379,
-        -0.055251113343776, -0.048222578468680, -0.012966666339586, -0.001523814504223,
-        -0.000094718948810, -0.000051604594741,
+        0.339475473216284,
+        0.635401374177222,
+        0.771520797089589,
+        0.113222640692379,
+        -0.055251113343776,
+        -0.048222578468680,
+        -0.012966666339586,
+        -0.001523814504223,
+        -0.000094718948810,
+        -0.000051604594741,
     ],
 ];
 
 const SPECTRAL_R_SMALL: [f32; 10] = [
-    0.009281362787953, 0.009732627042016, 0.011254252737167, 0.015105578649573,
-    0.024797924177217, 0.083622585502406, 0.977865045723212, 1.000000000000000,
-    0.999961046144372, 0.999999992756822,
+    0.009281362787953,
+    0.009732627042016,
+    0.011254252737167,
+    0.015105578649573,
+    0.024797924177217,
+    0.083622585502406,
+    0.977865045723212,
+    1.000000000000000,
+    0.999961046144372,
+    0.999999992756822,
 ];
 
 const SPECTRAL_G_SMALL: [f32; 10] = [
-    0.002854127435775, 0.003917589679914, 0.012132151699187, 0.748259205918013,
-    1.000000000000000, 0.865695937531795, 0.037477469241101, 0.022816789725717,
-    0.021747419446456, 0.021384940572308,
+    0.002854127435775,
+    0.003917589679914,
+    0.012132151699187,
+    0.748259205918013,
+    1.000000000000000,
+    0.865695937531795,
+    0.037477469241101,
+    0.022816789725717,
+    0.021747419446456,
+    0.021384940572308,
 ];
 
 const SPECTRAL_B_SMALL: [f32; 10] = [
-    0.537052150373386, 0.546646402401469, 0.575501819073983, 0.258778829633924,
-    0.041709923751716, 0.012662638828324, 0.007485593127390, 0.006766900622462,
-    0.006699764779016, 0.006676219883241,
+    0.537052150373386,
+    0.546646402401469,
+    0.575501819073983,
+    0.258778829633924,
+    0.041709923751716,
+    0.012662638828324,
+    0.007485593127390,
+    0.006766900622462,
+    0.006699764779016,
+    0.006676219883241,
 ];
 
 fn rgb_to_spectral(r: f32, g: f32, b: f32, spectral: &mut [f32; 10]) {
@@ -1025,9 +1087,7 @@ fn fastlog2(x: f32) -> f32 {
     let mx = f32::from_bits((vx & 0x007F_FFFF) | 0x3F00_0000);
     // float y = vx.i（u32 → float 整数值转换）再乘 2^-23
     let y = vx as f32 * 1.192_092_895_507_812_5e-7f32;
-    y - 124.225_514_99f32
-        - 1.498_030_302f32 * mx
-        - 1.725_879_99f32 / (0.352_088_706_8f32 + mx)
+    y - 124.225_514_99f32 - 1.498_030_302f32 * mx - 1.725_879_99f32 / (0.352_088_706_8f32 + mx)
 }
 
 /// `fastpow.h:50` `fastpow`。

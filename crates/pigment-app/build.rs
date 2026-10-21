@@ -49,10 +49,9 @@ fn main() {
     let mut accel_count = 0usize;
     let mut unknown_classes: Vec<String> = Vec::new();
 
-    for group_node in doc
-        .descendants()
-        .filter(|n| n.is_element() && tag_is(*n, "object") && attr(*n, "class") == Some("GtkActionGroup"))
-    {
+    for group_node in doc.descendants().filter(|n| {
+        n.is_element() && tag_is(*n, "object") && attr(*n, "class") == Some("GtkActionGroup")
+    }) {
         let group = group_node.attribute("id").unwrap_or_default();
         groups.push(group);
 
@@ -75,7 +74,10 @@ fn main() {
                 "GtkRecentAction" => "Kind::Recent",
                 "MyPaintFactoryAction" => "Kind::Factory",
                 other => {
-                    unknown_classes.push(format!("{group}/{}: {other}", attr(obj, "id").unwrap_or("?")));
+                    unknown_classes.push(format!(
+                        "{group}/{}: {other}",
+                        attr(obj, "id").unwrap_or("?")
+                    ));
                     "Kind::Action"
                 }
             };
@@ -157,7 +159,10 @@ fn main() {
             .collect::<Vec<_>>()
             .join(", ")
     );
-    let generated = format!("{head}pub static ACTIONS: &[Action] = &[\n{}\n];\n", rows.join("\n"));
+    let generated = format!(
+        "{head}pub static ACTIONS: &[Action] = &[\n{}\n];\n",
+        rows.join("\n")
+    );
 
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("actions_generated.rs");
     std::fs::write(&dest, generated).expect("写入 actions_generated.rs 失败");
@@ -191,7 +196,11 @@ fn main() {
 /// 所有已声明动作的 id 集合（供菜单树校验引用）。
 fn actions_by_id(doc: &roxmltree::Document) -> Vec<String> {
     doc.descendants()
-        .filter(|n| n.is_element() && tag_is(*n, "object") && attr(*n, "class").is_some_and(|c| c.ends_with("Action")))
+        .filter(|n| {
+            n.is_element()
+                && tag_is(*n, "object")
+                && attr(*n, "class").is_some_and(|c| c.ends_with("Action"))
+        })
         .filter_map(|n| attr(n, "id"))
         .map(str::to_owned)
         .collect()
@@ -230,39 +239,47 @@ fn generate_menus(manifest: &std::path::Path, known_actions: &[String]) {
     ) -> Vec<String> {
         node.children()
             .filter(|n| n.is_element())
-            .map(|child| {
-                match tag_is(child, "menu") {
-                    true => {
-                        let action = attr(child, "action").unwrap_or_else(|| panic!("<menu> 缺 action 属性"));
+            .map(|child| match tag_is(child, "menu") {
+                true => {
+                    let action =
+                        attr(child, "action").unwrap_or_else(|| panic!("<menu> 缺 action 属性"));
+                    assert!(known(action), "menu.xml 引用了未声明的动作：{action}");
+                    *sub_count += 1;
+                    let items = gen(child, known, item_count, sep_count, sub_count);
+                    format!(
+                        "MenuNode::SubMenu {{ action: \"{}\", items: &[{}] }}",
+                        esc(action),
+                        items.join(", ")
+                    )
+                }
+                false => {
+                    assert!(
+                        tag_is(child, "menuitem") || tag_is(child, "separator"),
+                        "menu.xml 里的意外元素：<{}>",
+                        child.tag_name().name()
+                    );
+                    if tag_is(child, "separator") {
+                        *sep_count += 1;
+                        "MenuNode::Separator".to_string()
+                    } else {
+                        let action = attr(child, "action")
+                            .unwrap_or_else(|| panic!("<menuitem> 缺 action 属性"));
                         assert!(known(action), "menu.xml 引用了未声明的动作：{action}");
-                        *sub_count += 1;
-                        let items = gen(child, known, item_count, sep_count, sub_count);
-                        format!(
-                            "MenuNode::SubMenu {{ action: \"{}\", items: &[{}] }}",
-                            esc(action),
-                            items.join(", ")
-                        )
-                    }
-                    false => {
-                        assert!(tag_is(child, "menuitem") || tag_is(child, "separator"),
-                            "menu.xml 里的意外元素：<{}>", child.tag_name().name());
-                        if tag_is(child, "separator") {
-                            *sep_count += 1;
-                            "MenuNode::Separator".to_string()
-                        } else {
-                            let action =
-                                attr(child, "action").unwrap_or_else(|| panic!("<menuitem> 缺 action 属性"));
-                            assert!(known(action), "menu.xml 引用了未声明的动作：{action}");
-                            *item_count += 1;
-                            format!("MenuNode::Item(\"{}\")", esc(action))
-                        }
+                        *item_count += 1;
+                        format!("MenuNode::Item(\"{}\")", esc(action))
                     }
                 }
             })
             .collect()
     }
 
-    let top = gen(menubar, &known, &mut item_count, &mut sep_count, &mut sub_count);
+    let top = gen(
+        menubar,
+        &known,
+        &mut item_count,
+        &mut sep_count,
+        &mut sub_count,
+    );
     assert_eq!(top.len(), 9, "顶级菜单数应为 9（menu.xml 的 Menubar）");
 
     let generated = format!(
@@ -293,8 +310,10 @@ enum TbNode {
 
 /// 解析一个 `<ui>` 文件，返回每个 `<toolbar name=…>` 的节点序列。
 fn parse_toolbar_xml(path: &std::path::Path) -> Vec<(String, Vec<TbNode>)> {
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
-    let doc = roxmltree::Document::parse(&text).unwrap_or_else(|e| panic!("{} 解析失败：{e}", path.display()));
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("读不到 {}: {e}", path.display()));
+    let doc = roxmltree::Document::parse(&text)
+        .unwrap_or_else(|e| panic!("{} 解析失败：{e}", path.display()));
     let mut out = Vec::new();
     for tb in doc
         .descendants()
@@ -419,7 +438,9 @@ fn generate_toolbars(manifest: &std::path::Path, known_actions: &[String]) {
     );
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("toolbars_generated.rs");
     std::fs::write(&dest, generated).expect("写入 toolbars_generated.rs 失败");
-    println!("cargo:warning=工具条已生成：toolbar1 框架 + 8 片段 + toolbar2（来自 gui/toolbar*.xml）");
+    println!(
+        "cargo:warning=工具条已生成：toolbar1 框架 + 8 片段 + toolbar2（来自 gui/toolbar*.xml）"
+    );
 }
 
 /// 图标：`assets/icons/*.svg`（MyPaint 的 hicolor scalable symbolic 源文件，
@@ -432,33 +453,50 @@ fn generate_icons(manifest: &std::path::Path) {
     let mut names: Vec<String> = std::fs::read_dir(&dir)
         .expect("读不到 assets/icons")
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "svg"))
+        .filter(|e| {
+            e.path()
+                .extension()
+                .is_some_and(|x| x == "svg" || x == "png")
+        })
         .map(|e| e.path().file_stem().unwrap().to_string_lossy().into_owned())
         .collect();
     names.sort();
+    names.dedup();
 
     const SIZE: u32 = 24;
     let mut rows: Vec<String> = Vec::new();
     let mut opt = resvg::tiny_skia::Pixmap::new(SIZE, SIZE).unwrap();
     for name in &names {
         let svg_path = dir.join(format!("{name}.svg"));
-        let text = std::fs::read_to_string(&svg_path).unwrap_or_else(|e| panic!("读不到 {}: {e}", svg_path.display()));
-        let tree = resvg::usvg::Tree::from_str(
-            &text,
-            &resvg::usvg::Options::default(),
-        )
-        .unwrap_or_else(|e| panic!("{name}.svg 解析失败：{e}"));
-        opt.fill(resvg::tiny_skia::Color::TRANSPARENT);
-        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(
-            SIZE as f32 / tree.size().width(),
-            SIZE as f32 / tree.size().height(),
-        ), &mut opt.as_mut());
-        let png = opt.encode_png().unwrap_or_else(|e| panic!("{name}.png 编码失败：{e}"));
+        let png_path = dir.join(format!("{name}.png"));
         let out = PathBuf::from(std::env::var("OUT_DIR").unwrap())
             .join("icons")
             .join(format!("{name}.png"));
         std::fs::create_dir_all(out.parent().unwrap()).unwrap();
-        std::fs::write(&out, png).unwrap();
+        if svg_path.is_file() {
+            let text = std::fs::read_to_string(&svg_path)
+                .unwrap_or_else(|e| panic!("读不到 {}: {e}", svg_path.display()));
+            let tree = resvg::usvg::Tree::from_str(&text, &resvg::usvg::Options::default())
+                .unwrap_or_else(|e| panic!("{name}.svg 解析失败：{e}"));
+            opt.fill(resvg::tiny_skia::Color::TRANSPARENT);
+            resvg::render(
+                &tree,
+                resvg::tiny_skia::Transform::from_scale(
+                    SIZE as f32 / tree.size().width(),
+                    SIZE as f32 / tree.size().height(),
+                ),
+                &mut opt.as_mut(),
+            );
+            let png = opt
+                .encode_png()
+                .unwrap_or_else(|e| panic!("{name}.png 编码失败：{e}"));
+            std::fs::write(&out, png).unwrap();
+        } else {
+            // 源码只有 PNG 的图标（如三种旧版颜色器）：原样内嵌。
+            let png = std::fs::read(&png_path)
+                .unwrap_or_else(|e| panic!("读不到 {}: {e}", png_path.display()));
+            std::fs::write(&out, png).unwrap();
+        }
         rows.push(format!(
             "    (\"{}\", include_bytes!(concat!(env!(\"OUT_DIR\"), \"/icons/{}.png\"))),",
             esc(name),
@@ -474,9 +512,11 @@ fn generate_icons(manifest: &std::path::Path) {
     );
     let dest = PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("icons_generated.rs");
     std::fs::write(&dest, generated).expect("写入 icons_generated.rs 失败");
-    println!("cargo:warning=图标已生成：{} 枚 24×24（resvg 栅格化）", names.len());
+    println!(
+        "cargo:warning=图标已生成：{} 枚 24×24（SVG resvg 栅格化 + 源码 PNG 内嵌）",
+        names.len()
+    );
 }
-
 
 /// 粗略校验：生成文件里的 `Action {` 行数。
 fn rows_count(path: &std::path::Path) -> usize {

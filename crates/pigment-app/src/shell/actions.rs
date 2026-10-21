@@ -7,7 +7,7 @@
 //! |---|---|---|
 //! | `gui/resources.xml` | 219 个动作、105 条加速键 | `build.rs` 构建期解析 → [`ACTIONS`] |
 //! | `gui/document.py:_init_context_actions` | 笔刷槽位键（`0`-`9` / `Ctrl+0`-`9`） | [`DYNAMIC_ACCELS`]，见下 |
-//! | `gui/document.py:_init_extra_keys` | 29 条 GIMP/Krita 兼容别名 | [`EXTRA_ACCELS`] |
+//! | `gui/document.py:_init_extra_keys` | 30 条 GIMP/Krita 兼容别名 | [`EXTRA_ACCELS`] |
 //! | `gui/keyboard.py` | 优先级与匹配规则 | [`lookup`] |
 //!
 //! # 键盘模型（`gui/keyboard.py`）
@@ -163,7 +163,7 @@ impl Accel {
     ///   而 GDK 的 `KP_4/KP_5/KP_6` 在源码里绑的是旋转/重置旋转。
     ///   本应用选**槽位数字键**（`0`-`9`，源码里是 `Context0N`）—— 因此
     ///   `KP_4/KP_5/KP_6` 无法映射（见 [`UNMAPPABLE_GDK_KEYS`]）。
-    /// - GDK 的 `Menu` 键（上下文菜单键）在 egui 里没有键位。
+    /// - `Menu` 映射到 `egui::Key::Menu`（egui-winit 37 会从 ContextMenu 产生）。
     pub fn egui_key(&self) -> Option<egui::Key> {
         egui_key_for(self.key)
     }
@@ -187,7 +187,7 @@ impl Accel {
 ///   成同一个 `Key`（`egui-winit`：`KeyCode::Numpad4 → Key::Num4`），
 ///   而主键盘数字键被槽位动作（`Context0N`）占着，故取槽位。
 /// - `Menu`：上下文菜单键，egui 没有这个键位。
-pub const UNMAPPABLE_GDK_KEYS: &[&str] = &["KP_4", "KP_5", "KP_6", "Menu"];
+pub const UNMAPPABLE_GDK_KEYS: &[&str] = &["KP_4", "KP_5", "KP_6"];
 
 /// 一条键位的**双向**映射：GDK 键值名 ⇄ egui 键位（**技术栈适配**表）。
 ///
@@ -297,6 +297,7 @@ const KEY_NAMES: &[KeyName] = &[
     // ---- 编辑/导航键 ----
     kn("Escape", egui::Key::Escape, false),
     kn("Tab", egui::Key::Tab, false),
+    kn("Menu", egui::Key::Menu, false),
     kn("BackSpace", egui::Key::Backspace, false),
     kn("Return", egui::Key::Enter, false),
     kn("space", egui::Key::Space, false),
@@ -339,10 +340,10 @@ const KEY_NAMES: &[KeyName] = &[
     kn("parenleft", egui::Key::Num9, true),
     kn("parenright", egui::Key::Num0, true),
     kn("underscore", egui::Key::Minus, true),
-    kn("plus", egui::Key::Plus, true),
+    kn("plus", egui::Key::Equals, true),
     kn("braceleft", egui::Key::OpenBracket, true),
     kn("braceright", egui::Key::CloseBracket, true),
-    kn("bar", egui::Key::Pipe, true),
+    kn("bar", egui::Key::Backslash, true),
     kn("colon", egui::Key::Semicolon, true),
     kn("quotedbl", egui::Key::Quote, true),
     kn("less", egui::Key::Comma, true),
@@ -561,7 +562,7 @@ pub fn in_group(group: &'static str) -> impl Iterator<Item = &'static Action> {
 // ---- 代码里注册的键位（不在 resources.xml 里）----
 
 /// 代码注册的加速键 —— 对应 `gui/document.py:_init_context_actions`
-/// （笔刷槽位的 20 条）与 `_init_extra_keys`（29 条兼容别名）。
+/// （笔刷槽位的 20 条）与 `_init_extra_keys`（30 条兼容别名）。
 ///
 /// 与 [`ACTIONS`] 的区别不只是来源：**优先级不同**。前者进 GTK 的 accelmap
 /// （`keyboard.py` 的 `keymap`），后者进硬编码兜底表（`keymap2`），
@@ -954,9 +955,7 @@ pub static APP_KEYS: &[AppKey] = &[
 
 /// 查应用本地扩展键。
 pub fn lookup_app(key: egui::Key, mods: Mods) -> Option<&'static AppKey> {
-    APP_KEYS
-        .iter()
-        .find(|k| matches(k.accel, key, mods))
+    APP_KEYS.iter().find(|k| matches(k.accel, key, mods))
 }
 
 /// 动态动作名是 `format!` 出来的，查表却要 `&'static str`。
@@ -1231,16 +1230,17 @@ mod tests {
             Some(Bound::ExtraAction("MoreOpaque"))
         );
         assert_eq!(
-            lookup(egui::Key::Pipe, SHIFT),
+            lookup(egui::Key::Backslash, SHIFT),
             Some(Bound::ExtraAction("SymmetryActive"))
+        );
+        // 主键盘 `+` = Shift+=；egui-winit 报 Equals，不是 Plus。
+        assert_eq!(
+            lookup(egui::Key::Equals, SHIFT),
+            Some(Bound::ExtraAction("ZoomIn"))
         );
         // 小键盘 `+` 在 egui 里不带 Shift，同样命中 ZoomIn
         assert_eq!(
             lookup(egui::Key::Plus, Mods::NONE),
-            Some(Bound::ExtraAction("ZoomIn"))
-        );
-        assert_eq!(
-            lookup(egui::Key::Plus, SHIFT),
             Some(Bound::ExtraAction("ZoomIn"))
         );
     }
@@ -1266,10 +1266,7 @@ mod tests {
             lookup(egui::Key::ArrowLeft, CTRL),
             Some(Bound::Action("RotateLeft"))
         );
-        assert_eq!(
-            lookup(egui::Key::W, CTRL),
-            Some(Bound::Behavior("quit"))
-        );
+        assert_eq!(lookup(egui::Key::W, CTRL), Some(Bound::Behavior("quit")));
     }
 
     /// 取色快捷键（B3-4）：`r` / `Ctrl+r` / `Shift+r` / `Alt+r`
@@ -1309,7 +1306,10 @@ mod tests {
         ] {
             let a = by_id(id).unwrap_or_else(|| panic!("动作表里没有 {id}"));
             assert_eq!(a.kind, Kind::Radio, "{id} 应是 GtkRadioAction");
-            assert!(a.icon_name.is_some(), "{id} 应有图标（`mode_icon_name` 要用）");
+            assert!(
+                a.icon_name.is_some(),
+                "{id} 应有图标（`mode_icon_name` 要用）"
+            );
         }
     }
 
@@ -1329,7 +1329,7 @@ mod tests {
             }
             seen.push(binding);
         }
-        assert_eq!(seen.len(), 105 - 1, "104 条可映射 + 1 条 Menu 键");
+        assert_eq!(seen.len(), 105, "105 条加速键现在全部可映射（含 Menu）");
     }
 
     /// 源码用到的 GDK 键名必须全部落在**已知集合**里，且除有意不映射的几条外
@@ -1345,12 +1345,73 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         let expected_known = [
-            "BackSpace", "Delete", "Down", "End", "F1", "F10", "F11", "F12", "F2", "F3", "F4",
-            "F5", "F6", "F7", "F8", "F9", "Home", "KP_4", "KP_5", "KP_6", "KP_Add", "KP_Subtract",
-            "Left", "Menu", "Page_Down", "Page_Up", "Right", "Tab", "Up", "a", "b", "backslash",
-            "bar", "bracketleft", "bracketright", "c", "comma", "d", "e", "equal", "f", "g",
-            "grave", "greater", "h", "i", "j", "k", "l", "less", "m", "minus", "n", "o", "p",
-            "period", "plus", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z",
+            "BackSpace",
+            "Delete",
+            "Down",
+            "End",
+            "F1",
+            "F10",
+            "F11",
+            "F12",
+            "F2",
+            "F3",
+            "F4",
+            "F5",
+            "F6",
+            "F7",
+            "F8",
+            "F9",
+            "Home",
+            "KP_4",
+            "KP_5",
+            "KP_6",
+            "KP_Add",
+            "KP_Subtract",
+            "Left",
+            "Menu",
+            "Page_Down",
+            "Page_Up",
+            "Right",
+            "Tab",
+            "Up",
+            "a",
+            "b",
+            "backslash",
+            "bar",
+            "bracketleft",
+            "bracketright",
+            "c",
+            "comma",
+            "d",
+            "e",
+            "equal",
+            "f",
+            "g",
+            "grave",
+            "greater",
+            "h",
+            "i",
+            "j",
+            "k",
+            "l",
+            "less",
+            "m",
+            "minus",
+            "n",
+            "o",
+            "p",
+            "period",
+            "plus",
+            "q",
+            "r",
+            "s",
+            "t",
+            "u",
+            "v",
+            "w",
+            "x",
+            "y",
+            "z",
         ];
         for n in &names {
             assert!(
@@ -1378,7 +1439,7 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let ref_dir = root.join("../../../_mypaint_ref/gui");
         if !ref_dir.is_dir() {
-            eprintln!("跳过：参考树 {} 不在", ref_dir.display());
+            eprintln!("Skipped: reference tree {} not found", ref_dir.display());
             return;
         }
         let vendored = root.join("assets/gui");
@@ -1398,8 +1459,7 @@ mod tests {
                 "{name} 与 _mypaint_ref 不同（长度不符）—— 跑 .workbuddy/tools/sync-gui-assets.sh"
             );
             assert_eq!(
-                ours,
-                theirs,
+                ours, theirs,
                 "{name} 与 _mypaint_ref 不同 —— 跑 .workbuddy/tools/sync-gui-assets.sh"
             );
             checked += 1;

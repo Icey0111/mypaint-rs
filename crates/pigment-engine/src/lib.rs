@@ -28,8 +28,8 @@ pub use pigment_surface as surface;
 pub use accelmap::{Accel, AccelError, Entry as AccelEntry, Mods as AccelMods};
 pub use brushlib::{BrushEntry, BrushLibrary, Origin};
 pub use command::{
-    Brushwork, Command, CommandOutcome, CommandStack, CommandUpdate, DocContext,
-    DEFAULT_UNDO_STACK_SIZE,
+    Brushwork, Command, CommandOutcome, CommandStack, CommandUpdate, DocContext, ExternalEditKind,
+    ExternalLayerEdit, DEFAULT_UNDO_STACK_SIZE,
 };
 pub use document::{Document, LoadOutcome, SaveOutcome};
 pub use fileio::{

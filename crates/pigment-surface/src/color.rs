@@ -64,20 +64,74 @@ fn bg_linear(bg: [u8; 3]) -> [f32; 3] {
     ]
 }
 
+/// fix15 → 8 位显示值的查找表长度（含 `FIX15_ONE`）。
+const LUT_LEN: usize = fix15::FIX15_ONE as usize + 1;
+
+/// `x ↦ round(EOTF(x) * 255)`，输入是固定的 15-bit 定点值。
+///
+/// 低缩放切 mip 级别时每帧要转换十几万像素，逐通道 `powf` 会占满 UI 线程
+///（实测 32 格 6ms）。表是精确的：每一项都用与逐像素路径完全相同的
+/// `eotf_encode(fix15::to_f32(v)) * 255` 算出来。
+fn eotf_lut() -> &'static [u8; LUT_LEN] {
+    static LUT: std::sync::OnceLock<[u8; LUT_LEN]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut table = [0u8; LUT_LEN];
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = (eotf_encode(fix15::to_f32(i as u16)) * 255.0).round() as u8;
+        }
+        table
+    })
+}
+
+/// fix15 alpha → 8 位 alpha 的查找表。
+fn alpha_lut() -> &'static [u8; LUT_LEN] {
+    static LUT: std::sync::OnceLock<[u8; LUT_LEN]> = std::sync::OnceLock::new();
+    LUT.get_or_init(|| {
+        let mut table = [0u8; LUT_LEN];
+        for (i, slot) in table.iter_mut().enumerate() {
+            *slot = (fix15::to_f32(i as u16) * 255.0).round() as u8;
+        }
+        table
+    })
+}
+
+#[inline]
+fn lut_index(v: u16) -> usize {
+    (v as usize).min(fix15::FIX15_ONE as usize)
+}
+
 /// 单个像素：fix15 预乘线性 → 去预乘 + 合成底色 + EOTF 编码，写 3 字节。
 ///
 /// 逐像素照抄 `tile_convert_rgba16_to_rgba8`（`lib/pixops.cpp:227`）：
 /// 去预乘（带舍入）→ `pow(c, 1/EOTF) * 255 + 0.5`。
 #[inline]
 fn encode_pixel_composited(p: [u16; 4], bg: [u8; 3], bg_lin: [f32; 3], out: &mut [u8]) {
+    // 不透明像素（占绝大多数）：`r*a + bg*(1-a)` 在 a=1 时精确化为通道
+    // 本身，查表即可，避免每像素 3 次 powf。
+    if p[3] == fix15::FIX15_ONE as u16 {
+        let lut = eotf_lut();
+        out[0] = lut[lut_index(p[0])];
+        out[1] = lut[lut_index(p[1])];
+        out[2] = lut[lut_index(p[2])];
+        return;
+    }
+    if p[3] == 0 {
+        out[0] = bg[0];
+        out[1] = bg[1];
+        out[2] = bg[2];
+        return;
+    }
     let a = fix15::to_f32(p[3]);
     if a > 0.0 {
         let r = fix15::to_f32(p[0]) / a;
         let g = fix15::to_f32(p[1]) / a;
         let b = fix15::to_f32(p[2]) / a;
-        out[0] = (eotf_encode((r * a + bg_lin[0] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
-        out[1] = (eotf_encode((g * a + bg_lin[1] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
-        out[2] = (eotf_encode((b * a + bg_lin[2] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
+        out[0] =
+            (eotf_encode((r * a + bg_lin[0] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
+        out[1] =
+            (eotf_encode((g * a + bg_lin[1] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
+        out[2] =
+            (eotf_encode((b * a + bg_lin[2] * (1.0 - a)).clamp(0.0, 1.0)) * 255.0).round() as u8;
     } else {
         out[0] = bg[0];
         out[1] = bg[1];
@@ -88,11 +142,13 @@ fn encode_pixel_composited(p: [u16; 4], bg: [u8; 3], bg_lin: [f32; 3], out: &mut
 /// 单个像素：fix15 预乘线性 → **预乘** 8 位 RGBA（GPU 预乘混合用）。
 #[inline]
 pub fn fix15_pixel_rgba8_premultiplied(p: [u16; 4]) -> [u8; 4] {
+    let rgb = eotf_lut();
+    let alpha = alpha_lut();
     [
-        (eotf_encode(fix15::to_f32(p[0]).clamp(0.0, 1.0)) * 255.0).round() as u8,
-        (eotf_encode(fix15::to_f32(p[1]).clamp(0.0, 1.0)) * 255.0).round() as u8,
-        (eotf_encode(fix15::to_f32(p[2]).clamp(0.0, 1.0)) * 255.0).round() as u8,
-        (fix15::to_f32(p[3]) * 255.0).round() as u8,
+        rgb[lut_index(p[0])],
+        rgb[lut_index(p[1])],
+        rgb[lut_index(p[2])],
+        alpha[lut_index(p[3])],
     ]
 }
 
@@ -221,6 +277,40 @@ mod tests {
 
     const WHITE: [u8; 3] = [255, 255, 255];
 
+    /// LUT 必须与逐像素 `powf` 公式逐项一致。
+    #[test]
+    fn eotf_lut_matches_powf_exactly() {
+        let rgb = eotf_lut();
+        let alpha = alpha_lut();
+        for v in 0..=fix15::FIX15_ONE {
+            let expect = (eotf_encode(fix15::to_f32(v as u16)) * 255.0).round() as u8;
+            assert_eq!(rgb[v as usize], expect, "rgb v={v}");
+            let expect_a = (fix15::to_f32(v as u16) * 255.0).round() as u8;
+            assert_eq!(alpha[v as usize], expect_a, "alpha v={v}");
+        }
+    }
+
+    /// a=1 的查表快捷路径与原始合成公式一致。
+    #[test]
+    fn opaque_composite_fast_path_matches_formula() {
+        let bg = [12u8, 34, 56];
+        let bg_lin = bg_linear(bg);
+        for i in 0..1000u32 {
+            let r = ((i * 7919) % 32769) as u16;
+            let g = ((i * 104729) % 32769) as u16;
+            let b = ((i * 1299709) % 32769) as u16;
+            let p = [r, g, b, fix15::FIX15_ONE as u16];
+            let got = tile_to_rgba8_single(p, bg, bg_lin);
+            let want = [
+                (eotf_encode(fix15::to_f32(r).clamp(0.0, 1.0)) * 255.0).round() as u8,
+                (eotf_encode(fix15::to_f32(g).clamp(0.0, 1.0)) * 255.0).round() as u8,
+                (eotf_encode(fix15::to_f32(b).clamp(0.0, 1.0)) * 255.0).round() as u8,
+                255,
+            ];
+            assert_eq!(got, want, "pixel {i}");
+        }
+    }
+
     #[test]
     fn empty_tile_is_background() {
         let t = empty_tile();
@@ -331,7 +421,11 @@ mod tests {
         let comp = tile_to_rgba8(&t, CANVAS_BG);
         let alpha = tile_to_rgba8_alpha(&t);
         let i = (TILE_SIZE + 1) * 4;
-        assert_eq!(&comp[i..i + 3], &alpha[i..i + 3], "不透明像素两模式 RGB 应相同");
+        assert_eq!(
+            &comp[i..i + 3],
+            &alpha[i..i + 3],
+            "不透明像素两模式 RGB 应相同"
+        );
         assert_eq!(alpha[i + 3], 255);
     }
 

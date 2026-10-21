@@ -1,7 +1,7 @@
 //! 颜色向量逐位门禁 —— 拿真 `lib/color.py` 算出的 fixture 与引擎逐点比对。
 //!
 //! fixture：`tests/fixtures/color_vectors.txt`（23795 条向量），由
-//! `tests/tools/gen-color-vectors.py` 生成（`E:\MyPaint\.workbuddy\tools\`
+//! `tests/tools/gen-color-vectors.py` 生成（`.workbuddy\tools\`
 //! 下那份是同一条命令的转发入口 —— `.workbuddy` 不在本仓库内）：
 //!
 //! ```text
@@ -39,8 +39,12 @@ fn fixture_path() -> String {
 fn fixture() -> &'static str {
     static TEXT: OnceLock<String> = OnceLock::new();
     TEXT.get_or_init(|| {
-        std::fs::read_to_string(fixture_path())
-            .unwrap_or_else(|e| panic!("读不到 fixture {}：{e}（先跑 .workbuddy/tools/gen-color-vectors.py）", fixture_path()))
+        std::fs::read_to_string(fixture_path()).unwrap_or_else(|e| {
+            panic!(
+                "读不到 fixture {}：{e}（先跑 .workbuddy/tools/gen-color-vectors.py）",
+                fixture_path()
+            )
+        })
     })
 }
 
@@ -144,7 +148,11 @@ fn rgb_to_hsv_matches_source() {
     for_each("rgb2hsv", |ln, t| {
         let rgb = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
-        assert_triple(rgb_to_hsv(rgb), expected, &format!("第 {ln} 行 rgb2hsv {rgb:?}"));
+        assert_triple(
+            rgb_to_hsv(rgb),
+            expected,
+            &format!("第 {ln} 行 rgb2hsv {rgb:?}"),
+        );
         n += 1;
     });
     // RGB 立方体网格 16³ = 4096 点，外加边界点；少于 4096 说明 fixture 被截断
@@ -157,7 +165,11 @@ fn rgb_to_hcy_matches_source() {
     for_each("rgb2hcy", |ln, t| {
         let rgb = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
-        assert_triple(rgb_to_hcy(rgb), expected, &format!("第 {ln} 行 rgb2hcy {rgb:?}"));
+        assert_triple(
+            rgb_to_hcy(rgb),
+            expected,
+            &format!("第 {ln} 行 rgb2hcy {rgb:?}"),
+        );
         n += 1;
     });
     assert!(n >= 4096, "rgb2hcy 向量只有 {n} 条");
@@ -189,7 +201,11 @@ fn hsv_to_rgb_matches_source() {
     for_each("hsv2rgb", |ln, t| {
         let hsv = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
-        assert_triple(hsv_to_rgb(hsv), expected, &format!("第 {ln} 行 hsv2rgb {hsv:?}"));
+        assert_triple(
+            hsv_to_rgb(hsv),
+            expected,
+            &format!("第 {ln} 行 hsv2rgb {hsv:?}"),
+        );
         n += 1;
     });
     assert!(n > 400, "hsv2rgb 向量只有 {n} 条");
@@ -201,7 +217,11 @@ fn hcy_to_rgb_matches_source() {
     for_each("hcy2rgb", |ln, t| {
         let hcy = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
-        assert_triple(hcy_to_rgb(hcy), expected, &format!("第 {ln} 行 hcy2rgb {hcy:?}"));
+        assert_triple(
+            hcy_to_rgb(hcy),
+            expected,
+            &format!("第 {ln} 行 hcy2rgb {hcy:?}"),
+        );
         n += 1;
     });
     assert!(n > 400, "hcy2rgb 向量只有 {n} 条");
@@ -234,7 +254,11 @@ fn hcy_from_hsv_matches_source() {
         let hsv = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
         let c = HcyColor::from_color(&Color::Hsv(HsvColor::from_hsv(hsv)));
-        assert_triple([c.h, c.c, c.y], expected, &format!("第 {ln} 行 hsv2hcy {hsv:?}"));
+        assert_triple(
+            [c.h, c.c, c.y],
+            expected,
+            &format!("第 {ln} 行 hsv2hcy {hsv:?}"),
+        );
         n += 1;
     });
     assert!(n > 400, "hsv2hcy 向量只有 {n} 条");
@@ -247,7 +271,11 @@ fn hcy_get_hsv_matches_source() {
         let hcy = triple(&t[1..4], ln);
         let expected = triple(&t[4..7], ln);
         let c = HcyColor::from_hcy(hcy);
-        assert_triple(c.get_hsv(), expected, &format!("第 {ln} 行 hcy2hsv {hcy:?}"));
+        assert_triple(
+            c.get_hsv(),
+            expected,
+            &format!("第 {ln} 行 hcy2hsv {hcy:?}"),
+        );
         n += 1;
     });
     assert!(n > 400, "hcy2hsv 向量只有 {n} 条");
@@ -519,7 +547,11 @@ fn interpolate_matches_source() {
                 parse_f64(flat[i * 3 + 1], "分量", ln),
                 parse_f64(flat[i * 3 + 2], "分量", ln),
             ];
-            assert_triple(space_triple(kind, c), expected, &format!("第 {ln} 行 interp {kind} 第 {i} 个"));
+            assert_triple(
+                space_triple(kind, c),
+                expected,
+                &format!("第 {ln} 行 interp {kind} 第 {i} 个"),
+            );
         }
         n += 1;
     });
@@ -568,5 +600,8 @@ fn fixture_covers_all_vector_kinds() {
         );
     }
     let total: usize = counts.values().sum();
-    assert_eq!(total, 23795, "fixture 向量总数变了（{total}），核对生成器输出");
+    assert_eq!(
+        total, 23795,
+        "fixture 向量总数变了（{total}），核对生成器输出"
+    );
 }

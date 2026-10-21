@@ -205,10 +205,7 @@ impl SimplePaletteDict {
     /// 不是对象则返回 `None`（调用方回落到默认调色板）。
     pub fn from_json(simple: &serde_json::Value) -> Option<Self> {
         let obj = simple.as_object()?;
-        let name = obj
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
+        let name = obj.get("name").and_then(|v| v.as_str()).map(str::to_owned);
         let columns = obj.get("columns").and_then(|v| v.as_i64()).unwrap_or(0);
         let mut entries = Vec::new();
         for entry in obj
@@ -472,7 +469,8 @@ impl Palette {
     ///
     /// 逐行照抄：表头两行按需、固定一行 `#`、每格一行
     /// `"%d %d %d    %s\n"`（名字前**四个空格**）或 `"%d %d %d\n"`（匿名字）。
-    pub fn to_gimp_palette_string(&self) -> String {        let mut s = String::from("GIMP Palette\n");
+    pub fn to_gimp_palette_string(&self) -> String {
+        let mut s = String::from("GIMP Palette\n");
         if let Some(name) = &self.name {
             s.push_str(&format!("Name: {name}\n"));
         }

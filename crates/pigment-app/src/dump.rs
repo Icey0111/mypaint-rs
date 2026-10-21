@@ -30,7 +30,12 @@ pub fn dump_surface_png(surface: &PigmentSurface) -> Result<PathBuf, String> {
     let mut img = image::RgbaImage::from_pixel(
         w,
         h,
-        image::Rgba([convert::CANVAS_BG[0], convert::CANVAS_BG[1], convert::CANVAS_BG[2], 255]),
+        image::Rgba([
+            convert::CANVAS_BG[0],
+            convert::CANVAS_BG[1],
+            convert::CANVAS_BG[2],
+            255,
+        ]),
     );
 
     for (coord, tile) in surface.tiles() {

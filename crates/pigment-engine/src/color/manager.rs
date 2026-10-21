@@ -178,8 +178,10 @@ impl ColorManager {
             color,
             hist,
             // `misc.context_restores_color`（`userconfig.py:93` 默认 True）
-            context_restores_color: prefs
-                .bool_or(PREFS_KEY_CONTEXT_RESTORES_COLOR, CONTEXT_RESTORES_COLOR_DEFAULT),
+            context_restores_color: prefs.bool_or(
+                PREFS_KEY_CONTEXT_RESTORES_COLOR,
+                CONTEXT_RESTORES_COLOR_DEFAULT,
+            ),
             wheel_type,
             palette,
         }
@@ -201,10 +203,7 @@ impl ColorManager {
     pub fn store_prefs(&self, prefs: &mut Prefs) {
         prefs.set_str(PREFS_KEY_CURRENT_COLOR, self.color.to_hex_str());
         let hist = self.history_hex();
-        prefs.set_str_array(
-            PREFS_KEY_COLOR_HISTORY,
-            hist.iter().map(String::as_str),
-        );
+        prefs.set_str_array(PREFS_KEY_COLOR_HISTORY, hist.iter().map(String::as_str));
         prefs.set_str(PREFS_KEY_WHEEL_TYPE, self.wheel_type_name());
         prefs.set(PREFS_KEY_PALETTE, self.palette.to_simple_dict().to_json());
         prefs.set_bool(

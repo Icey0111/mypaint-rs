@@ -27,10 +27,9 @@
 //!    的字符串（其笔刷库需要字符串才能重建 `Brush`）；本项目的笔刷库
 //!    （hokusai）正好提供 `myb::to_string_pretty()` / `myb::from_str()` 这对
 //!    逆变换，所以直接用它，**语义相同**（都是"把整份设置存成字符串"）。
-//! 2. **重放丢弃 3 个输入**：`viewzoom` / `viewrotation` / `barrel_rotation`
-//!    照 MyPaint 一起记录（事件行仍是 9 列），但 hokusai 0.3 的
-//!    `Brush::stroke_to` 只接受 8 个参数、未实现这三个输入，故重放时不喂给
-//!    引擎。这是引擎 API 的缺口，不是设计取舍。
+//! 2. **完整喂 9 列输入**：`viewzoom` / `viewrotation` / `barrel_rotation`
+//!    通过 `Brush::stroke_to_full` 进入引擎；颜色动态走 MyPaint 默认的
+//!    linear-sRGB 路径（`eotf() = 2.2`）。
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -123,7 +122,7 @@ impl StrokeEvent {
         state: &mut BrushState,
         surface: &mut S,
     ) -> bool {
-        brush.stroke_to(
+        brush.stroke_to_full(
             state,
             surface,
             self.x,
@@ -132,6 +131,10 @@ impl StrokeEvent {
             self.xtilt,
             self.ytilt,
             self.dtime,
+            self.viewzoom,
+            self.viewrotation,
+            self.barrel_rotation,
+            true,
         )
     }
 }
@@ -220,11 +223,7 @@ impl Stroke {
         if self.finished {
             return;
         }
-        self.data = self
-            .tmp_event_list
-            .iter()
-            .flat_map(|ev| ev.row())
-            .collect();
+        self.data = self.tmp_event_list.iter().flat_map(|ev| ev.row()).collect();
         self.total_painting_time = state.stroke_total_painting_time;
         self.tmp_event_list = Vec::new();
         self.finished = true;
@@ -353,8 +352,12 @@ mod tests {
         let state = BrushState::default();
         let mut s = Stroke::new();
         s.start_recording(&brush, "Fan", &state).unwrap();
-        s.record_event(StrokeEvent::new(0.01, 1.0, 2.0, 0.5, 0.1, -0.1, 1.0, 0.0, 0.0));
-        s.record_event(StrokeEvent::new(0.02, 3.0, 4.0, 0.25, 0.0, 0.0, 2.0, 90.0, 0.5));
+        s.record_event(StrokeEvent::new(
+            0.01, 1.0, 2.0, 0.5, 0.1, -0.1, 1.0, 0.0, 0.0,
+        ));
+        s.record_event(StrokeEvent::new(
+            0.02, 3.0, 4.0, 0.25, 0.0, 0.0, 2.0, 90.0, 0.5,
+        ));
         s.stop_recording(&state);
 
         assert!(s.is_finished());

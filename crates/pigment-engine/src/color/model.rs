@@ -65,7 +65,13 @@ fn round3_triple(t: [f64; 3]) -> [f64; 3] {
 /// 源码注释说得很清楚（`:166`）："Round to 8bpc for comparison"。这是
 /// **跨类**比较用的实现；同类比较由各子类自己覆写。
 fn base_eq(a: &dyn UIColor, b: &dyn UIColor) -> bool {
-    let q = |t: [f64; 3]| [py_int(t[0] * 255.0), py_int(t[1] * 255.0), py_int(t[2] * 255.0)];
+    let q = |t: [f64; 3]| {
+        [
+            py_int(t[0] * 255.0),
+            py_int(t[1] * 255.0),
+            py_int(t[2] * 255.0),
+        ]
+    };
     q(a.get_rgb()) == q(b.get_rgb())
 }
 
@@ -116,13 +122,7 @@ pub trait UIColor {
     /// `to_hex_str(prefix=...)`：前缀可换（源码默认 `#`）。
     fn to_hex_str_with(&self, prefix: &str) -> String {
         let [r, g, b] = self.get_rgb();
-        format!(
-            "{}{}{}{}",
-            prefix,
-            hex_byte(r),
-            hex_byte(g),
-            hex_byte(b)
-        )
+        format!("{}{}{}{}", prefix, hex_byte(r), hex_byte(g), hex_byte(b))
     }
 
     /// `to_fill_pixel()`（`lib/color.py:210-220`）：GdkPixbuf 的填充像素值。
@@ -255,7 +255,10 @@ impl RgbColor {
     ///
     /// 源码是生成器且 `assert steps >= 3`。
     pub fn interpolate_rgb(&self, other: &RgbColor, steps: usize) -> Vec<RgbColor> {
-        assert!(steps >= 3, "interpolate() 要求 steps >= 3（lib/color.py:320）");
+        assert!(
+            steps >= 3,
+            "interpolate() 要求 steps >= 3（lib/color.py:320）"
+        );
         let mut out = Vec::with_capacity(steps);
         for step in 0..steps {
             let p = step as f64 / (steps - 1) as f64;
@@ -337,7 +340,10 @@ impl HsvColor {
     /// 两个跨越 0 的候选，谁绝对值小就用谁。`h = (self.h + hdelta*p) % 1.0`
     /// 用的是**未归一化**的 `self.h`（`:441`），这里一致。
     pub fn interpolate_hsv(&self, other: &HsvColor, steps: usize) -> Vec<HsvColor> {
-        assert!(steps >= 3, "interpolate() 要求 steps >= 3（lib/color.py:425）");
+        assert!(
+            steps >= 3,
+            "interpolate() 要求 steps >= 3（lib/color.py:425）"
+        );
         let ha = self.h.rem_euclid(1.0);
         let hb = other.h.rem_euclid(1.0);
         let mut hdelta = hb - ha;
@@ -451,7 +457,10 @@ impl HcyColor {
     /// `HCYColor.interpolate()`（`lib/color.py:562-599`）：与 HSV 同样走最短弧，
     /// 但 `c`/`y` 线性 —— 同彩度两端的插值会保持彩度（源码 docstring `:572-575`）。
     pub fn interpolate_hcy(&self, other: &HcyColor, steps: usize) -> Vec<HcyColor> {
-        assert!(steps >= 3, "interpolate() 要求 steps >= 3（lib/color.py:585）");
+        assert!(
+            steps >= 3,
+            "interpolate() 要求 steps >= 3（lib/color.py:585）"
+        );
         let ha = self.h.rem_euclid(1.0);
         let hb = other.h.rem_euclid(1.0);
         let mut hdelta = hb - ha;
@@ -573,7 +582,10 @@ impl YcbcrColor {
     /// （此空间是 RGB 立方体的线性变换，所以插值结果与 RGB 空间几乎一致，
     /// 源码 docstring `:698-700`）。
     pub fn interpolate_ycbcr(&self, other: &YcbcrColor, steps: usize) -> Vec<YcbcrColor> {
-        assert!(steps >= 3, "interpolate() 要求 steps >= 3（lib/color.py:708）");
+        assert!(
+            steps >= 3,
+            "interpolate() 要求 steps >= 3（lib/color.py:708）"
+        );
         let mut out = Vec::with_capacity(steps);
         for step in 0..steps {
             let p = step as f64 / (steps - 1) as f64;

@@ -332,7 +332,10 @@ mod tests {
     #[test]
     fn dilation_grows_a_single_pixel_into_the_radius_one_disk() {
         let mut tiles = FilledTiles::new();
-        tiles.insert((0, 0), tile(|x, y| if (x, y) == (10, 10) { OPAQUE } else { 0 }));
+        tiles.insert(
+            (0, 0),
+            tile(|x, y| if (x, y) == (10, 10) { OPAQUE } else { 0 }),
+        );
         let out = morph(1, tiles);
         for y in 9..=11 {
             for x in 9..=11 {
@@ -348,7 +351,10 @@ mod tests {
     #[test]
     fn dilation_uses_the_circular_not_square_structuring_element() {
         let mut tiles = FilledTiles::new();
-        tiles.insert((0, 0), tile(|x, y| if (x, y) == (20, 20) { OPAQUE } else { 0 }));
+        tiles.insert(
+            (0, 0),
+            tile(|x, y| if (x, y) == (20, 20) { OPAQUE } else { 0 }),
+        );
         let out = morph(2, tiles);
         assert_eq!(alpha(&out, 18, 20), OPAQUE);
         assert_eq!(alpha(&out, 22, 20), OPAQUE);
@@ -362,13 +368,16 @@ mod tests {
     #[test]
     fn erosion_shrinks_and_drops_out_of_bounds_neighbours() {
         let mut tiles = FilledTiles::new();
-        tiles.insert((0, 0), tile(|x, y| {
-            if (9..=11).contains(&x) && (9..=11).contains(&y) {
-                OPAQUE
-            } else {
-                0
-            }
-        }));
+        tiles.insert(
+            (0, 0),
+            tile(|x, y| {
+                if (9..=11).contains(&x) && (9..=11).contains(&y) {
+                    OPAQUE
+                } else {
+                    0
+                }
+            }),
+        );
         let out = morph(-1, tiles);
         assert_eq!(alpha(&out, 10, 10), OPAQUE, "唯一的内部像素应保留");
         assert_eq!(alpha(&out, 9, 10), 0, "边缘被腐蚀");
@@ -426,7 +435,10 @@ mod tests {
         tiles.insert((0, 0), tile(|x, _| if x < 32 { OPAQUE } else { 0 }));
         let out = blur(8, tiles);
         let edge = alpha(&out, 31, 10);
-        assert!(edge > 0 && edge < OPAQUE, "交界内侧应变成半透明（实得 {edge}）");
+        assert!(
+            edge > 0 && edge < OPAQUE,
+            "交界内侧应变成半透明（实得 {edge}）"
+        );
         // 远离边界的地方仍接近原值（高斯核被截断，系数和略小于 1）
         assert!(
             alpha(&out, 5, 10) > (OPAQUE as u32 * 9 / 10) as u16,

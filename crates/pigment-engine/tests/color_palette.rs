@@ -67,10 +67,7 @@ fn rows() -> impl Iterator<Item = (usize, Vec<&'static str>)> {
 #[derive(Clone, Debug, PartialEq)]
 enum Entry {
     Empty,
-    Color {
-        rgb: [f64; 3],
-        name: Option<String>,
-    },
+    Color { rgb: [f64; 3], name: Option<String> },
 }
 
 /// `-` → `None`，其余原样（空串也算"有名字，名字是空串"）。
@@ -249,7 +246,11 @@ fn parsed() -> &'static Fixture {
                 }
                 "pal_dump" => {
                     let v = fx.dumps.entry(f[1].to_string()).or_default();
-                    assert_eq!(parse_usize(f[2], ln), v.len(), "第 {ln} 行：dump 行号不连续");
+                    assert_eq!(
+                        parse_usize(f[2], ln),
+                        v.len(),
+                        "第 {ln} 行：dump 行号不连续"
+                    );
                     // 文本里不含制表符；空行是"末尾空字段"
                     v.push(f.get(3).copied().unwrap_or("").to_string());
                 }
@@ -276,8 +277,7 @@ fn parsed() -> &'static Fixture {
                     // 条目数随后逐条追加，这里只做一次交叉核对
                     let expected_entries = parse_usize(f[5], ln);
                     fx.simple.insert(f[1].to_string(), d);
-                    fx.simple_counts
-                        .insert(f[1].to_string(), expected_entries);
+                    fx.simple_counts.insert(f[1].to_string(), expected_entries);
                 }
                 "pal_simpledict_entry" => {
                     let d = fx
@@ -316,11 +316,9 @@ fn parsed() -> &'static Fixture {
                     ));
                 }
                 "pal_outwards" => {
-                    let seq: Vec<usize> = f[3]
-                        .split(',')
-                        .map(|s| parse_usize(s, ln))
-                        .collect();
-                    fx.outwards.push((parse_usize(f[1], ln), parse_usize(f[2], ln), seq));
+                    let seq: Vec<usize> = f[3].split(',').map(|s| parse_usize(s, ln)).collect();
+                    fx.outwards
+                        .push((parse_usize(f[1], ln), parse_usize(f[2], ln), seq));
                 }
                 "pal_match" => {
                     let order = if parse_bool(f[3], ln) {
@@ -336,7 +334,11 @@ fn parsed() -> &'static Fixture {
                         exact: parse_bool(f[5], ln),
                         probe: color_of(
                             f[6],
-                            [parse_f64(f[7], ln), parse_f64(f[8], ln), parse_f64(f[9], ln)],
+                            [
+                                parse_f64(f[7], ln),
+                                parse_f64(f[8], ln),
+                                parse_f64(f[9], ln),
+                            ],
                         ),
                         ret: parse_bool(f[10], ln),
                         position: opt_index(f[11], ln),
@@ -453,7 +455,9 @@ fn gpl_loads_match_source_entry_by_entry() {
                     assert!(pal.color_name(i).is_none(), "{id} 第 {i} 格空槽没有名字");
                 }
                 Entry::Color { rgb, name } => {
-                    let got = pal.get(i).unwrap_or_else(|| panic!("{id} 第 {i} 格不该是空槽"));
+                    let got = pal
+                        .get(i)
+                        .unwrap_or_else(|| panic!("{id} 第 {i} 格不该是空槽"));
                     for c in 0..3 {
                         assert!(
                             same_bits([got.r, got.g, got.b][c], rgb[c]),
@@ -569,7 +573,10 @@ fn simple_dict_round_trips_like_source() {
     let pal = build_palette(&fx.palettes["empty_mix"]);
     let back = Palette::from_simple_dict(&pal.to_simple_dict());
     assert_eq!(back.len(), pal.len());
-    assert!(back.get(1).is_none() && back.get(4).is_none(), "空槽位置保持");
+    assert!(
+        back.get(1).is_none() && back.get(4).is_none(),
+        "空槽位置保持"
+    );
     assert!(back.get(0).is_some() && back.get(2).is_some());
 }
 
@@ -608,14 +615,20 @@ fn gpl_parse_edge_cases_match_source() {
             match e {
                 Entry::Empty => assert!(pal.get(i).is_none(), "{id} 第 {i} 格应为空槽"),
                 Entry::Color { rgb, name } => {
-                    let got = pal.get(i).unwrap_or_else(|| panic!("{id} 第 {i} 格不该是空槽"));
+                    let got = pal
+                        .get(i)
+                        .unwrap_or_else(|| panic!("{id} 第 {i} 格不该是空槽"));
                     assert!(
                         same_bits(got.r, rgb[0])
                             && same_bits(got.g, rgb[1])
                             && same_bits(got.b, rgb[2]),
                         "{id} 第 {i} 格颜色"
                     );
-                    assert_eq!(pal.color_name(i).map(str::to_owned), *name, "{id} 第 {i} 格名字");
+                    assert_eq!(
+                        pal.color_name(i).map(str::to_owned),
+                        *name,
+                        "{id} 第 {i} 格名字"
+                    );
                 }
             }
         }
@@ -691,13 +704,22 @@ fn outwards_from_reproduces_source_duplicates() {
 #[test]
 fn match_color_matches_source() {
     let fx = parsed();
-    assert!(fx.matches.len() >= 1000, "match 向量太少：{}", fx.matches.len());
+    assert!(
+        fx.matches.len() >= 1000,
+        "match 向量太少：{}",
+        fx.matches.len()
+    );
     for case in &fx.matches {
         let def = &fx.palettes[&case.pal_id];
         let mut pal = build_palette(def);
         if let Some(p) = case.preset {
             pal.set_match_position(Some(p));
-            assert_eq!(pal.match_position(), Some(p), "第 {} 行：预置命中位置", case.line);
+            assert_eq!(
+                pal.match_position(),
+                Some(p),
+                "第 {} 行：预置命中位置",
+                case.line
+            );
         }
         let ret = pal.match_color(&case.probe, case.exact, case.order.as_deref());
         assert_eq!(ret, case.ret, "第 {} 行：返回值", case.line);
@@ -768,8 +790,16 @@ fn edit_operations_match_source_step_by_step() {
             apply_op(&mut pal, args, &fx, seq_id, step);
             let got = state_of(&pal);
             assert_eq!(got.0, *len, "{seq_id} 第 {step} 步（{}）的长度", args[0]);
-            assert_eq!(got.1, *pos, "{seq_id} 第 {step} 步（{}）的命中位置", args[0]);
-            assert_eq!(got.2, *approx, "{seq_id} 第 {step} 步（{}）的近似标志", args[0]);
+            assert_eq!(
+                got.1, *pos,
+                "{seq_id} 第 {step} 步（{}）的命中位置",
+                args[0]
+            );
+            assert_eq!(
+                got.2, *approx,
+                "{seq_id} 第 {step} 步（{}）的近似标志",
+                args[0]
+            );
             assert_eq!(got.3.len(), entries.len(), "{seq_id} 第 {step} 步的格子数");
             for (i, (a, b)) in got.3.iter().zip(entries.iter()).enumerate() {
                 assert_eq!(a, b, "{seq_id} 第 {step} 步（{}）的第 {i} 格", args[0]);
@@ -806,7 +836,11 @@ fn apply_op(pal: &mut Palette, args: &[String], fx: &Fixture, seq_id: &str, step
             pal.insert(i, col.as_ref(), opt_name(&args[7]).as_deref());
         }
         "pop" => {
-            pal.pop(args[1].parse().unwrap_or_else(|e| panic!("{}：pop 下标 {e}", ctx())));
+            pal.pop(
+                args[1]
+                    .parse()
+                    .unwrap_or_else(|e| panic!("{}：pop 下标 {e}", ctx())),
+            );
         }
         "reposition" => {
             let src: usize = args[1].parse().unwrap_or_else(|e| panic!("{}：{e}", ctx()));
@@ -924,7 +958,10 @@ fn long_color_names_survive_round_trip() {
     let col = Color::Rgb(pigment_engine::color::RgbColor::new(0.25, 0.5, 0.75));
     p.append(Some(&col), Some(&long), false, false);
     assert_eq!(p.color_name(0), Some(long.as_str()));
-    assert_eq!(p.color_name(0).unwrap().chars().count(), long.chars().count());
+    assert_eq!(
+        p.color_name(0).unwrap().chars().count(),
+        long.chars().count()
+    );
 
     let text = p.to_gimp_palette_string();
     assert!(
@@ -945,7 +982,8 @@ fn long_color_names_survive_round_trip() {
         .to_gimp_palette_string()
         .contains("63 127 191      spaced  \n"));
     let mut back = Palette::new();
-    back.load_str(&padded.to_gimp_palette_string()).expect("往返");
+    back.load_str(&padded.to_gimp_palette_string())
+        .expect("往返");
     assert_eq!(back.color_name(0), Some("spaced"), "首尾空白被削掉");
 
     // 空名字（不是 None）与没有名字是两回事：dump 里前者带四个空格
@@ -976,7 +1014,11 @@ fn duplicate_colors_and_unique_append() {
     assert_eq!(p.len(), 3, "unique 去重");
     assert_eq!(p.match_position(), Some(2));
     assert!(!p.match_is_approx());
-    assert_eq!(p.color_name(2), Some("Red again"), "命中的是旧格子，名字不改");
+    assert_eq!(
+        p.color_name(2),
+        Some("Red again"),
+        "命中的是旧格子，名字不改"
+    );
 
     // 新色照常追加并命中
     let green = Color::Rgb(pigment_engine::color::RgbColor::new(0.0, 1.0, 0.0));
@@ -1008,9 +1050,7 @@ fn duplicate_colors_and_unique_append() {
 /// 走到头就停住（源码的 `while` 不环绕）；空槽被跳过。
 #[test]
 fn move_match_position_follows_source_semantics() {
-    let mk = |r: f64, g: f64, b: f64| {
-        Color::Rgb(pigment_engine::color::RgbColor::new(r, g, b))
-    };
+    let mk = |r: f64, g: f64, b: f64| Color::Rgb(pigment_engine::color::RgbColor::new(r, g, b));
     let mut p = Palette::new();
     for c in [
         mk(1.0, 0.0, 0.0),
@@ -1035,7 +1075,10 @@ fn move_match_position_follows_source_semantics() {
     assert_eq!(p.match_position(), Some(3));
 
     // 走到末尾之后再往前 → 停在末尾（源码的 while 不环绕）
-    assert!(p.move_match_position(1, &refcol).is_none(), "末尾没有下一格");
+    assert!(
+        p.move_match_position(1, &refcol).is_none(),
+        "末尾没有下一格"
+    );
     assert_eq!(p.match_position(), Some(3), "位置不变");
 
     // 往回走
@@ -1074,7 +1117,9 @@ fn move_match_position_follows_source_semantics() {
     r.append(Some(&mk(0.0, 0.0, 1.0)), None, false, false);
     r.set_match_position(Some(0));
     r.set_match_is_approx(false);
-    let jumped = r.move_match_position(1, &mk(1.0, 0.0, 0.0)).expect("跳过两个空槽");
+    let jumped = r
+        .move_match_position(1, &mk(1.0, 0.0, 0.0))
+        .expect("跳过两个空槽");
     assert_eq!((jumped.r, jumped.g, jumped.b), (0.0, 0.0, 1.0));
     assert_eq!(r.match_position(), Some(3));
 }
@@ -1083,9 +1128,7 @@ fn move_match_position_follows_source_semantics() {
 /// 目标是空槽 → 复制（源保留）；否则 → 移动（源消失）。
 #[test]
 fn reposition_copies_into_empty_slots_and_moves_otherwise() {
-    let mk = |r: f64, g: f64, b: f64| {
-        Color::Rgb(pigment_engine::color::RgbColor::new(r, g, b))
-    };
+    let mk = |r: f64, g: f64, b: f64| Color::Rgb(pigment_engine::color::RgbColor::new(r, g, b));
     let red = mk(1.0, 0.0, 0.0);
     let blue = mk(0.0, 0.0, 1.0);
     let mut p = Palette::new();
@@ -1202,10 +1245,7 @@ fn palette_next_and_prev_actions_follow_drawwindow() {
     // 当前色 #003153 不在板上 → 第一次按 Next 只挑最近的、不换色
     let cur = mgr.get_color();
     let before = cur.to_hex_str();
-    assert!(mgr
-        .palette_mut()
-        .move_match_position(1, &cur)
-        .is_none());
+    assert!(mgr.palette_mut().move_match_position(1, &cur).is_none());
     assert_eq!(mgr.get_color().to_hex_str(), before, "只挑最近的不换色");
     assert!(mgr.palette().match_position().is_some());
     assert!(mgr.palette().match_is_approx(), "#003153 只是近似");

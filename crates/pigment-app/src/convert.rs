@@ -11,7 +11,4 @@
 //! 只转发本 crate 真正用到的那几项（binary crate 里多余的 `pub use` 会被
 //! 判为 unused import）；测试要用别的常量时直接从 `pigment_surface::color` 取。
 
-pub use pigment_surface::color::{
-    eotf_encode, tile_to_rgba8, CANVAS_BG, TILE_RGBA8_BYTES,
-};
-
+pub use pigment_surface::color::{eotf_encode, tile_to_rgba8, CANVAS_BG};

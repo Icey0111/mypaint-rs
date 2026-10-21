@@ -1,0 +1,17 @@
+[package]
+name = "pigment-render"
+description = "GUI-independent wgpu canvas renderer for pigment (tiles, mipmaps, atlas batches)"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# 渲染层只依赖 wgpu 与图层/像素数据；不得依赖 egui/eframe/winit。
+wgpu = "30"
+hokusai = { git = "https://github.com/Icey0111/hokusai.git", branch = "main" }
+pigment-surface = { path = "../pigment-surface" }
+
+[dev-dependencies]
+pigment-engine = { path = "../pigment-engine" }
+pollster = "1"

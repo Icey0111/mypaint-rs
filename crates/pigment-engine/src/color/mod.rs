@@ -125,21 +125,21 @@ mod tools;
 mod wheels;
 
 pub use adjust::{
-    BrushStep, ColorAction, BRUSH_OPAQUE_FACTOR, BRUSH_RADIUS_STEP,
-    CONTEXT_RESTORES_COLOR_DEFAULT, HUE_STEP, LEVEL_CEIL, LEVEL_FLOOR, LEVEL_STEP, OPAQUE_MAX,
-    OPAQUE_MIN, RADIUS_LOG_MAX, RADIUS_LOG_MIN,
+    BrushStep, ColorAction, BRUSH_OPAQUE_FACTOR, BRUSH_RADIUS_STEP, CONTEXT_RESTORES_COLOR_DEFAULT,
+    HUE_STEP, LEVEL_CEIL, LEVEL_FLOOR, LEVEL_STEP, OPAQUE_MAX, OPAQUE_MIN, RADIUS_LOG_MAX,
+    RADIUS_LOG_MIN,
 };
 pub use hcywheel::{
-    colors_to_mask_void, convex_hull, editor_luma_y, hcy_luma_slider_samples,
-    hcy_wheel_center_rgb, hcy_wheel_color_at_polar, hcy_wheel_color_at_position,
-    hcy_wheel_polar_for_color, hcy_wheel_position_for_color, hcy_wheel_scroll, hcy_wheel_slice_rgb,
-    mask_from_flat, mask_from_palette, mask_to_flat, mask_to_palette, mask_templates, mask_voids, masked_color_at_position, nearest_point_in_segment, pairwise,
-    point_in_convex_poly, poly_area, rotate_mask, template_mask, visible_mask_voids, void_size,
-    MaskShape,
-    MaskTemplate, Point, EDITOR_CTRLPOINT_GRAB_RADIUS, EDITOR_CTRLPOINT_RADIUS, EDITOR_MAX_LUMA,
-    EDITOR_MAX_NUM_SHAPES, EDITOR_MIN_LUMA, HCY_WHEEL_TOOLTIP, MASK_ACTIVE_LABEL,
-    MASK_ACTIVE_TOOLTIP, MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH, MASK_EDITOR_TOOLTIP,
-    MASK_MIN_VOID_POINTS, MIN_SHAPE_SIZE, PREFS_ACTIVE_KEY, PREFS_MASK_KEY,
+    colors_to_mask_void, convex_hull, editor_luma_y, hcy_luma_slider_samples, hcy_wheel_center_rgb,
+    hcy_wheel_color_at_polar, hcy_wheel_color_at_position, hcy_wheel_polar_for_color,
+    hcy_wheel_position_for_color, hcy_wheel_scroll, hcy_wheel_slice_rgb, mask_from_flat,
+    mask_from_palette, mask_templates, mask_to_flat, mask_to_palette, mask_voids,
+    masked_color_at_position, nearest_point_in_segment, pairwise, point_in_convex_poly, poly_area,
+    rotate_mask, template_mask, visible_mask_voids, void_size, MaskShape, MaskTemplate, Point,
+    EDITOR_CTRLPOINT_GRAB_RADIUS, EDITOR_CTRLPOINT_RADIUS, EDITOR_MAX_LUMA, EDITOR_MAX_NUM_SHAPES,
+    EDITOR_MIN_LUMA, HCY_WHEEL_TOOLTIP, MASK_ACTIVE_LABEL, MASK_ACTIVE_TOOLTIP, MASK_DRAW_ALPHA,
+    MASK_EDGE_LINE_WIDTH, MASK_EDITOR_TOOLTIP, MASK_MIN_VOID_POINTS, MIN_SHAPE_SIZE,
+    PREFS_ACTIVE_KEY, PREFS_MASK_KEY,
 };
 pub use manager::{
     ColorManager, DEFAULT_HIST_HEX, HIST_LEN, PREFS_KEY_COLOR_HISTORY,
@@ -168,13 +168,13 @@ pub use tools::{
 pub use wheels::{
     depth_slider_amount, depth_slider_color, depth_slider_scroll, distance_fade_stops, distort_hue,
     hsv_ring_color_at_polar, hsv_ring_color_at_position, hsv_ring_polar_for_color,
-    hsv_ring_position_for_color, hsv_ring_slice_rgb, hsv_wheel_center_rgb, hsv_wheel_color_at_polar,
-    hsv_wheel_color_at_position, hsv_wheel_polar_for_color, hsv_wheel_position_for_color,
-    hsv_wheel_scroll, hsv_wheel_slice_rgb, hue_from_angle, hue_slice_hues, saturation_from_radius,
-    slice_color_at_position, slice_faces, slice_position_for_color, tumble_faces, undistort_hue,
-    wheel_center, wheel_radius, HueRange, HsvFace, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES,
-    DEFAULT_WHEEL_TYPE, EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, OUTLINE_RGBA,
-    OUTLINE_WIDTH, PRIMARY_ADJUSTERS_MIN_HEIGHT, PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES,
-    RYB_HUE_RANGES, RYGB_HUE_RANGES, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH, SLIDER_MIN_WIDTH,
-    TABLE_PADDING,
+    hsv_ring_position_for_color, hsv_ring_slice_rgb, hsv_wheel_center_rgb,
+    hsv_wheel_color_at_polar, hsv_wheel_color_at_position, hsv_wheel_polar_for_color,
+    hsv_wheel_position_for_color, hsv_wheel_scroll, hsv_wheel_slice_rgb, hue_from_angle,
+    hue_slice_hues, saturation_from_radius, slice_color_at_position, slice_faces,
+    slice_position_for_color, tumble_faces, undistort_hue, wheel_center, wheel_radius, HsvFace,
+    HueRange, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES, DEFAULT_WHEEL_TYPE,
+    EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, OUTLINE_RGBA, OUTLINE_WIDTH,
+    PRIMARY_ADJUSTERS_MIN_HEIGHT, PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES, RYB_HUE_RANGES,
+    RYGB_HUE_RANGES, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH, SLIDER_MIN_WIDTH, TABLE_PADDING,
 };

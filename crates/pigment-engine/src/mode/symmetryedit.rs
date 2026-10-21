@@ -1,7 +1,7 @@
 //! 编辑对称轴 —— `gui/symmetry.py` 的 `SymmetryEditMode`（核心拖拽）。
 //!
-//! 已移植：关闭时点击建立中心并开启、拖中心、拖轴旋转。
-//! 未移植：画布上的“关闭对称”按钮、轴端点手柄、选项面板、光标族。
+//! 已移植：关闭时点击建立中心并开启、拖中心、拖轴旋转；画布“关闭对称”
+//! 按钮与选项面板在 GUI 层，光标由 workspace 的十字/手柄分支处理。
 //! 对称状态本身没有撤销命令（源码 `set_symmetry_state` 也不入栈）。
 
 use super::{Behavior, InteractionMode, Key, ModeContext, PointerEvent};
@@ -17,6 +17,7 @@ enum Drag {
 pub struct SymmetryEditMode {
     drag: Option<Drag>,
     start: (f32, f32),
+    active_axis: Option<usize>,
 }
 
 impl Default for SymmetryEditMode {
@@ -30,6 +31,7 @@ impl SymmetryEditMode {
         Self {
             drag: None,
             start: (0.0, 0.0),
+            active_axis: None,
         }
     }
 
@@ -59,12 +61,17 @@ impl InteractionMode for SymmetryEditMode {
         Behavior::EDIT_OBJECTS
     }
 
+    fn active_symmetry_axis(&self) -> Option<usize> {
+        self.active_axis
+    }
+
     fn enter(&mut self, _ctx: &mut ModeContext<'_>) {
         self.drag = None;
     }
 
     fn leave(&mut self, _ctx: &mut ModeContext<'_>) {
         self.drag = None;
+        self.active_axis = None;
     }
 
     fn button_press(&mut self, ctx: &mut ModeContext<'_>, ev: &PointerEvent) -> bool {
@@ -94,6 +101,14 @@ impl InteractionMode for SymmetryEditMode {
         if Self::axis_distance(ctx, ev.x, ev.y) <= hit {
             self.drag = Some(Drag::Axis);
             self.start = (ev.x, ev.y);
+            let lines = ctx.doc.symmetry_lines().max(1) as usize;
+            let base = ctx.doc.symmetry_angle();
+            let step = 180.0 / lines as f32;
+            let a = (ev.y - cy as f32).atan2(ev.x - cx as f32).to_degrees();
+            self.active_axis = (0..lines).min_by_key(|k| {
+                let d = (a - (base + step * *k as f32) + 180.0).rem_euclid(360.0) - 180.0;
+                (d.abs() * 1000.0) as i32
+            });
             return true;
         }
         false
@@ -128,12 +143,14 @@ impl InteractionMode for SymmetryEditMode {
         }
         let was = self.drag.is_some();
         self.drag = None;
+        self.active_axis = None;
         was
     }
 
     fn key_press(&mut self, _ctx: &mut ModeContext<'_>, key: Key) -> bool {
         if key == Key::Escape && self.drag.is_some() {
             self.drag = None;
+            self.active_axis = None;
             return true;
         }
         false
@@ -197,9 +214,14 @@ mod tests {
         {
             let mut c = ctx(&mut doc, &brush, &mut state, &mut picked);
             assert!(mode.button_press(&mut c, &PointerEvent::button(170.0, 90.0, 80.0, 1)));
+            assert_eq!(mode.active_symmetry_axis(), Some(0), "水平轴 = 下标 0");
             mode.motion(&mut c, &PointerEvent::motion(120.0, 140.0, 96.0));
             mode.button_release(&mut c, &PointerEvent::button(120.0, 140.0, 112.0, 1));
         }
-        assert!((doc.symmetry_angle() - 90.0).abs() < 1e-4, "angle={}", doc.symmetry_angle());
+        assert!(
+            (doc.symmetry_angle() - 90.0).abs() < 1e-4,
+            "angle={}",
+            doc.symmetry_angle()
+        );
     }
 }

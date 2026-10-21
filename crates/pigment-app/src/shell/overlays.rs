@@ -17,11 +17,10 @@
 //! - `Overlay.paint(cr)` 的多态与 `FadingOverlay` 的淡出动画（`overlays.py:42-116`）；
 //! - 覆盖层自己的失效矩形（`symmetry.py:763-780` / `framewindow.py:702-806`）——
 //!   egui 每帧全画，不需要；
-//! - 编辑模式下的交互件（拖拽手柄、删除按钮、活动轴高亮，`symmetry.py:955-1026`
-//!   与 `framewindow.py:837-899`）——对应的两种编辑模式未移植；
+//! - 编辑模式下的部分交互件：删除/中心按钮已接，拖拽手柄与活动轴高亮的
+//!   剩余细节仍未接（`symmetry.py:955-1026` / `framewindow.py:837-899`）；
 //! - `symmetry.line_alpha` 偏好（`symmetry.py:46-47`）由 [`OverlayStyle`] 读入；
-//!   编辑模式下的透明度滑条（`symmetry.py:455-456`/`:595-597`）随编辑模式一起
-//!   归 B6-3。
+//!   编辑模式下的透明度滑条（`symmetry.py:455-456`/`:595-597`）已随选项面板接线。
 //!
 //! # 为什么自己算几何
 //!
@@ -116,6 +115,8 @@ pub(crate) struct OverlayStyle {
     pub(crate) brush_inner_width: f32,
     /// 内圈相对半径的内缩量（显示像素）。
     pub(crate) brush_inset: f32,
+    /// 对称编辑中正在拖动的轴线下标（`symmetry.py:998-1006` 的 active）。
+    pub(crate) active_symmetry_axis: Option<usize>,
 }
 
 impl Default for OverlayStyle {
@@ -128,6 +129,7 @@ impl Default for OverlayStyle {
             brush_outer_width: DEFAULT_BRUSH_LINE_WIDTH,
             brush_inner_width: DEFAULT_BRUSH_LINE_WIDTH,
             brush_inset: DEFAULT_BRUSH_INSET,
+            active_symmetry_axis: None,
         }
     }
 }
@@ -137,9 +139,10 @@ impl OverlayStyle {
     pub(crate) fn from_prefs(prefs: &Prefs) -> Self {
         let mut style = Self::default();
         // `symmetry.py:648-649`：`float(prefs.get(key, _DEFAULT_ALPHA))`
-        style.symmetry_line_alpha = prefs
-            .f64_or(prefs::KEY_SYMMETRY_LINE_ALPHA, DEFAULT_SYMMETRY_ALPHA as f64)
-            as f32;
+        style.symmetry_line_alpha = prefs.f64_or(
+            prefs::KEY_SYMMETRY_LINE_ALPHA,
+            DEFAULT_SYMMETRY_ALPHA as f64,
+        ) as f32;
         // `framewindow.py:502-505`：`[min(max(c, 0), 1) for c in color_rgba]`
         if let Some(arr) = prefs.get_array(prefs::KEY_FRAME_COLOR_RGBA) {
             for (i, v) in arr.iter().take(4).enumerate() {
@@ -169,8 +172,10 @@ impl OverlayStyle {
             "cursor.freehand.inner_line_width",
             DEFAULT_BRUSH_LINE_WIDTH as f64,
         ) as f32;
-        style.brush_inset =
-            prefs.f64_or("cursor.freehand.inner_line_inset", DEFAULT_BRUSH_INSET as f64) as f32;
+        style.brush_inset = prefs.f64_or(
+            "cursor.freehand.inner_line_inset",
+            DEFAULT_BRUSH_INSET as f64,
+        ) as f32;
         style
     }
 }
@@ -262,7 +267,7 @@ fn paint_frame(
 }
 
 /// 画框在**画布局部坐标**里的矩形（源码 `:714-722` 的 `model_to_display` 四角）。
-fn frame_display_rect(
+pub(crate) fn frame_display_rect(
     canvas: egui::Rect,
     view: &View,
     frame: (i32, i32, i32, i32),
@@ -348,12 +353,23 @@ fn paint_symmetry(
         rect.min + egui::vec2(sx.round(), sy.round())
     };
     let colors = axis_line_colors(style.symmetry_line_alpha);
-    for (offs, color) in colors.iter().enumerate() {
-        // `:1009-1011`：第二遍的偏移加了 `DASH_LENGTH + DASH_GAP`（= 半个周期），
-        // 于是它的实线段正好落进第一遍的空白里 —— 形成双色虚线。
-        let dash_offset = DASH_OFFSET + (DASH_LENGTH + DASH_GAP) * offs as f32;
-        let stroke = egui::Stroke::new(DRAGGABLE_EDGE_WIDTH, *color);
-        for (_, a, b) in &axes {
+    for (i, (_, a, b)) in axes.iter().enumerate() {
+        if style.active_symmetry_axis == Some(i) {
+            // `symmetry.py:1017-1023`：正在拖的轴改画实线 ACTIVE_ITEM_COLOR。
+            painter.line_segment(
+                [to_view(*a), to_view(*b)],
+                egui::Stroke::new(
+                    DRAGGABLE_EDGE_WIDTH,
+                    egui::Color32::from_rgb(0xFC, 0xE9, 0x4F),
+                ),
+            );
+            continue;
+        }
+        for (offs, color) in colors.iter().enumerate() {
+            // `:1009-1011`：第二遍的偏移加了 `DASH_LENGTH + DASH_GAP`（= 半个周期），
+            // 于是它的实线段正好落进第一遍的空白里 —— 形成双色虚线。
+            let dash_offset = DASH_OFFSET + (DASH_LENGTH + DASH_GAP) * offs as f32;
+            let stroke = egui::Stroke::new(DRAGGABLE_EDGE_WIDTH, *color);
             dashed_segment(
                 painter,
                 to_view(*a),
@@ -397,8 +413,18 @@ pub(crate) fn symmetry_disable_pos(
         }
     };
     egui::pos2(
-        clamp_or_center(x, rect.left() + margin, rect.right() - margin, rect.center().x),
-        clamp_or_center(y, rect.top() + margin, rect.bottom() - margin, rect.center().y),
+        clamp_or_center(
+            x,
+            rect.left() + margin,
+            rect.right() - margin,
+            rect.center().x,
+        ),
+        clamp_or_center(
+            y,
+            rect.top() + margin,
+            rect.bottom() - margin,
+            rect.center().y,
+        ),
     )
 }
 
@@ -728,7 +754,9 @@ pub(crate) fn viewport_intersections(
     // —— 模型坐标 y 向下，所以这里减 sin 才是"屏幕上逆时针"。
     let mut append = |a: f32, line_type: LineType| {
         let p2 = (x + a.cos(), y - a.sin());
-        intersections.push(intersection_of_vector_and_poly(corners_m, p1, p2, line_type));
+        intersections.push(intersection_of_vector_and_poly(
+            corners_m, p1, p2, line_type,
+        ));
     };
 
     // `:1056-1064` 的三段 if/elif 结构照抄（`elif` 绑在第二个 if 上）
@@ -737,7 +765,10 @@ pub(crate) fn viewport_intersections(
     }
     if matches!(symm_type, SymmetryType::Vertical | SymmetryType::VertHorz) {
         append(angle + std::f32::consts::PI / 2.0, LineType::Line);
-    } else if matches!(symm_type, SymmetryType::Rotational | SymmetryType::Snowflake) {
+    } else if matches!(
+        symm_type,
+        SymmetryType::Rotational | SymmetryType::Snowflake
+    ) {
         let delta = (std::f32::consts::PI * 2.0) / num_lines as f32;
         for i in 0..num_lines {
             append(angle + delta * i as f32, LineType::Directional);
@@ -833,14 +864,8 @@ pub(crate) fn cursor_line_segments(
                 ((-offs1, offs1), (-offs2, offs2)),
             ]
         }
-        CursorStyle::LockAlpha => vec![
-            ((-r - offs, 0.0), (-r, 0.0)),
-            ((r, 0.0), (r + offs, 0.0)),
-        ],
-        CursorStyle::Colorize => vec![
-            ((0.0, -r - offs), (0.0, -r)),
-            ((0.0, r), (0.0, r + offs)),
-        ],
+        CursorStyle::LockAlpha => vec![((-r - offs, 0.0), (-r, 0.0)), ((r, 0.0), (r + offs, 0.0))],
+        CursorStyle::Colorize => vec![((0.0, -r - offs), (0.0, -r)), ((0.0, r), (0.0, r + offs))],
         CursorStyle::Normal => vec![
             ((-r - offs, 0.0), (-r, 0.0)),
             ((r, 0.0), (r + offs, 0.0)),
@@ -990,19 +1015,13 @@ pub(crate) fn paint_brush_cursor(
         let segs = cursor_line_segments(cursor_style, radius, threshold);
         for (a, b) in &segs {
             painter.line_segment(
-                [
-                    center + egui::vec2(a.0, a.1),
-                    center + egui::vec2(b.0, b.1),
-                ],
+                [center + egui::vec2(a.0, a.1), center + egui::vec2(b.0, b.1)],
                 egui::Stroke::new(3.0, egui::Color32::BLACK),
             );
         }
         for (a, b) in &segs {
             painter.line_segment(
-                [
-                    center + egui::vec2(a.0, a.1),
-                    center + egui::vec2(b.0, b.1),
-                ],
+                [center + egui::vec2(a.0, a.1), center + egui::vec2(b.0, b.1)],
                 egui::Stroke::new(1.0, egui::Color32::WHITE),
             );
         }
@@ -1086,10 +1105,8 @@ mod tests {
     /// （`symmetry.py:46-47`、`framewindow.py:502-505`）。
     #[test]
     fn overlay_style_reads_prefs_and_clamps_the_frame_color() {
-        let dir = std::env::temp_dir().join(format!(
-            "pigment-overlay-prefs-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pigment-overlay-prefs-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("settings.json");
@@ -1143,7 +1160,11 @@ mod tests {
         assert!(on > baseline, "对称开启后应画出轴线：{baseline} → {on}");
         // 一条竖轴、两遍颜色、虚线按 34px 周期切成若干段：
         // 600px 高 → 每遍约 18 段，两遍加起来远多于 2 段。
-        assert!(on - baseline >= 8, "虚线轴应切成多段，实得 {} 段", on - baseline);
+        assert!(
+            on - baseline >= 8,
+            "虚线轴应切成多段，实得 {} 段",
+            on - baseline
+        );
     }
 
     /// 画框关闭时覆盖层**一个图形都不加**；开启后画出 4 块遮罩 + 边线。
@@ -1162,7 +1183,10 @@ mod tests {
         doc.set_frame_enabled(true);
         let on = frame_shape_count(&doc, true);
         println!("  画框：基线 {baseline} → 开启后 {on} 个图形");
-        assert!(on - baseline >= 4, "四块遮罩至少 4 个图形：{baseline} → {on}");
+        assert!(
+            on - baseline >= 4,
+            "四块遮罩至少 4 个图形：{baseline} → {on}"
+        );
     }
 
     fn corners(rect: egui::Rect, view: &View) -> Vec<(f32, f32)> {
@@ -1183,10 +1207,16 @@ mod tests {
         );
         assert_eq!(axes.len(), 1);
         let (_, a, b) = axes[0];
-        assert!((a.1 - 300.0).abs() < 1e-3 && (b.1 - 300.0).abs() < 1e-3, "y 应恒为 300");
+        assert!(
+            (a.1 - 300.0).abs() < 1e-3 && (b.1 - 300.0).abs() < 1e-3,
+            "y 应恒为 300"
+        );
         let mut xs = [a.0, b.0];
         xs.sort_by(|p, q| p.partial_cmp(q).unwrap());
-        assert!(xs[0].abs() < 1e-3 && (xs[1] - 800.0).abs() < 1e-3, "x 应到视口两端：{xs:?}");
+        assert!(
+            xs[0].abs() < 1e-3 && (xs[1] - 800.0).abs() < 1e-3,
+            "x 应到视口两端：{xs:?}"
+        );
     }
 
     /// 垂直轴 = 过中心的一整条竖线（`angle` 再加 90°，`symmetry.py:1058`）。
@@ -1203,10 +1233,16 @@ mod tests {
         );
         assert_eq!(axes.len(), 1);
         let (_, a, b) = axes[0];
-        assert!((a.0 - 300.0).abs() < 1e-3 && (b.0 - 300.0).abs() < 1e-3, "x 应恒为 300");
+        assert!(
+            (a.0 - 300.0).abs() < 1e-3 && (b.0 - 300.0).abs() < 1e-3,
+            "x 应恒为 300"
+        );
         let mut ys = [a.1, b.1];
         ys.sort_by(|p, q| p.partial_cmp(q).unwrap());
-        assert!(ys[0].abs() < 1e-3 && (ys[1] - 600.0).abs() < 1e-3, "y 应到视口两端：{ys:?}");
+        assert!(
+            ys[0].abs() < 1e-3 && (ys[1] - 600.0).abs() < 1e-3,
+            "y 应到视口两端：{ys:?}"
+        );
     }
 
     /// 垂直 + 水平 = 两条轴（`VertHorz`）。
@@ -1272,7 +1308,10 @@ mod tests {
         );
         assert_eq!(axes.len(), 1);
         let (_, a, b) = axes[0];
-        assert!((a.0 - 400.0).abs() < 1e-2 && (b.0 - 400.0).abs() < 1e-2, "应变成竖线：{a:?} {b:?}");
+        assert!(
+            (a.0 - 400.0).abs() < 1e-2 && (b.0 - 400.0).abs() < 1e-2,
+            "应变成竖线：{a:?} {b:?}"
+        );
     }
 
     /// 中心在视口外时，无限直线照样截出一段（这就是用 `LineType::Line` 的意义）。
@@ -1317,7 +1356,10 @@ mod tests {
         // 总面积 = 画布面积 - 画框面积
         let covered: f32 = rects.iter().map(|r| r.width() * r.height()).sum();
         let expected = canvas.width() * canvas.height() - frame.width() * frame.height();
-        assert!((covered - expected).abs() < 1e-3, "覆盖 {covered} ≠ {expected}");
+        assert!(
+            (covered - expected).abs() < 1e-3,
+            "覆盖 {covered} ≠ {expected}"
+        );
         // 没有一块碰到画框内部
         for r in &rects {
             let overlap = r.intersect(frame);
@@ -1368,7 +1410,10 @@ mod tests {
         let view = View::default();
         // 中心在视口内：按钮在中心左侧或右侧 32px
         let d = symmetry_disable_pos(rect, &view, (400, 300));
-        assert!((d.x - (rect.center().x - 32.0)).abs() < 1.0 || (d.x - (rect.center().x + 32.0)).abs() < 1.0);
+        assert!(
+            (d.x - (rect.center().x - 32.0)).abs() < 1.0
+                || (d.x - (rect.center().x + 32.0)).abs() < 1.0
+        );
         assert!(rect.contains(d));
         // 中心远在视口外：按钮仍被夹在视口内
         let d = symmetry_disable_pos(rect, &view, (-100000, 300));
@@ -1388,7 +1433,10 @@ mod tests {
         // 逐项照 cursor.py:268-288；角度是 cairo 的弧度，k=π/4、k2=π/8
         let k = std::f32::consts::PI / 4.0;
         let k2 = k / 2.0;
-        assert_eq!(cursor_arc_segments(CursorStyle::Normal), vec![(0.0, 2.0 * std::f32::consts::PI)]);
+        assert_eq!(
+            cursor_arc_segments(CursorStyle::Normal),
+            vec![(0.0, 2.0 * std::f32::consts::PI)]
+        );
         assert_eq!(
             cursor_arc_segments(CursorStyle::Eraser),
             vec![
@@ -1412,7 +1460,13 @@ mod tests {
         let total = |s| {
             cursor_arc_segments(s)
                 .iter()
-                .map(|(a, b)| if b >= a { b - a } else { b - a + std::f32::consts::TAU })
+                .map(|(a, b)| {
+                    if b >= a {
+                        b - a
+                    } else {
+                        b - a + std::f32::consts::TAU
+                    }
+                })
                 .sum::<f32>()
         };
         assert!((total(CursorStyle::Eraser) - std::f32::consts::PI).abs() < 1e-4);
@@ -1439,8 +1493,14 @@ mod tests {
             ]
         );
         // 锁 alpha 只留左右；着色只留上下
-        assert_eq!(cursor_line_segments(CursorStyle::LockAlpha, 4.0, 8.0).len(), 2);
-        assert_eq!(cursor_line_segments(CursorStyle::Colorize, 4.0, 8.0).len(), 2);
+        assert_eq!(
+            cursor_line_segments(CursorStyle::LockAlpha, 4.0, 8.0).len(),
+            2
+        );
+        assert_eq!(
+            cursor_line_segments(CursorStyle::Colorize, 4.0, 8.0).len(),
+            2
+        );
         let lock = cursor_line_segments(CursorStyle::LockAlpha, 4.0, 8.0);
         assert!(lock.iter().all(|(a, b)| a.1 == 0.0 && b.1 == 0.0));
         let colorize = cursor_line_segments(CursorStyle::Colorize, 4.0, 8.0);
@@ -1472,18 +1532,23 @@ mod tests {
         let mut plain = Brush::new();
         assert_eq!(CursorStyle::from_brush(&plain, true), CursorStyle::Eraser);
         plain.get_mut(BrushSetting::LockAlpha).base_value = 1.0;
-        assert_eq!(CursorStyle::from_brush(&plain, false), CursorStyle::LockAlpha);
+        assert_eq!(
+            CursorStyle::from_brush(&plain, false),
+            CursorStyle::LockAlpha
+        );
         plain.get_mut(BrushSetting::LockAlpha).base_value = 0.0;
         plain.get_mut(BrushSetting::Colorize).base_value = 1.0;
-        assert_eq!(CursorStyle::from_brush(&plain, false), CursorStyle::Colorize);
+        assert_eq!(
+            CursorStyle::from_brush(&plain, false),
+            CursorStyle::Colorize
+        );
     }
 
     #[test]
     fn crosshair_preset_selects_the_system_cursor() {
-        let mut p = Prefs::load(std::env::temp_dir().join(format!(
-            "pigment-cursor-{}.json",
-            std::process::id()
-        )));
+        let mut p = Prefs::load(
+            std::env::temp_dir().join(format!("pigment-cursor-{}.json", std::process::id())),
+        );
         assert!(!cursor_is_crosshair(&p), "缺键 → thin → 自绘圆环");
         p.set_str("cursor.freehand.style", "crosshair");
         assert!(cursor_is_crosshair(&p));
@@ -1491,4 +1556,3 @@ mod tests {
         assert!(!cursor_is_crosshair(&p));
     }
 }
-

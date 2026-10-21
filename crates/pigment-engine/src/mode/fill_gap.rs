@@ -116,24 +116,9 @@ fn inverted(e: Edge) -> Edge {
 fn skip_overflows(from_dir: Edge) -> Overflows {
     let table: [[Option<Edge>; 4]; 5] = [
         [None, Some(Edge::West), Some(Edge::North), Some(Edge::East)],
-        [
-            Some(Edge::South),
-            None,
-            Some(Edge::North),
-            Some(Edge::East),
-        ],
-        [
-            Some(Edge::South),
-            Some(Edge::West),
-            None,
-            Some(Edge::East),
-        ],
-        [
-            Some(Edge::South),
-            Some(Edge::West),
-            Some(Edge::North),
-            None,
-        ],
+        [Some(Edge::South), None, Some(Edge::North), Some(Edge::East)],
+        [Some(Edge::South), Some(Edge::West), None, Some(Edge::East)],
+        [Some(Edge::South), Some(Edge::West), Some(Edge::North), None],
         [
             Some(Edge::South),
             Some(Edge::West),
@@ -492,16 +477,20 @@ pub fn gc_fill(
             if curr_dist == INF_DIST {
                 if track_seep {
                     if x > 0 && x < N - 1 {
-                        let left = dst[(y * N + x - 1) as usize] != 0 || alpha_at(alpha, x - 1, y) == 0;
-                        let right = dst[(y * N + x + 1) as usize] != 0 || alpha_at(alpha, x + 1, y) == 0;
+                        let left =
+                            dst[(y * N + x - 1) as usize] != 0 || alpha_at(alpha, x - 1, y) == 0;
+                        let right =
+                            dst[(y * N + x + 1) as usize] != 0 || alpha_at(alpha, x + 1, y) == 0;
                         if left && right {
                             dst[i] = a;
                             continue;
                         }
                     }
                     if y > 0 && y < N - 1 {
-                        let up = dst[((y - 1) * N + x) as usize] != 0 || alpha_at(alpha, x, y - 1) == 0;
-                        let down = dst[((y + 1) * N + x) as usize] != 0 || alpha_at(alpha, x, y + 1) == 0;
+                        let up =
+                            dst[((y - 1) * N + x) as usize] != 0 || alpha_at(alpha, x, y - 1) == 0;
+                        let down =
+                            dst[((y + 1) * N + x) as usize] != 0 || alpha_at(alpha, x, y + 1) == 0;
                         if up && down {
                             dst[i] = a;
                             continue;
@@ -846,8 +835,7 @@ pub fn gap_closing_fill(
             from_dir: Edge::None,
         })
         .collect();
-    let mut unseep_queue: VecDeque<((i32, i32), Vec<(i32, i32, u16)>, bool)> =
-        VecDeque::new();
+    let mut unseep_queue: VecDeque<((i32, i32), Vec<(i32, i32, u16)>, bool)> = VecDeque::new();
     let mut total_px: i64 = 0;
     let mut skip_unseeping = false;
 
@@ -880,8 +868,14 @@ pub fn gap_closing_fill(
                 .entry(item.coord)
                 .or_insert_with(|| AlphaTile::Data(Box::new([0u16; PIXELS])));
             let dst = entry.as_data_mut();
-            let (ov, fill_edges, px_f) =
-                gc_fill(&alpha_t, &dist_t, dst, &seeds, bounds, options.retract_seeps);
+            let (ov, fill_edges, px_f) = gc_fill(
+                &alpha_t,
+                &dist_t,
+                dst,
+                &seeds,
+                bounds,
+                options.retract_seeps,
+            );
             if px_f == PIXELS {
                 final_set.insert(item.coord);
             }
@@ -1028,15 +1022,9 @@ mod tests {
             retract_seeps: true,
         });
         flood_fill(&src, &gc, &mut closed);
-        let below = closed
-            .tile(0, 0)
-            .map(|t| t[50][5][3])
-            .unwrap_or(0);
+        let below = closed.tile(0, 0).map(|t| t[50][5][3]).unwrap_or(0);
         assert_eq!(below, 0, "缺口闭合后不该漏到墙下");
-        assert!(
-            closed.tile(0, 0).unwrap()[10][5][3] > 0,
-            "墙上方仍应被填上"
-        );
+        assert!(closed.tile(0, 0).unwrap()[10][5][3] > 0, "墙上方仍应被填上");
     }
 
     /// `dist_search` 的四个八分圆方向都要在缺口两侧对称工作。
@@ -1097,8 +1085,7 @@ mod tests {
         }
         let mut dst = Box::new([0u16; PIXELS]);
         let seeds = GcSeeds::Pixels(vec![(5, 5, 0)]);
-        let (_ov, edges, px) =
-            gc_fill(&alpha, &dist, &mut dst, &seeds, (0, 0, 63, 63), true);
+        let (_ov, edges, px) = gc_fill(&alpha, &dist, &mut dst, &seeds, (0, 0, 63, 63), true);
         assert!(px > 0);
         assert_eq!(dst[(5 * TS + 5) as usize], OPAQUE);
         assert_eq!(dst[(5 * TS + 40) as usize], 0, "距离跳变处必须停下");

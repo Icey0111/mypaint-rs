@@ -163,7 +163,7 @@ pub fn hcy_to_rgb(hcy: [f64; 3]) -> [f64; 3] {
         return [y, y, y];
     }
     let h = h0.rem_euclid(1.0) * 6.0; // 源码 `h %= 1.0; h *= 6.0`
-    // 每个扇区给出 th（第三个分量的位置）与 tm（中间分量的位置）
+                                      // 每个扇区给出 th（第三个分量的位置）与 tm（中间分量的位置）
     let (sector, th, tm) = if h < 1.0 {
         (0usize, h, HCY_RED_LUMA + HCY_GREEN_LUMA * h)
     } else if h < 2.0 {

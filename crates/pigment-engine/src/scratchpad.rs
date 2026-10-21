@@ -394,11 +394,7 @@ pub fn save_needed(unsaved_painting_time: f64, export: bool, path: &Path) -> boo
 /// [`Document::save`]（按扩展名）。返回值 `true` 表示真的写了文件。
 ///
 /// `export` 只在"另存为/导出"时为真（源码的 `save_scratchpad(..., export=)`）。
-pub fn save_scratchpad(
-    doc: &mut Document,
-    path: &Path,
-    export: bool,
-) -> Result<bool, FileError> {
+pub fn save_scratchpad(doc: &mut Document, path: &Path, export: bool) -> Result<bool, FileError> {
     if !save_needed(doc.unsaved_painting_time, export, path) {
         return Ok(false);
     }
@@ -564,7 +560,11 @@ mod tests {
         touch(&dir, "003_c.ora");
         let cur = dir.join("003_a.ora");
         let next = next_scratchpad_path(&dir, Some(&cur), DEFAULT_EXT);
-        assert_eq!(next, dir.join("003_d.ora"), "字母取现有最大值 +1（不是空位）");
+        assert_eq!(
+            next,
+            dir.join("003_d.ora"),
+            "字母取现有最大值 +1（不是空位）"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -610,7 +610,10 @@ mod tests {
         assert!(is_scratchpad_name("1.png"));
         assert!(is_scratchpad_name("002_b.ORA"), "大写扩展名也认（:1465）");
         assert!(is_scratchpad_name("_md5abc123.jpg"));
-        assert!(is_scratchpad_name("_md5.jpeg"), "hex 段允许空（`[0-9a-f]*`）");
+        assert!(
+            is_scratchpad_name("_md5.jpeg"),
+            "hex 段允许空（`[0-9a-f]*`）"
+        );
         assert!(!is_scratchpad_name("autosave.ora"), "没有数字前缀");
         assert!(!is_scratchpad_name("scratchpad_default.ora"));
         assert!(!is_scratchpad_name("001_a.Ora"), "只认全小写/全大写");
@@ -759,7 +762,10 @@ mod tests {
             assert!(!dir.as_os_str().is_empty());
             return;
         }
-        assert!(dir.ends_with(SCRATCHPADS_SUBDIR), "目录名必须是 scratchpads");
+        assert!(
+            dir.ends_with(SCRATCHPADS_SUBDIR),
+            "目录名必须是 scratchpads"
+        );
         assert_eq!(
             dir.parent().and_then(|p| p.file_name()),
             Some(std::ffi::OsStr::new(APP_SUBDIR)),

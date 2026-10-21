@@ -131,7 +131,13 @@ fn set_symmetry_state_propagates_to_current_layer() {
 #[test]
 fn switching_layers_repropagates_symmetry() {
     let mut doc = Document::new();
-    doc.set_symmetry_state(Some(true), Some((7, 8)), Some(SymmetryType::Horizontal), Some(3), Some(15.0));
+    doc.set_symmetry_state(
+        Some(true),
+        Some((7, 8)),
+        Some(SymmetryType::Horizontal),
+        Some(3),
+        Some(15.0),
+    );
     // 第二层（新层会继承当前状态），然后切回去
     assert!(doc.add_layer());
     assert_eq!(doc.layers().len(), 2);
@@ -141,7 +147,11 @@ fn switching_layers_repropagates_symmetry() {
     assert_eq!(s.center_y, 8.0);
     doc.select_layer(&[0]);
     let s = surface_symmetry(&doc).expect("新层可画");
-    assert_eq!(s.type_, SymmetryType::Horizontal, "切回来的层也该有中央状态");
+    assert_eq!(
+        s.type_,
+        SymmetryType::Horizontal,
+        "切回来的层也该有中央状态"
+    );
     assert_eq!(s.num_lines, 3.0);
 }
 
@@ -149,7 +159,13 @@ fn switching_layers_repropagates_symmetry() {
 #[test]
 fn new_layer_inherits_central_symmetry() {
     let mut doc = Document::new();
-    doc.set_symmetry_state(Some(true), Some((40, 40)), Some(SymmetryType::Snowflake), Some(6), Some(10.0));
+    doc.set_symmetry_state(
+        Some(true),
+        Some((40, 40)),
+        Some(SymmetryType::Snowflake),
+        Some(6),
+        Some(10.0),
+    );
     assert!(doc.add_layer());
     let s = surface_symmetry(&doc).expect("新当前层可画");
     assert!(doc.paintable_surface().unwrap().symmetry_active());
@@ -164,7 +180,13 @@ fn group_layer_swallows_symmetry_without_panicking() {
     let mut doc = Document::new();
     assert!(doc.add_group());
     assert_eq!(doc.layers().len(), 2);
-    doc.set_symmetry_state(Some(true), Some((1, 2)), Some(SymmetryType::Vertical), Some(2), Some(0.0));
+    doc.set_symmetry_state(
+        Some(true),
+        Some((1, 2)),
+        Some(SymmetryType::Vertical),
+        Some(2),
+        Some(0.0),
+    );
     // 中央状态照记（根栈上的数据与当前层类型无关）
     assert!(doc.symmetry_active());
     assert_eq!(doc.symmetry_center(), (1, 2));
@@ -186,7 +208,13 @@ fn symmetry_off_paints_identical_pixels() {
 
     // 走 app 的开关路径：先开、改参数、再关（矩阵真的按 Rotational 算过）
     let mut toggled = Document::new();
-    toggled.set_symmetry_state(Some(true), Some((55, 32)), Some(SymmetryType::Rotational), Some(6), Some(25.0));
+    toggled.set_symmetry_state(
+        Some(true),
+        Some((55, 32)),
+        Some(SymmetryType::Rotational),
+        Some(6),
+        Some(25.0),
+    );
     toggled.set_symmetry_state(Some(false), None, None, None, None);
     paint_line(&mut toggled);
 
@@ -228,8 +256,14 @@ fn symmetry_on_paints_both_sides() {
     paint_segment(&mut doc, 10.0, 40.0, 32.0);
     let original = ink_alpha(&doc, 25, 32);
     let mirrored = ink_alpha(&doc, 85, 32);
-    assert!(original > 0.05, "原始笔画在 (25,32) 应有笔迹，实得 {original}");
-    assert!(mirrored > 0.05, "镜像笔画在 (85,32) 应有笔迹，实得 {mirrored}");
+    assert!(
+        original > 0.05,
+        "原始笔画在 (25,32) 应有笔迹，实得 {original}"
+    );
+    assert!(
+        mirrored > 0.05,
+        "镜像笔画在 (85,32) 应有笔迹，实得 {mirrored}"
+    );
 
     // 关闭对称：右侧没有镜像笔迹
     let mut plain = Document::new();
@@ -256,7 +290,10 @@ fn symmetry_on_paints_both_sides() {
 fn frame_defaults_and_toggle_state() {
     let mut doc = Document::new();
     assert_eq!(doc.get_frame(), (0, 0, 0, 0), ":338 的 `self._frame`");
-    assert!(!doc.get_frame_enabled(), ":339 的 `self._frame_enabled = False`");
+    assert!(
+        !doc.get_frame_enabled(),
+        ":339 的 `self._frame_enabled = False`"
+    );
 
     // FrameToggle 的落地端（`gui/document.py:1066-1072`）
     doc.set_frame_enabled(!doc.get_frame_enabled());
@@ -284,7 +321,11 @@ fn frame_is_stored_verbatim_and_drives_user_bbox() {
     paint_line(&mut doc);
     let data = doc.data_bbox();
     assert_eq!(doc.get_user_bbox(), data, "画框关闭时 bbox 不受画框影响");
-    assert_ne!(data, (0, 0, 100, 100), "内容 bbox 应与画框不同，测试才有意义");
+    assert_ne!(
+        data,
+        (0, 0, 100, 100),
+        "内容 bbox 应与画框不同，测试才有意义"
+    );
 
     // 开启画框 → 导出外接框就是画框本身（内容与画框无关）
     doc.set_frame_enabled(true);
@@ -300,7 +341,13 @@ fn clear_resets_frame_resolution_settings_and_symmetry() {
     doc.xres = Some(300);
     doc.yres = Some(300);
     doc.settings.insert("k".to_string(), serde_json::json!("v"));
-    doc.set_symmetry_state(Some(true), Some((3, 4)), Some(SymmetryType::Rotational), Some(8), Some(45.0));
+    doc.set_symmetry_state(
+        Some(true),
+        Some((3, 4)),
+        Some(SymmetryType::Rotational),
+        Some(8),
+        Some(45.0),
+    );
 
     doc.clear();
 
@@ -311,4 +358,3 @@ fn clear_resets_frame_resolution_settings_and_symmetry() {
     assert!(doc.settings.is_empty());
     assert_eq!(doc.symmetry(), SymmetrySetup::default());
 }
-

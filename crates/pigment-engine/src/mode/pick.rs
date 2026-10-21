@@ -35,14 +35,12 @@
 //! # 记账（本块未移植 / 用最保守做法的地方）
 //!
 //! - **预览方块叠加层**（`ColorPickPreviewOverlay`，`colorpicker.py:253-364`）：
-//!   要画布叠加层 + 圆角框，属另一块，未移植；
+//!   已由 `shell/overlays.rs::paint_pick_preview` 绘制；
 //! - **光标**（`inactive_cursor` 取 `app.cursor_color_picker*`，`:60-62`、
-//!   `:196-198`）：光标族未移植，画布上仍是笔刷圆圈（`shell/workspace.rs`）；
-//! - **拖拽结束后的自动出栈**：`OneshotDragMode.drag_stop_cb`（`mode.py:1302-1317`）
-//!   按修饰键规则弹栈；模式对象够不到模式栈，[`ColorPickMode::pop_after_drag`]
-//!   只把这条规则算出来，GUI 目前不调用（与 B3-1 起 `switch_mode` 用 `reset`
-//!   的既有记账一致）。源码 `keyup_timeout = 0`（`colorpicker.py:53`）是
-//!   "松开 `r` 就出栈"，依赖按键**释放**事件，本移植也没接；
+//!   `:196-198`）：GUI 用系统十字代替自绘光标（`shell/workspace.rs`）；
+//! - **拖拽结束后的自动出栈**：`OneshotDragMode.drag_stop_cb` 已接
+//!   `finish_oneshot`（`workspace.rs` 的按钮释放路径）；`keyup_timeout=0`
+//!   的“松开 `r` 出栈”仍未接（winit 的键释放事件到不了模式层）。
 //! - **60fps 节流**（`_queue_color_change` 的 `GLib.timeout_add(16.66)`）：
 //!   我们的 idle 等价物是 `process_pending`（每帧一次），落地的是一个
 //!   `Option`，没有节流必要；
@@ -773,8 +771,16 @@ mod tests {
             BRUSH_COLOR[0],
             hsv[0]
         );
-        assert!(near(hsv[1], 0.0), "饱和取自取样色（白 → 0），实得 {}", hsv[1]);
-        assert!(near(hsv[2], 1.0), "明度取自取样色（白 → 1），实得 {}", hsv[2]);
+        assert!(
+            near(hsv[1], 0.0),
+            "饱和取自取样色（白 → 0），实得 {}",
+            hsv[1]
+        );
+        assert!(
+            near(hsv[2], 1.0),
+            "明度取自取样色（白 → 1），实得 {}",
+            hsv[2]
+        );
     }
 
     /// 三个 HCY 变体各只改自己那一个分量（`colorpicker.py:179-250`）。
@@ -974,7 +980,10 @@ mod tests {
         let mut stack = ModeStack::new(|| Box::new(FreehandMode::new()));
         stack.context_push(Box::new(ColorPickMode::new(PickVariant::Full)), &mut ctx);
         assert_eq!(stack.len(), 2, "取色应叠在自由手绘之上，保留原工具");
-        assert!(stack.top_pops_after_drag(Modifiers::NONE), "工具条起手：拖完回原工具");
+        assert!(
+            stack.top_pops_after_drag(Modifiers::NONE),
+            "工具条起手：拖完回原工具"
+        );
         stack.pop(&mut ctx);
         assert_eq!(stack.top().name(), "Freehand Drawing");
 
@@ -1019,7 +1028,11 @@ mod tests {
             "纯红 luma = 0.3，实得 {}",
             red[2]
         );
-        assert!(red[1] > 0.99 && red[1] < 1.01, "纯红彩度 ≈ 1，实得 {}", red[1]);
+        assert!(
+            red[1] > 0.99 && red[1] < 1.01,
+            "纯红彩度 ≈ 1，实得 {}",
+            red[1]
+        );
         // 无彩色：彩度 0（源码靠 `r == g == b` 分支避免除零）
         assert_eq!(rgb_to_hcy([1.0, 1.0, 1.0])[1], 0.0);
         assert_eq!(rgb_to_hcy([0.0, 0.0, 0.0])[1], 0.0);

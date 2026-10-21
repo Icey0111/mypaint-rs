@@ -42,7 +42,10 @@ fn paint(doc: &mut Document, y: f32, radius: f32) {
 /// 一块 tile 的像素（64×64 RGBA fix15）。
 type TilePixels = Box<[[[u16; 4]; 64]; 64]>;
 /// 「相对 tile 坐标 → 像素」的映射 + 该表面的最小绝对坐标。
-type RelativeTiles = (std::collections::BTreeMap<(i32, i32), TilePixels>, (i32, i32));
+type RelativeTiles = (
+    std::collections::BTreeMap<(i32, i32), TilePixels>,
+    (i32, i32),
+);
 
 /// 把表面抓成「相对坐标 → 像素」的映射。
 ///
@@ -83,14 +86,22 @@ fn relative_tiles(surface: &pigment_surface::PigmentSurface) -> RelativeTiles {
 /// `load_from_rgba8` 与 MyPaint 的稀疏 tile 语义一致）。所以两边的 tile
 /// **数量**可能不同，但**可见内容**必须一致。按相对坐标对齐、缺席方视作
 /// 全透明即可正确比较。
-fn assert_pixels_match(a: &pigment_surface::PigmentSurface, b: &pigment_surface::PigmentSurface, whose: &str) {
+fn assert_pixels_match(
+    a: &pigment_surface::PigmentSurface,
+    b: &pigment_surface::PigmentSurface,
+    whose: &str,
+) {
     /// 8 位下允许的最大偏差。见上：alpha 量化 + EOTF 近零处陡斜率。
     const TOL: i32 = 16;
     let (ma, _) = relative_tiles(a);
     let (mb, _) = relative_tiles(b);
     let bg_lin = pigment_surface::color::bg_to_linear(pigment_surface::color::CANVAS_BG);
     let empty = [[[0u16; 4]; 64]; 64];
-    let bg_px = pigment_surface::color::tile_to_rgba8_single([0, 0, 0, 0], pigment_surface::color::CANVAS_BG, bg_lin);
+    let bg_px = pigment_surface::color::tile_to_rgba8_single(
+        [0, 0, 0, 0],
+        pigment_surface::color::CANVAS_BG,
+        bg_lin,
+    );
 
     let mut keys: Vec<(i32, i32)> = ma.keys().chain(mb.keys()).copied().collect();
     keys.sort_unstable();
@@ -102,8 +113,16 @@ fn assert_pixels_match(a: &pigment_surface::PigmentSurface, b: &pigment_surface:
         let pb = mb.get(&k).map(|p| &**p).unwrap_or(&empty);
         for y in 0..64 {
             for x in 0..64 {
-                let va = pigment_surface::color::tile_to_rgba8_single(pa[y][x], pigment_surface::color::CANVAS_BG, bg_lin);
-                let vb = pigment_surface::color::tile_to_rgba8_single(pb[y][x], pigment_surface::color::CANVAS_BG, bg_lin);
+                let va = pigment_surface::color::tile_to_rgba8_single(
+                    pa[y][x],
+                    pigment_surface::color::CANVAS_BG,
+                    bg_lin,
+                );
+                let vb = pigment_surface::color::tile_to_rgba8_single(
+                    pb[y][x],
+                    pigment_surface::color::CANVAS_BG,
+                    bg_lin,
+                );
                 for c in 0..3 {
                     let d = (va[c] as i32 - vb[c] as i32).abs();
                     assert!(
@@ -226,11 +245,7 @@ fn ora_round_trips_pixels() {
     // ORA 只存画幅的宽高，**存不下画布原点**（格式限制，MyPaint 也一样）。
     // 载入时 `update_frame(0, 0, w, h)` 把画幅挪回原点（lib/document.py:1853），
     // 所以这里比尺寸而不是比原点。
-    assert_eq!(
-        (lb.2, lb.3),
-        (bbox.2, bbox.3),
-        "往返后画幅尺寸应一致"
-    );
+    assert_eq!((lb.2, lb.3), (bbox.2, bbox.3), "往返后画幅尺寸应一致");
     assert_eq!((lb.0, lb.1), (0, 0), "载入后画幅原点归零");
     assert_pixels_match(doc.surface(), doc2.surface(), "ORA 往返");
     assert_eq!(
@@ -311,7 +326,10 @@ fn strokemap_follows_undo_redo() {
     paint(&mut doc, 40.0, 4.0);
     assert_eq!(doc.surface().strokes().len(), 1);
     doc.undo().unwrap();
-    assert!(doc.surface().strokes().is_empty(), "撤销应摘掉这一笔的 strokemap");
+    assert!(
+        doc.surface().strokes().is_empty(),
+        "撤销应摘掉这一笔的 strokemap"
+    );
     doc.redo().unwrap();
     assert_eq!(doc.surface().strokes().len(), 1, "重做应挂回形状");
 }
@@ -321,7 +339,11 @@ fn ora_strokemap_round_trips() {
     let path = tmp("strokemap.ora");
     let mut doc = Document::new();
     paint(&mut doc, 40.0, 4.0);
-    assert_eq!(doc.surface().strokes().len(), 1, "一笔应记录一个 StrokeShape");
+    assert_eq!(
+        doc.surface().strokes().len(),
+        1,
+        "一笔应记录一个 StrokeShape"
+    );
 
     doc.save(&path, None).unwrap();
     let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
@@ -334,7 +356,10 @@ fn ora_strokemap_round_trips() {
     let mut doc2 = Document::new();
     doc2.load(&path).unwrap();
     assert_eq!(doc2.surface().strokes().len(), 1, "载入后应恢复 strokemap");
-    assert_eq!(doc2.surface().strokes()[0].tiles.len(), doc.surface().strokes()[0].tiles.len());
+    assert_eq!(
+        doc2.surface().strokes()[0].tiles.len(),
+        doc.surface().strokes()[0].tiles.len()
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -410,15 +435,19 @@ fn default_paper_texture_round_trips_through_ora() {
         .find(|n| n.ends_with("-tile.png"))
         .expect("应写背景 tile")
         .to_string();
-    let (px, w, h) = pigment_engine::surface::png::decode_rgba8_png(&z.read(&tile_name).unwrap())
-        .unwrap();
+    let (px, w, h) =
+        pigment_engine::surface::png::decode_rgba8_png(&z.read(&tile_name).unwrap()).unwrap();
     assert_eq!((w, h), (256, 256), "背景 tile 应是原图尺寸");
     let i = (91 * 256 + 37) * 4;
     assert_eq!(&px[i..i + 4], &sample, "tile 像素应与源图一致");
 
     let mut d2 = Document::new();
     d2.load(&path).unwrap();
-    let img2 = d2.layers().background_image().expect("载入后应恢复纸纹").clone();
+    let img2 = d2
+        .layers()
+        .background_image()
+        .expect("载入后应恢复纸纹")
+        .clone();
     assert_eq!((img2.width(), img2.height()), (256, 256));
     assert_eq!(img2.average_rgb(), avg);
     assert_eq!(img2.pixel_rgba8(37, 91), sample, "图案对齐世界原点");
@@ -454,13 +483,7 @@ fn paper_texture_is_tiled_across_world_coordinates() {
 fn nested_group_offsets_accumulate() {
     let ora = tmp("nested-offset.ora");
     let png = tmp("dot.png");
-    pigment_engine::surface::png::write_rgba8_png(
-        &png,
-        vec![0, 0, 255, 255],
-        1,
-        1,
-    )
-    .unwrap();
+    pigment_engine::surface::png::write_rgba8_png(&png, vec![0, 0, 255, 255], 1, 1).unwrap();
     let png_bytes = std::fs::read(&png).unwrap();
     let _ = std::fs::remove_file(&png);
     let xml = r#"<?xml version='1.0' encoding='UTF-8'?>
@@ -507,17 +530,28 @@ fn ora_save_uses_the_frame_when_enabled() {
     assert_eq!(bbox, (10, 20, 100, 80), "保存外接框 = 画框");
     let z = pigment_engine::zip::ZipArchive::open(&path).unwrap();
     let xml = String::from_utf8(z.read("stack.xml").unwrap()).unwrap();
-    assert!(xml.contains("w=\"100\"") && xml.contains("h=\"80\""), "{xml}");
+    assert!(
+        xml.contains("w=\"100\"") && xml.contains("h=\"80\""),
+        "{xml}"
+    );
     // 图层数据 bbox 相对画框原点：x = layer_tile_x*64 − 10，y 同理
     let (min_tx, min_ty) = doc
         .surface()
         .tiles()
         .map(|(c, _)| c)
-        .fold((i32::MAX, i32::MAX), |(x, y), (tx, ty)| (x.min(tx), y.min(ty)));
+        .fold((i32::MAX, i32::MAX), |(x, y), (tx, ty)| {
+            (x.min(tx), y.min(ty))
+        });
     let x = min_tx * 64 - 10;
     let y = min_ty * 64 - 20;
-    assert!(xml.contains(&format!("x=\"{x}\"")), "图层 x 应相对画框：{xml}");
-    assert!(xml.contains(&format!("y=\"{y}\"")), "图层 y 应相对画框：{xml}");
+    assert!(
+        xml.contains(&format!("x=\"{x}\"")),
+        "图层 x 应相对画框：{xml}"
+    );
+    assert!(
+        xml.contains(&format!("y=\"{y}\"")),
+        "图层 y 应相对画框：{xml}"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -531,9 +565,11 @@ fn ora_strokemap_tiles_are_layer_relative() {
     let path = tmp("strokemap-offset.ora");
     let mut doc = Document::new();
     paint(&mut doc, 150.0, 4.0); // y=150 → 绝对 tile y=2
-    let before: Vec<(i32, i32)> =
-        doc.surface().strokes()[0].tiles.keys().copied().collect();
-    assert!(before.iter().any(|&(_, ty)| ty == 2), "笔画应落在第二行 tile");
+    let before: Vec<(i32, i32)> = doc.surface().strokes()[0].tiles.keys().copied().collect();
+    assert!(
+        before.iter().any(|&(_, ty)| ty == 2),
+        "笔画应落在第二行 tile"
+    );
 
     let SaveOutcome::Ora { bbox } = doc.save(&path, None).unwrap() else {
         panic!("应保存为 ORA");
@@ -551,8 +587,7 @@ fn ora_strokemap_tiles_are_layer_relative() {
 
     let mut doc2 = Document::new();
     doc2.load(&path).unwrap();
-    let after: Vec<(i32, i32)> =
-        doc2.surface().strokes()[0].tiles.keys().copied().collect();
+    let after: Vec<(i32, i32)> = doc2.surface().strokes()[0].tiles.keys().copied().collect();
     let shifted: Vec<(i32, i32)> = before
         .iter()
         .map(|&(tx, ty)| (tx - bbox.0 / 64, ty - bbox.1 / 64))
@@ -741,10 +776,15 @@ fn loads_real_mypaint_fill_outlines() {
     // 载入后当前层可能落在组上（fill_outlines 的顶层是组）→ 用整棵树判内容
     let walked = doc.layers().walk();
     assert!(
-        walked.iter().any(|(_, l)| l.surface().map(|s| s.tile_count() > 0) == Some(true)),
+        walked
+            .iter()
+            .any(|(_, l)| l.surface().map(|s| s.tile_count() > 0) == Some(true)),
         "应读出实际像素"
     );
-    assert!(walked.iter().any(|(_, l)| l.is_group()), "组结构要保留（fill_outlines 有嵌套 stack）");
+    assert!(
+        walked.iter().any(|(_, l)| l.is_group()),
+        "组结构要保留（fill_outlines 有嵌套 stack）"
+    );
     assert!(
         walked.iter().any(|(p, _)| p.len() > 1),
         "至少有一层嵌在组里"
@@ -779,7 +819,6 @@ fn loads_real_mypaint_bigimage() {
     assert!(doc.surface().tile_count() > 0);
 }
 
-
 // ---- B2-4：多图层 ORA 往返 ----
 
 /// 两层（不同模式/不透明度/名字/可见性）+ 背景色 + 选中层的完整往返。
@@ -790,7 +829,7 @@ fn ora_round_trips_layer_stack() {
     paint(&mut doc, 40.0, 4.0); // 第 0 层（顶层）有内容
 
     use pigment_surface::combine::CombineMode;
-use pigment_surface::layer::LayerMode;
+    use pigment_surface::layer::LayerMode;
     // 再加一层：空的、改名、半透明、Multiply、隐藏、锁定
     assert!(doc.add_layer());
     doc.rename_layer(&[0], Some("Top".to_string()));
@@ -817,9 +856,16 @@ use pigment_surface::layer::LayerMode;
     assert_eq!(top.mode, LayerMode::Standard(CombineMode::Multiply));
     assert!(!top.visible);
     assert!(top.locked);
-    assert_eq!(d2.layers().current_index(), 0, "选中层应恢复到 save 时的当前层");
+    assert_eq!(
+        d2.layers().current_index(),
+        0,
+        "选中层应恢复到 save 时的当前层"
+    );
     // 底层像素还在
-    assert!(d2.layers().layer(1).surface().unwrap().tile_count() > 0, "底层内容应随文件回来");
+    assert!(
+        d2.layers().layer(1).surface().unwrap().tile_count() > 0,
+        "底层内容应随文件回来"
+    );
     assert!(d2.layers().layer(1).visible && !d2.layers().layer(1).locked);
     // 背景色
     assert_eq!(d2.layers().background_color(), [24, 48, 96]);
@@ -849,7 +895,10 @@ fn pass_through_group_keeps_visibility() {
     assert!(line.contains("visibility=\"hidden\""), "{line}");
     assert!(line.contains("isolation=\"auto\""), "{line}");
     assert!(!line.contains("opacity="), "直通组不写 opacity：{line}");
-    assert!(!line.contains("composite-op="), "直通组不写 composite-op：{line}");
+    assert!(
+        !line.contains("composite-op="),
+        "直通组不写 composite-op：{line}"
+    );
 
     let mut d2 = Document::new();
     d2.load(&path).unwrap();

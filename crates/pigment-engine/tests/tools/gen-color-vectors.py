@@ -96,7 +96,7 @@ import sys
 import textwrap
 from pathlib import Path
 
-DEFAULT_REF = r"E:\MyPaint\_mypaint_ref"
+DEFAULT_REF = r"_mypaint_ref"
 HERE = Path(__file__).resolve()                     # .../tests/tools/gen-color-vectors.py
 DEFAULT_OUT = HERE.parents[1] / "fixtures" / "color_vectors.txt"
 

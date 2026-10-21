@@ -157,7 +157,11 @@ impl LayerViews {
     /// 重命名当前视图，返回 `(旧名, 新唯一名)`（`rename_active_view`，`:513-540`）。
     pub fn rename_active(&mut self, base: &str) -> Option<(String, String)> {
         let idx = self.active?;
-        let base = if base.is_empty() { NEW_VIEW_IDENT } else { base };
+        let base = if base.is_empty() {
+            NEW_VIEW_IDENT
+        } else {
+            base
+        };
         let mut others = self.names();
         others.remove(idx);
         let new_name = make_unique_name(base, &others, NEW_VIEW_IDENT);
@@ -275,10 +279,7 @@ impl LayerViews {
                 let Some(name) = item.get("name").and_then(|v| v.as_str()) else {
                     continue;
                 };
-                let locked = item
-                    .get("locked")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(true);
+                let locked = item.get("locked").and_then(|v| v.as_bool()).unwrap_or(true);
                 let unique = make_unique_name(name, &self.names(), NEW_VIEW_IDENT);
                 self.views.push(LayerView::new(unique, locked));
             }
@@ -288,11 +289,15 @@ impl LayerViews {
         }
         if let Some(list) = obj.get("layer_views").and_then(|v| v.as_array()) {
             for item in list {
-                let Some(pair) = item.as_array() else { continue };
+                let Some(pair) = item.as_array() else {
+                    continue;
+                };
                 let (Some(path), Some(names)) = (pair.first(), pair.get(1)) else {
                     continue;
                 };
-                let Some(path) = path.as_array() else { continue };
+                let Some(path) = path.as_array() else {
+                    continue;
+                };
                 let path: Vec<usize> = path
                     .iter()
                     .filter_map(|n| n.as_u64().map(|n| n as usize))
@@ -301,7 +306,9 @@ impl LayerViews {
                     continue;
                 };
                 let id = layer.id;
-                let Some(names) = names.as_array() else { continue };
+                let Some(names) = names.as_array() else {
+                    continue;
+                };
                 for name in names.iter().filter_map(|n| n.as_str()) {
                     if let Some(idx) = self.index_of(name) {
                         self.views[idx].visible.insert(id);

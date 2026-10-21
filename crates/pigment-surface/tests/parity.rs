@@ -25,6 +25,9 @@ fn base_brush() -> Brush {
     set(&mut b, BrushSetting::DabsPerBasicRadius, 2.0);
     set(&mut b, BrushSetting::DabsPerActualRadius, 2.0);
     set(&mut b, BrushSetting::DabsPerSecond, 0.0);
+    // Raw Brush::new() has no from_defaults pressure mapping for
+    // opaque_multiply; tests that expect visible paint must set it.
+    set(&mut b, BrushSetting::OpaqueMultiply, 1.0);
     set(&mut b, BrushSetting::ColorH, 0.08); // 暖橙
     set(&mut b, BrushSetting::ColorS, 0.85);
     set(&mut b, BrushSetting::ColorV, 0.9);
@@ -152,12 +155,18 @@ fn scripted_strokes_pixel_identical_to_memsurface() {
 
     let scenarios: Vec<(Brush, Vec<(f32, f32, f32)>)> = vec![
         (hard_brush(), sine_script(20.0, 60.0, 200.0, 25.0, 60)),
-        (soft_ellipse_brush(), sine_script(30.0, 130.0, 180.0, 20.0, 50)),
+        (
+            soft_ellipse_brush(),
+            sine_script(30.0, 130.0, 180.0, 20.0, 50),
+        ),
         (spectral_brush(), sine_script(40.0, 40.0, 160.0, 60.0, 50)),
         (smudge_brush(), sine_script(20.0, 100.0, 220.0, 40.0, 70)),
         (eraser_brush(), sine_script(60.0, 80.0, 120.0, 30.0, 30)),
         (colorize_brush(), sine_script(80.0, 150.0, 100.0, 15.0, 25)),
-        (posterize_lock_brush(), sine_script(50.0, 180.0, 140.0, 20.0, 35)),
+        (
+            posterize_lock_brush(),
+            sine_script(50.0, 180.0, 140.0, 20.0, 35),
+        ),
     ];
 
     for (i, (brush, script)) in scenarios.iter().enumerate() {
@@ -177,18 +186,19 @@ fn scripted_strokes_pixel_identical_to_memsurface() {
 /// 官方 .myb 笔刷（paint_mode 光谱笔刷）在两个后端上的对等验证。
 #[test]
 fn official_myb_brushes_pixel_identical() {
-    let brushes_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mypaint-brushes/brushes");
+    let brushes_dir =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../mypaint-brushes/brushes");
     let picks = [
-        "Dieterle/Blender.myb",      // 光谱混色 + 重 smudge
-        "Dieterle/8B_Pencil#1.myb",  // paint_mode 铅笔
+        "Dieterle/Blender.myb",     // 光谱混色 + 重 smudge
+        "Dieterle/8B_Pencil#1.myb", // paint_mode 铅笔
     ];
 
     for rel in picks {
         let path = brushes_dir.join(rel);
-        let json = std::fs::read_to_string(&path)
-            .unwrap_or_else(|e| panic!("读取 {rel} 失败: {e}"));
-        let brush = hokusai::myb::from_str(&json)
-            .unwrap_or_else(|e| panic!("解析 {rel} 失败: {e:?}"));
+        let json =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("读取 {rel} 失败: {e}"));
+        let brush =
+            hokusai::myb::from_str(&json).unwrap_or_else(|e| panic!("解析 {rel} 失败: {e:?}"));
 
         let mut ours = PigmentSurface::new();
         let mut reference = MemSurface::new();
@@ -212,6 +222,7 @@ fn spectral_smoke_on_pigment_surface() {
     fn make_brush(h: f32, s: f32, v: f32, paint_mode: f32) -> Brush {
         let mut b = Brush::new();
         set(&mut b, BrushSetting::Opaque, 0.5);
+        set(&mut b, BrushSetting::OpaqueMultiply, 1.0);
         set(&mut b, BrushSetting::Radius, 3.69); // ~40px
         set(&mut b, BrushSetting::Hardness, 0.8);
         set(&mut b, BrushSetting::DabsPerBasicRadius, 8.0);
@@ -228,6 +239,9 @@ fn spectral_smoke_on_pigment_surface() {
 
     fn single_dab(brush: &Brush, surface: &mut PigmentSurface, x: f32, y: f32) {
         let mut state = BrushState::default();
+        // libmypaint needs two warm-up events after a reset: the first
+        // seeds, the second commits STATE.DABS_PER_* (still no dabs).
+        brush.stroke_to(&mut state, surface, x - 3.0, y, 1.0, 0.0, 0.0, 10.0);
         brush.stroke_to(&mut state, surface, x - 3.0, y, 1.0, 0.0, 0.0, 0.01);
         brush.stroke_to(&mut state, surface, x, y, 1.0, 0.0, 0.0, 0.01);
     }
@@ -257,8 +271,18 @@ fn spectral_smoke_on_pigment_surface() {
 
     let run = |paint_mode: f32| {
         let mut surface = PigmentSurface::new();
-        single_dab(&make_brush(0.144, 0.90, 1.00, paint_mode), &mut surface, 165.0, 150.0);
-        single_dab(&make_brush(0.647, 0.73, 0.75, paint_mode), &mut surface, 235.0, 150.0);
+        single_dab(
+            &make_brush(0.144, 0.90, 1.00, paint_mode),
+            &mut surface,
+            165.0,
+            150.0,
+        );
+        single_dab(
+            &make_brush(0.647, 0.73, 0.75, paint_mode),
+            &mut surface,
+            235.0,
+            150.0,
+        );
         overlap_mean(&surface)
     };
 

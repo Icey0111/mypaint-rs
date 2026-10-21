@@ -72,7 +72,9 @@ fn flatten(surface: &MemSurface, path: &str) {
     let ts = TILE_SIZE as i32;
     for ty in 0..(HEIGHT as i32 + ts - 1) / ts {
         for tx in 0..(WIDTH as i32 + ts - 1) / ts {
-            let Some(tile) = surface.tile(tx, ty) else { continue };
+            let Some(tile) = surface.tile(tx, ty) else {
+                continue;
+            };
             for ly in 0..TILE_SIZE {
                 for lx in 0..TILE_SIZE {
                     let (wx, wy) = (tx * ts + lx as i32, ty * ts + ly as i32);
@@ -93,9 +95,12 @@ fn flatten(surface: &MemSurface, path: &str) {
                         wx as u32,
                         wy as u32,
                         image::Rgba([
-                            (linear_to_srgb((r * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round() as u8,
-                            (linear_to_srgb((g * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round() as u8,
-                            (linear_to_srgb((b * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round() as u8,
+                            (linear_to_srgb((r * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round()
+                                as u8,
+                            (linear_to_srgb((g * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round()
+                                as u8,
+                            (linear_to_srgb((b * a + 1.0 - a).clamp(0.0, 1.0)) * 255.0).round()
+                                as u8,
                             255,
                         ]),
                     );
@@ -152,9 +157,6 @@ fn main() {
         let mn = t.0.min(t.1).min(t.2);
         mx - mn
     };
-    assert!(
-        spread(control) < 0.08,
-        "对照组不够灰: control={control:?}"
-    );
+    assert!(spread(control) < 0.08, "对照组不够灰: control={control:?}");
     println!("OK: 黄 + 蓝 → 绿（光谱）且更深；对照组为灰（RGB 插值）");
 }

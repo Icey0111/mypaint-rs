@@ -18,10 +18,98 @@
 //! - `_hide_drawing_cursor` 只置标志，真正隐藏光标由 GUI 读
 //!   [`FreehandMode::hiding_cursor`] 决定。
 
-use super::{
-    BrushworkState, InteractionMode, Key, ModeContext, PointerEvent,
-};
+use super::{BrushworkState, InteractionMode, Key, ModeContext, PointerEvent};
+use crate::hokusai::{Brush, BrushSetting, BrushState, TiledSurface};
+use crate::stroke::StrokeEvent;
 use std::collections::VecDeque;
+use std::time::Instant;
+
+/// 低缩放大笔刷的即时预览（Krita Instant Preview 的最小实现）。
+///
+/// 输入事件先画到**当前显示 mip 级别**的预览面上，显示立即更新；原始事件
+/// 排队，随后按全分辨率重放进真实表面。重放完成后撤掉预览、提交撤销命令。
+/// 真实像素与完全不启用预览时逐字节一致（事件/状态都按原样重放）。
+struct PreviewStroke {
+    level: u32,
+    scale: f32,
+    brush: Brush,
+    state: BrushState,
+    real_events: VecDeque<StrokeEvent>,
+    last_pos: (f32, f32),
+    started: Instant,
+    events: u64,
+}
+
+fn preview_log() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("PIGMENT_PREVIEW_DEBUG").is_some())
+}
+
+fn preview_min_radius() -> f32 {
+    use std::sync::OnceLock;
+    static R: OnceLock<f32> = OnceLock::new();
+    *R.get_or_init(|| {
+        std::env::var("PIGMENT_PREVIEW_MIN_RADIUS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4.0)
+    })
+}
+
+/// 与 `pigment_render::mip_level_for_zoom` 同一公式（引擎不依赖渲染层）。
+fn preview_level_for_zoom(zoom: f32) -> u32 {
+    if zoom >= 1.0 {
+        return 0;
+    }
+    let inv = 1.0 / zoom.max(1.0 / 1024.0);
+    (inv.log2().floor().max(0.0) as u32).min(pigment_surface::mipmap::MAX_MIPMAP_LEVEL)
+}
+
+/// 把跨笔刷状态里的“长度”换算到预览级别坐标。
+///
+/// 位置/速度/半径都除以 `scale`；`norm_speed*` 已经按半径归一化，保持不变。
+fn scale_state_to_preview(state: &BrushState, scale: f32) -> BrushState {
+    let mut s = state.clone();
+    let inv = 1.0 / scale;
+    s.actual_x *= inv;
+    s.actual_y *= inv;
+    s.actual_dab_x *= inv;
+    s.actual_dab_y *= inv;
+    s.last_event_x *= inv;
+    s.last_event_y *= inv;
+    s.actual_radius *= inv;
+    s.norm_dx_slow *= inv;
+    s.norm_dy_slow *= inv;
+    s.direction_dx *= inv;
+    s.direction_dy *= inv;
+    s.direction_angle_dx *= inv;
+    s.direction_angle_dy *= inv;
+    s.skip_distance *= inv;
+    s.skip_last_x *= inv;
+    s.skip_last_y *= inv;
+    s.dist_past_dab *= inv;
+    s.last_dab_x *= inv;
+    s.last_dab_y *= inv;
+    s.gridmap_x *= inv;
+    s.gridmap_y *= inv;
+    s
+}
+
+/// Per-frame GPU dab budget. The flush cost is paid after event processing,
+/// so stopping at a fixed queue depth keeps frame time stable; remaining
+/// events are processed in later frames without splitting any event.
+fn gpu_dab_budget() -> usize {
+    use std::sync::OnceLock;
+    static BUDGET: OnceLock<usize> = OnceLock::new();
+    *BUDGET.get_or_init(|| {
+        std::env::var("PIGMENT_GPU_DAB_BUDGET")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(8192)
+    })
+}
 
 /// 自由手绘的可配置项（`gui/userconfig.py` 的默认值 + `app.fakepressure`）。
 ///
@@ -49,6 +137,11 @@ pub struct FreehandConfig {
     pub barrel_rotation_subtract_ascension: bool,
     /// `ui.hide_cursor_while_painting`（软键，默认 false）。
     pub hide_cursor_while_painting: bool,
+    /// 低缩放大笔刷的即时预览（Krita Instant Preview 的移植）。
+    ///
+    /// 软键 `ui.instant_preview`，`PIGMENT_INSTANT_PREVIEW=1` 可强制打开
+    /// （测试/对照用）。
+    pub instant_preview: bool,
     /// `input.global_pressure_mapping` 的点列 `(x, y)`。
     ///
     /// 源码 `_apply_pressure_mapping_settings`（`application.py:594-610`）
@@ -67,6 +160,7 @@ impl Default for FreehandConfig {
             use_barrel_rotation: true,
             barrel_rotation_subtract_ascension: true,
             hide_cursor_while_painting: false,
+            instant_preview: false,
             pressure_mapping: vec![(0.0, 1.0), (1.0, 0.0)],
         }
     }
@@ -89,16 +183,20 @@ impl FreehandConfig {
             fakepressure: 0.5,
             fakerotation: 0.5,
             // `freehand.py:461`：`prefs.get("input.barrel_rotation_offset")`
-            barrel_rotation_offset: prefs
-                .f64_or(KEY_BARREL_ROTATION_OFFSET, 0.5) as f32,
+            barrel_rotation_offset: prefs.f64_or(KEY_BARREL_ROTATION_OFFSET, 0.5) as f32,
             // `freehand.py:475-477`
             use_barrel_rotation: prefs.bool_or(KEY_USE_BARREL_ROTATION, true),
             // `freehand.py:467-469`
             barrel_rotation_subtract_ascension: prefs
                 .bool_or(KEY_BARREL_ROTATION_SUBTRACT_ASCENSION, true),
             // `freehand.py:280`
-            hide_cursor_while_painting: prefs
-                .bool_or(KEY_HIDE_CURSOR_WHILE_PAINTING, false),
+            hide_cursor_while_painting: prefs.bool_or(KEY_HIDE_CURSOR_WHILE_PAINTING, false),
+            // 默认开（Krita 的全局开关也是默认开）；`PIGMENT_INSTANT_PREVIEW=0`
+            // 或偏好 `ui.instant_preview=false` 可关闭。
+            instant_preview: match std::env::var("PIGMENT_INSTANT_PREVIEW") {
+                Ok(v) => !(v == "0" || v.eq_ignore_ascii_case("false")),
+                Err(_) => prefs.bool_or("ui.instant_preview", true),
+            },
             pressure_mapping: read_pressure_mapping(prefs),
         }
     }
@@ -113,8 +211,7 @@ impl FreehandConfig {
         }
         // 1:1（关闭）——源码的容差 1e-4
         if self.pressure_mapping.len() == 2
-            && (self.pressure_mapping[0].1 - 1.0).abs()
-                + (self.pressure_mapping[1].1 - 0.0).abs()
+            && (self.pressure_mapping[0].1 - 1.0).abs() + (self.pressure_mapping[1].1 - 0.0).abs()
                 < 0.0001
         {
             return pressure;
@@ -274,8 +371,7 @@ impl PressureAndTiltInterpolator {
     /// 在 p0→p1 之间插值（`_interpolate_p0_p1`；不前进也不清空）。
     fn interpolate_p0_p1(&self) -> Vec<RawEvent> {
         let mut out = Vec::new();
-        let mut can_interp =
-            self.pt0.is_some() && self.pt1.is_some() && !self.np.is_empty();
+        let mut can_interp = self.pt0.is_some() && self.pt1.is_some() && !self.np.is_empty();
         let mut pt0p = self.pt0_prev;
         let mut pt1n = self.pt1_next;
         let mut t0 = 0.0f64;
@@ -418,10 +514,21 @@ impl DrawingState {
         }
     }
 
+    /// 直接取一个原始事件（预算处理按事件切片时用；不再整批 feed）。
+    #[inline]
+    pub fn pop_raw(&mut self) -> Option<RawEvent> {
+        self.motion_queue.pop_front()
+    }
+
     /// 队列是否空了。
     #[inline]
     pub fn queue_is_empty(&self) -> bool {
         self.motion_queue.is_empty()
+    }
+
+    #[inline]
+    pub fn queue_len(&self) -> usize {
+        self.motion_queue.len()
     }
 }
 
@@ -435,6 +542,14 @@ pub struct FreehandMode {
     pub config: FreehandConfig,
     /// 光标是否该隐藏（GUI 读它决定画不画自绘光标）。
     hiding_cursor: bool,
+    /// 指针已抬起、但排队中的笔迹还没画完：收尾/入栈要等队列排空。
+    release_pending: bool,
+    /// 插值器输出、尚未喂给 brushwork 的“熟”事件。
+    pending_events: VecDeque<RawEvent>,
+    /// 低缩放大笔刷的即时预览；真实笔画在后面排队重放。
+    preview: Option<PreviewStroke>,
+    /// Real-stroke diagnostics: start time + perf counter snapshot.
+    stroke_perf: Option<(std::time::Instant, [u64; 6])>,
 }
 
 impl Default for FreehandMode {
@@ -450,7 +565,45 @@ impl FreehandMode {
             draw: DrawingState::default(),
             config: FreehandConfig::default(),
             hiding_cursor: false,
+            release_pending: false,
+            pending_events: VecDeque::new(),
+            preview: None,
+            stroke_perf: None,
         }
+    }
+
+    /// 原始队列 + 插值器输出队列是否都空了。
+    #[inline]
+    fn has_pending_events(&self) -> bool {
+        !self.pending_events.is_empty() || !self.draw.queue_is_empty()
+    }
+
+    fn log_stroke_perf(&mut self) {
+        if let Some((t, base)) = self.stroke_perf.take() {
+            let now = Self::perf_snapshot();
+            eprintln!(
+                "stroke: {:.0}ms dabs_gpu={} dabs_cpu={} flushes={} flush={:.1}ms samples={} sample={:.1}ms",
+                t.elapsed().as_secs_f64() * 1e3,
+                now[0].saturating_sub(base[0]),
+                now[1].saturating_sub(base[1]),
+                now[3].saturating_sub(base[3]),
+                now[2].saturating_sub(base[2]) as f64 / 1e6,
+                now[5].saturating_sub(base[5]),
+                now[4].saturating_sub(base[4]) as f64 / 1e6,
+            );
+        }
+    }
+
+    fn perf_snapshot() -> [u64; 6] {
+        use pigment_surface::perf;
+        [
+            perf::get(&perf::DABS_GPU),
+            perf::get(&perf::DABS_CPU),
+            perf::get(&perf::FLUSH_NS),
+            perf::get(&perf::FLUSH_CALLS),
+            perf::get(&perf::SAMPLE_NS),
+            perf::get(&perf::SAMPLE_CALLS),
+        ]
     }
 
     /// 是否该隐藏系统光标（`hide_cursor_while_painting` 且 давления > 0）。
@@ -476,6 +629,9 @@ impl FreehandMode {
     /// 有效压力的模型坐标。
     #[inline]
     pub fn last_painting_pos(&self) -> Option<(f32, f32)> {
+        if let Some(p) = &self.preview {
+            return Some(p.last_pos);
+        }
         self.brushwork.last_pos().map(|p| (p.0, p.1))
     }
 
@@ -608,21 +764,313 @@ impl FreehandMode {
 
     /// 处理队列里的全部事件（`_motion_queue_idle_cb` + `_process_queued_event`）。
     pub fn process_pending(&mut self, ctx: &mut ModeContext<'_>) {
+        self.process_pending_until(ctx, None);
+        self.finish_release_if_drained(ctx);
+    }
+
+    /// 在 `deadline` 前尽量多处理一些排队事件；剩余留给后续帧。
+    ///
+    /// 每个事件至少处理一次（即使预算已经用完），保证有界的工作量下
+    /// 队列一定能推进，不会活锁。
+    pub fn process_pending_budgeted(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        deadline: std::time::Instant,
+    ) -> bool {
+        self.process_pending_until(ctx, Some(deadline));
+        self.finish_release_if_drained(ctx);
+        let gpu_pending = ctx
+            .doc
+            .paintable_surface()
+            .is_some_and(|s| s.gpu_pending_ops() > 0);
+        self.has_pending_events() || self.has_preview_pending() || self.release_pending || gpu_pending
+    }
+
+    fn process_pending_until(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        deadline: Option<std::time::Instant>,
+    ) {
+        let mut processed_any = false;
         loop {
-            let events = self.draw.next_processing_events();
-            if events.is_empty() && self.draw.queue_is_empty() {
+            // 积压未清空时不再喂新事件：GPU 队列按帧限量推进，帧时间
+            // 保持稳定；整个事件始终完整处理，不会被拆开。
+            let pending = ctx.doc.paintable_surface().map_or(0, |s| s.gpu_pending_ops());
+            if deadline.is_some() && pending >= gpu_dab_budget() {
+                if std::env::var_os("PIGMENT_TRACE_BUDGET").is_some() {
+                    eprintln!("budget hold pending={pending}");
+                }
                 break;
             }
-            for ev in events {
-                self.process_queued_event(ctx, &ev);
+            if processed_any {
+                if let Some(deadline) = deadline {
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                }
             }
-            if self.draw.queue_is_empty() {
+            let Some(ev) = self.next_processed_event() else {
+                break;
+            };
+            // 一个事件完整交给引擎：libmypaint 自己在 `stroke_to` 内按
+            // 时间与 dab 间距做仿真步进，GUI 再切一次会改变 slow_tracking、
+            // 压力插值和 RNG 消耗，破坏与上游的一致性。
+            self.process_queued_event(ctx, &ev);
+            processed_any = true;
+            // GPU dab queue costs are paid at the frame flush, outside the
+            // deadline above. Bound the number of queued dabs so one frame
+            // cannot turn into a multi-hundred-dab submit (visible stutter).
+            // Whole events are always kept intact; only the frame at which
+            // the next event is processed moves.
+            let pending = ctx.doc.paintable_surface().map_or(0, |s| s.gpu_pending_ops());
+            if deadline.is_some() && pending >= gpu_dab_budget() {
+                if std::env::var_os("PIGMENT_TRACE_BUDGET").is_some() {
+                    eprintln!("budget break pending={pending}");
+                }
                 break;
             }
         }
+        // 只有抬笔后（或根本没在画）才推进全分辨率重放：笔还按着时
+        // 即使本帧输入队列暂时为空，也不能让后台重放抢掉预览的预算。
+        if !self.has_pending_events() && (self.release_pending || self.draw.button_down.is_none()) {
+            self.drain_preview_real(ctx, deadline);
+        }
         // 队列空了 → 收尾光标状态
-        if self.draw.queue_is_empty() && self.draw.button_down.is_none() {
+        if !self.has_pending_events() && self.draw.button_down.is_none() && !self.release_pending {
             self.hiding_cursor = false;
+        }
+    }
+
+    /// 取下一个“熟”事件：优先消费已插值事件；否则从原始队列取一个喂插值器。
+    fn next_processed_event(&mut self) -> Option<RawEvent> {
+        if let Some(ev) = self.pending_events.pop_front() {
+            return Some(ev);
+        }
+        loop {
+            let raw = self.draw.pop_raw()?;
+            let out = self.draw.interp.feed(raw);
+            if !out.is_empty() {
+                self.pending_events.extend(out);
+                return self.pending_events.pop_front();
+            }
+        }
+    }
+
+    /// 延迟提交：抬笔事件已入队，等输入队列、预览重放和 GPU 全部排空后再记账。
+    fn finish_release_if_drained(&mut self, ctx: &mut ModeContext<'_>) {
+        if !self.release_pending || self.has_pending_events() {
+            return;
+        }
+        if self.preview.is_some() {
+            if !self.preview_ready_to_clear(ctx) {
+                return;
+            }
+            self.clear_preview(ctx);
+        }
+        self.release_pending = false;
+        self.log_stroke_perf();
+        self.brushwork.commit(ctx, false);
+        self.hiding_cursor = false;
+    }
+
+    /// 是否还有等待全分辨率重放的输入事件。
+    #[inline]
+    fn has_preview_pending(&self) -> bool {
+        self.preview
+            .as_ref()
+            .is_some_and(|p| !p.real_events.is_empty())
+    }
+
+    /// 启动预览：播种当前 mip 的预览面，真实命令先 begin 但暂不落笔。
+    fn maybe_start_preview(&mut self, ctx: &mut ModeContext<'_>, ev: &StrokeEvent) -> bool {
+        if self.preview.is_some() || !self.config.instant_preview {
+            return false;
+        }
+        // 只有真正按住笔的笔画才开预览；悬停/收笔后的零散事件不开，
+        // 否则没有抬笔事件来收尾，预览会永远挂着。
+        if self.draw.button_down.is_none() {
+            return false;
+        }
+        let level = preview_level_for_zoom(ev.viewzoom);
+        if level == 0 {
+            return false;
+        }
+        let base_radius = ctx.brush.get(BrushSetting::Radius).base_value.exp();
+        if base_radius < preview_min_radius() {
+            return false;
+        }
+        if ctx.doc.paintable_surface().is_none() {
+            return false;
+        }
+        let scale = (1u32 << level) as f32;
+        let mut preview_brush = ctx.brush.clone();
+        let radius_log = ctx.brush.get(BrushSetting::Radius).base_value;
+        preview_brush.set_base_value(BrushSetting::Radius, radius_log - scale.ln());
+        let preview_state = scale_state_to_preview(ctx.brush_state, scale);
+
+        let Some(surface) = ctx.doc.paintable_surface_mut() else {
+            return false;
+        };
+        if surface.has_preview_overlay() {
+            return false;
+        }
+        let preview_surface = surface.seed_preview_at(level);
+        surface.set_preview_overlay(level, preview_surface);
+        // 真实命令的 before 快照在第一个重放事件时才拍；此处 begin 只负责
+        // 目标层/计时/分段。预览笔画完全没有碰真实表面。
+        self.brushwork.begin(ctx, false, None);
+        self.preview = Some(PreviewStroke {
+            level,
+            scale,
+            brush: preview_brush,
+            state: preview_state,
+            real_events: VecDeque::new(),
+            last_pos: (ev.x, ev.y),
+            started: Instant::now(),
+            events: 0,
+        });
+        if preview_log() {
+            eprintln!(
+                "preview: start level={level} zoom={:.4} radius={base_radius:.1} scale={scale:.0}",
+                ev.viewzoom
+            );
+        }
+        true
+    }
+
+    /// 把事件画到预览面并把原始事件排进全分辨率队列。
+    fn apply_preview_event(&mut self, ctx: &mut ModeContext<'_>, ev: StrokeEvent) -> bool {
+        let Some(p) = self.preview.as_ref() else {
+            return false;
+        };
+        let scale = p.scale;
+        let preview_ev = StrokeEvent::new(
+            ev.dtime,
+            ev.x / scale,
+            ev.y / scale,
+            ev.pressure,
+            ev.xtilt,
+            ev.ytilt,
+            1.0,
+            ev.viewrotation,
+            ev.barrel_rotation,
+        );
+        let Some(surface) = ctx.doc.paintable_surface_mut() else {
+            return false;
+        };
+        let Some(preview_surface) = surface.preview_surface_mut() else {
+            return false;
+        };
+        let p = self.preview.as_mut().expect("刚检查过");
+        preview_surface.begin_atomic();
+        preview_ev.apply(&p.brush, &mut p.state, preview_surface);
+        preview_surface.end_atomic();
+        p.real_events.push_back(ev);
+        p.last_pos = (ev.x, ev.y);
+        p.events += 1;
+        true
+    }
+
+    /// 按时间预算把排队的输入重放到全分辨率表面。
+    fn drain_preview_real(&mut self, ctx: &mut ModeContext<'_>, deadline: Option<Instant>) {
+        let force_all = deadline.is_none();
+        let started = Instant::now();
+        let mut done = 0usize;
+        loop {
+            let Some(ev) = self
+                .preview
+                .as_ref()
+                .and_then(|p| p.real_events.front().copied())
+            else {
+                break;
+            };
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    break;
+                }
+            }
+            let pending = ctx.doc.paintable_surface().map_or(0, |s| s.gpu_pending_ops());
+            if deadline.is_some() && pending >= gpu_dab_budget() {
+                break;
+            }
+            if let Some(p) = self.preview.as_mut() {
+                p.real_events.pop_front();
+            }
+            self.brushwork.stroke_to(
+                ctx,
+                ev.dtime,
+                ev.x,
+                ev.y,
+                ev.pressure,
+                ev.xtilt,
+                ev.ytilt,
+                ev.viewzoom,
+                ev.viewrotation,
+                ev.barrel_rotation,
+                true,
+            );
+            done += 1;
+            // 全分辨率事件每个都要做 smudge 采样（~8ms），一帧多做几个就会
+            // 掉帧。预览在顶着画面，后台重放慢慢来：有预算时一帧只放一个。
+            if deadline.is_some() {
+                break;
+            }
+        }
+        if done > 0 && force_all && preview_log() {
+            eprintln!(
+                "preview: full drain {done} events {:.0}ms",
+                started.elapsed().as_secs_f64() * 1e3
+            );
+        }
+    }
+
+    /// 重放全部排空且 GPU/回读都落地后，才能撤掉预览。
+    fn preview_ready_to_clear(&self, ctx: &ModeContext<'_>) -> bool {
+        self.preview
+            .as_ref()
+            .is_some_and(|p| p.real_events.is_empty())
+            && ctx
+                .doc
+                .paintable_surface()
+                .is_none_or(|s| s.gpu_pending_ops() == 0)
+    }
+
+    fn clear_preview(&mut self, ctx: &mut ModeContext<'_>) {
+        let Some(p) = self.preview.take() else {
+            return;
+        };
+        if let Some(surface) = ctx.doc.paintable_surface_mut() {
+            surface.clear_preview_overlay();
+        }
+        if preview_log() {
+            eprintln!(
+                "preview: done level={} events={} wall={:.0}ms",
+                p.level,
+                p.events,
+                p.started.elapsed().as_secs_f64() * 1e3
+            );
+        }
+    }
+
+    /// 同步收尾（切笔刷/撤销/离开模式）：强制 flush，丢掉预览。
+    fn force_finish_preview(&mut self, ctx: &mut ModeContext<'_>) {
+        if self.preview.is_none() {
+            return;
+        }
+        self.drain_preview_real(ctx, None);
+        if let Some(surface) = ctx.doc.paintable_surface_mut() {
+            surface.flush_gpu_dabs();
+            surface.clear_preview_overlay();
+        }
+        if let Some(p) = self.preview.take() {
+            if preview_log() {
+                eprintln!(
+                    "preview: forced level={} events={} wall={:.0}ms",
+                    p.level,
+                    p.events,
+                    p.started.elapsed().as_secs_f64() * 1e3
+                );
+            }
         }
     }
 
@@ -642,19 +1090,56 @@ impl FreehandMode {
         let pressure = ev.pressure.unwrap_or(0.0).clamp(0.0, 1.0);
         let xtilt = ev.xtilt.unwrap_or(0.0).clamp(-1.0, 1.0);
         let ytilt = ev.ytilt.unwrap_or(0.0).clamp(-1.0, 1.0);
-        self.brushwork.stroke_to(
-            ctx,
+        let viewzoom = ev.viewzoom.unwrap_or(1.0);
+        let viewrotation = ev.viewrotation.unwrap_or(0.0);
+        let barrel_rotation = ev.barrel_rotation.unwrap_or(0.0);
+        let event = StrokeEvent::new(
             dtime,
             ev.x,
             ev.y,
             pressure,
             xtilt,
             ytilt,
-            ev.viewzoom.unwrap_or(1.0),
-            ev.viewrotation.unwrap_or(0.0),
-            ev.barrel_rotation.unwrap_or(0.0),
-            true,
+            viewzoom,
+            viewrotation,
+            barrel_rotation,
         );
+        if self.preview.is_none() {
+            self.maybe_start_preview(ctx, &event);
+        }
+        if self.preview.is_some() {
+            if !self.apply_preview_event(ctx, event) {
+                // 预览面被外部撤掉（切层/快照）：退回真实路径，事件不能丢。
+                self.preview = None;
+                self.brushwork.stroke_to(
+                    ctx,
+                    dtime,
+                    ev.x,
+                    ev.y,
+                    pressure,
+                    xtilt,
+                    ytilt,
+                    viewzoom,
+                    viewrotation,
+                    barrel_rotation,
+                    true,
+                );
+            }
+        } else {
+            self.brushwork.stroke_to(
+                ctx,
+                dtime,
+                ev.x,
+                ev.y,
+                pressure,
+                xtilt,
+                ytilt,
+                viewzoom,
+                viewrotation,
+                barrel_rotation,
+                true,
+            );
+        }
         // `freehand.py:614-617`：压力非零时更新 TDW 的最后作画位置
         if pressure != 0.0 {
             ctx.doc.last_painting_pos = Some((ev.x, ev.y));
@@ -691,6 +1176,28 @@ impl InteractionMode for FreehandMode {
         self.brushwork.is_active()
     }
 
+    fn pending_inputs(&self) -> usize {
+        self.pending_events.len()
+            + self.draw.queue_len()
+            + self
+                .preview
+                .as_ref()
+                .map_or(0, |p| p.real_events.len())
+    }
+
+    fn instant_preview_state(&self) -> Option<(u32, usize)> {
+        self.preview
+            .as_ref()
+            .map(|p| (p.level, p.real_events.len()))
+    }
+
+    fn last_painted_pos(&self) -> Option<(f32, f32)> {
+        if let Some(p) = &self.preview {
+            return Some(p.last_pos);
+        }
+        self.brushwork.last_pos().map(|p| (p.0, p.1))
+    }
+
     /// 收下偏好推来的配置（`ModeStack::set_freehand_config`）。
     fn set_freehand_config(&mut self, config: FreehandConfig) {
         FreehandMode::set_freehand_config(self, config);
@@ -698,17 +1205,26 @@ impl InteractionMode for FreehandMode {
 
     fn enter(&mut self, _ctx: &mut ModeContext<'_>) {
         self.draw = DrawingState::default();
+        self.pending_events.clear();
         self.hiding_cursor = false;
     }
 
     fn leave(&mut self, ctx: &mut ModeContext<'_>) {
+        self.process_pending_until(ctx, None);
+        self.force_finish_preview(ctx);
         self.draw = DrawingState::default();
+        self.pending_events.clear();
         self.hiding_cursor = false;
+        self.release_pending = false;
         self.brushwork.commit(ctx, true);
     }
 
     fn checkpoint(&mut self, ctx: &mut ModeContext<'_>) {
-        // 有未提交的改动就落账（不发零压力收尾，避免笔迹断裂）
+        // 有未提交的改动就落账（不发零压力收尾，避免笔迹断裂）。
+        // 预算延后的队列必须先画完，否则撤销/切笔刷会丢掉后半段笔迹。
+        self.process_pending_until(ctx, None);
+        self.force_finish_preview(ctx);
+        self.finish_release_if_drained(ctx);
         self.brushwork.commit(ctx, false);
     }
 
@@ -716,6 +1232,22 @@ impl InteractionMode for FreehandMode {
         if !ctx.current_is_paintable() || ev.button != 1 {
             return false;
         }
+        // 上一笔的收尾可能还在队列里（预算不足而延后）。预览路径下，
+        // 全分辨率重放可能要几秒；如果用户在同一级别马上画下一笔，不能
+        // 让他等重放结束——继续复用同一个预览面和 Brushwork，把两笔
+        // 合并成同一条 undo 命令，重放在后台按顺序继续。
+        let same_preview_level = self
+            .preview
+            .as_ref()
+            .is_some_and(|p| p.level == preview_level_for_zoom(ev.viewzoom));
+        if same_preview_level {
+            self.release_pending = false;
+        } else if self.release_pending || self.has_pending_events() || self.preview.is_some() {
+            self.process_pending_until(ctx, None);
+            self.force_finish_preview(ctx);
+            self.finish_release_if_drained(ctx);
+        }
+        self.stroke_perf = Some((std::time::Instant::now(), Self::perf_snapshot()));
         // 鼠标没有压力轴：按下时用假压力补一个运动事件
         if !self.draw.last_event_had_pressure {
             let fake = self.config.fakepressure;
@@ -745,13 +1277,12 @@ impl InteractionMode for FreehandMode {
         //
         // 记账：源码是**惰性**提交的（`lib/document.py:1160-1186` 的
         // `sync_pending_changes()` 在 do/undo/redo 之前才 flush），所以鼠标
-        // 松开的那一刻命令还没入栈。本实现在这里显式 `commit`（等价于源码
-        // `leave()`/`checkpoint()` 的收尾），因为：
-        // 1. 用户观感一致（松开即"这一笔完成"）；
-        // 2. 菜单/快捷键的 Undo 可用性直接看撤销栈长度，惰性提交会让
-        //    第一笔之后 Undo 仍然灰着。
-        self.process_pending(ctx);
-        self.brushwork.commit(ctx, false);
+        // 松开的那一刻命令还没入栈。这里先给一小段时间预算：短笔画立即
+        // 提交（观感与源码一致），高速/低缩放留下的大队列则交给后续帧，
+        // 避免抬笔瞬间卡死。`finish_release_if_drained` 会在队列排空时提交。
+        self.release_pending = true;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(4);
+        self.process_pending_budgeted(ctx, deadline);
         true
     }
 
@@ -759,18 +1290,36 @@ impl InteractionMode for FreehandMode {
         self.motion_with_fake(ctx, ev, None)
     }
 
-    fn key_press(&mut self, _ctx: &mut ModeContext<'_>, key: Key) -> bool {
-        // Escape：丢弃排队中的笔迹（`freehand.py` 文档里提到"按 Escape 可中止"）
+    fn key_press(&mut self, ctx: &mut ModeContext<'_>, key: Key) -> bool {
+        // Escape：丢弃排队中的笔迹（`freehand.py` 文档里提到"按 Escape 可中止"）。
+        // 预览笔画也要撤掉；已经重放进真实表面的部分用 brushwork rollback 复原。
         if key == Key::Escape {
+            if self.preview.is_some() {
+                if let Some(surface) = ctx.doc.paintable_surface_mut() {
+                    surface.clear_preview_overlay();
+                }
+                self.preview = None;
+                self.brushwork.rollback(ctx);
+            }
             self.draw = DrawingState::default();
+            self.pending_events.clear();
+            self.release_pending = false;
             return true;
         }
         false
     }
 
     fn process_pending(&mut self, ctx: &mut ModeContext<'_>) -> bool {
-        self.process_pending(ctx);
-        !self.draw.queue_is_empty()
+        FreehandMode::process_pending(self, ctx);
+        self.has_pending_events() || self.release_pending
+    }
+
+    fn process_pending_budgeted(
+        &mut self,
+        ctx: &mut ModeContext<'_>,
+        deadline: std::time::Instant,
+    ) -> bool {
+        FreehandMode::process_pending_budgeted(self, ctx, deadline)
     }
 }
 
@@ -826,7 +1375,10 @@ mod tests {
         );
         assert!(cooked.len() <= raw.len(), "输出不该比输入多");
         for ev in raw.iter().filter(|e| e.has_all_axes()) {
-            assert!(cooked.contains(ev), "带轴原始事件应原样出现在输出里: {ev:?}");
+            assert!(
+                cooked.contains(ev),
+                "带轴原始事件应原样出现在输出里: {ev:?}"
+            );
         }
         assert!(
             !cooked.iter().any(|e| e.time > 70.0 && e.time < 110.0),
@@ -922,7 +1474,262 @@ mod tests {
         }
         // 三个同时间戳事件被摊到 (10,20) 之间，插值器会给它们各自的时刻
         let times: Vec<f64> = out.iter().map(|e| e.time).collect();
-        assert!(times.windows(2).all(|w| w[0] <= w[1]), "时刻必须单调: {times:?}");
+        assert!(
+            times.windows(2).all(|w| w[0] <= w[1]),
+            "时刻必须单调: {times:?}"
+        );
+    }
+
+    /// 预算处理：一次调用只推进队列的一部分，剩余留待后续帧；
+    /// 抬笔后由 `finish_release_if_drained` 在队列排空时提交一条 Brushwork。
+    #[test]
+    fn budgeted_processing_drains_over_frames_and_commits_once() {
+        use crate::document::Document;
+        use std::time::{Duration, Instant};
+
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut status = Vec::new();
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: Some(&mut status),
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
+        };
+        let mut mode = FreehandMode::new();
+        let before = ctx.doc.command_stack.undo_len();
+
+        let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
+        assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
+        // 队列里堆 200 个事件，但先不处理。
+        for i in 1..=200 {
+            let ev = PointerEvent::motion(10.0 + i as f32, 10.0 + (i as f32) * 0.25, i as f64);
+            assert!(InteractionMode::motion(&mut mode, &mut ctx, &ev));
+        }
+        assert!(!mode.draw.queue_is_empty());
+        // 立即到期的预算：必须仍有剩余，且不能提前提交。
+        assert!(InteractionMode::process_pending_budgeted(
+            &mut mode,
+            &mut ctx,
+            Instant::now()
+        ));
+        assert_eq!(ctx.doc.command_stack.undo_len(), before);
+
+        // 逐帧排空。
+        let mut guard = 0;
+        while InteractionMode::process_pending_budgeted(
+            &mut mode,
+            &mut ctx,
+            Instant::now() + Duration::from_millis(2),
+        ) {
+            guard += 1;
+            assert!(guard < 10_000, "预算没有推进队列");
+        }
+        // 松开：提交这一笔。
+        let release = PointerEvent::button(210.0, 60.0, 201.0, 1);
+        assert!(InteractionMode::button_release(
+            &mut mode, &mut ctx, &release
+        ));
+        let mut guard = 0;
+        while InteractionMode::process_pending_budgeted(
+            &mut mode,
+            &mut ctx,
+            Instant::now() + Duration::from_millis(2),
+        ) {
+            guard += 1;
+            assert!(guard < 10_000);
+        }
+        assert_eq!(
+            ctx.doc.command_stack.undo_len(),
+            before + 1,
+            "排空后应恰好提交一条 Brushwork"
+        );
+    }
+
+    /// Instant Preview：低缩放大笔刷先显示预览，真实笔画延后重放；
+    /// 重放结果必须与不启用预览时**逐字节一致**。
+    #[test]
+    fn instant_preview_matches_full_res_stroke() {
+        use crate::document::Document;
+        use crate::hokusai::BrushSetting;
+        use pigment_surface::tile_bytes;
+        use std::collections::BTreeMap;
+
+        fn tiles(doc: &Document) -> BTreeMap<(i32, i32), Vec<u8>> {
+            doc.paintable_surface()
+                .unwrap()
+                .tiles()
+                .map(|(c, t)| (c, tile_bytes(t.pixels()).to_vec()))
+                .collect()
+        }
+
+        fn run(preview: bool) -> Document {
+            let mut doc = Document::new();
+            let mut brush = crate::brushlib::default_brush();
+            brush
+                .get_mut(BrushSetting::Radius)
+                .base_value = 400f32.ln();
+            let mut state = crate::hokusai::BrushState::default();
+            let mut status = Vec::new();
+            let mut ctx = ModeContext {
+                doc: &mut doc,
+                brush: &brush,
+                brush_name: "test",
+                brush_state: &mut state,
+                fakepressure: 0.5,
+                fakerotation: 0.5,
+                hide_cursor_while_painting: false,
+                status: Some(&mut status),
+                color: [0.0, 0.0, 0.0],
+                picked_color: None,
+            };
+            let mut mode = FreehandMode::new();
+            mode.config.instant_preview = preview;
+            let zoom = 0.0625;
+            let ev = |x: f32, y: f32, t: f64, button: bool| {
+                let mut e = if button {
+                    PointerEvent::button(x, y, t, 1)
+                } else {
+                    PointerEvent::motion(x, y, t)
+                };
+                e.viewzoom = zoom;
+                e
+            };
+            let press = ev(100.0, 100.0, 0.0, true);
+            assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
+            let motion = |mode: &mut FreehandMode,
+                              ctx: &mut ModeContext<'_>,
+                              i: i32| {
+                let e = ev(100.0 + i as f32 * 20.0, 100.0 + i as f32 * 10.0, i as f64 * 8.0, false);
+                assert!(InteractionMode::motion(mode, ctx, &e));
+            };
+            for i in 1..=20 {
+                motion(&mut mode, &mut ctx, i);
+            }
+            let release = ev(100.0 + 20.0 * 20.0, 100.0 + 20.0 * 10.0, 168.0, true);
+            assert!(InteractionMode::button_release(
+                &mut mode, &mut ctx, &release
+            ));
+            mode.process_pending(&mut ctx);
+            assert!(mode.preview.is_none(), "排空后必须撤掉预览");
+            assert!(
+                !ctx.doc
+                    .paintable_surface()
+                    .unwrap()
+                    .has_preview_overlay(),
+                "真实表面不能残留预览覆盖"
+            );
+            assert_eq!(ctx.doc.command_stack.undo_len(), 1);
+            drop(ctx);
+            doc
+        }
+
+        // 先单独验证预览确实挂上了：只喂前两个事件并立即到期，预览重放
+        // 不会在本帧跑完。
+        {
+            let mut doc = Document::new();
+            let mut brush = crate::brushlib::default_brush();
+            brush
+                .get_mut(BrushSetting::Radius)
+                .base_value = 400f32.ln();
+            let mut state = crate::hokusai::BrushState::default();
+            let mut status = Vec::new();
+            let mut ctx = ModeContext {
+                doc: &mut doc,
+                brush: &brush,
+                brush_name: "test",
+                brush_state: &mut state,
+                fakepressure: 0.5,
+                fakerotation: 0.5,
+                hide_cursor_while_painting: false,
+                status: Some(&mut status),
+                color: [0.0, 0.0, 0.0],
+                picked_color: None,
+            };
+            let mut mode = FreehandMode::new();
+            mode.config.instant_preview = true;
+            let mut e = PointerEvent::button(100.0, 100.0, 0.0, 1);
+            e.viewzoom = 0.0625;
+            assert!(InteractionMode::button_press(&mut mode, &mut ctx, &e));
+            let mut m = PointerEvent::motion(120.0, 110.0, 8.0);
+            m.viewzoom = 0.0625;
+            assert!(InteractionMode::motion(&mut mode, &mut ctx, &m));
+            mode.process_pending_until(&mut ctx, Some(Instant::now()));
+            let mut m2 = PointerEvent::motion(140.0, 120.0, 16.0);
+            m2.viewzoom = 0.0625;
+            assert!(InteractionMode::motion(&mut mode, &mut ctx, &m2));
+            mode.process_pending_until(&mut ctx, Some(Instant::now()));
+            let mut m3 = PointerEvent::motion(160.0, 130.0, 24.0);
+            m3.viewzoom = 0.0625;
+            assert!(InteractionMode::motion(&mut mode, &mut ctx, &m3));
+            mode.process_pending_until(&mut ctx, Some(Instant::now()));
+            assert!(mode.preview.is_some(), "第三个事件后应进入预览");
+            assert_eq!(mode.preview.as_ref().unwrap().level, 4);
+            assert!(ctx
+                .doc
+                .paintable_surface()
+                .unwrap()
+                .has_preview_overlay());
+            let _ = InteractionMode::key_press(&mut mode, &mut ctx, Key::Escape);
+            assert!(mode.preview.is_none());
+        }
+
+        let preview_doc = run(true);
+        let control_doc = run(false);
+        assert_eq!(
+            tiles(&preview_doc),
+            tiles(&control_doc),
+            "预览重放必须与实时全分辨率笔画逐字节一致"
+        );
+    }
+
+    /// 回归：零位移事件不能因为“时间切分”被反复放回队首。
+    ///
+    /// 早期实现把切分比例无条件 `clamp(.., 0.5)`，于是 dist=0、dt>0 的
+    /// 事件每轮都切一半时间却没有任何位移进展，队列永远排不空。
+    #[test]
+    fn zero_distance_motion_is_consumed_once() {
+        use crate::document::Document;
+
+        let mut doc = Document::new();
+        let brush = crate::brushlib::default_brush();
+        let mut state = crate::hokusai::BrushState::default();
+        let mut status = Vec::new();
+        let mut ctx = ModeContext {
+            doc: &mut doc,
+            brush: &brush,
+            brush_name: "test",
+            brush_state: &mut state,
+            fakepressure: 0.5,
+            fakerotation: 0.5,
+            hide_cursor_while_painting: false,
+            status: Some(&mut status),
+            color: [0.0, 0.0, 0.0],
+            picked_color: None,
+        };
+        let mut mode = FreehandMode::new();
+        let press = PointerEvent::button(10.0, 10.0, 0.0, 1);
+        assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
+        mode.process_pending(&mut ctx);
+
+        // 第一个带时间的事件只定基准；第二个同位置事件才会走切分路径。
+        let first = PointerEvent::motion(10.0, 10.0, 8.0);
+        assert!(InteractionMode::motion(&mut mode, &mut ctx, &first));
+        mode.process_pending(&mut ctx);
+        let second = PointerEvent::motion(10.0, 10.0, 16.0);
+        assert!(InteractionMode::motion(&mut mode, &mut ctx, &second));
+        mode.process_pending(&mut ctx);
+        assert!(
+            !mode.has_pending_events(),
+            "零位移事件必须一次消费完，不能无限切分"
+        );
     }
 
     /// 一次完整的按压-移动-松开 = **一条** Brushwork，且撤销能干净回退。
@@ -958,13 +1765,19 @@ mod tests {
         assert!(InteractionMode::button_press(&mut mode, &mut ctx, &press));
         // 移动若干次，时间间隔 16ms
         for i in 1..=6 {
-            let ev = PointerEvent::motion(10.0 + i as f32 * 8.0, 10.0 + i as f32 * 4.0, i as f64 * 16.0);
+            let ev = PointerEvent::motion(
+                10.0 + i as f32 * 8.0,
+                10.0 + i as f32 * 4.0,
+                i as f64 * 16.0,
+            );
             assert!(InteractionMode::motion(&mut mode, &mut ctx, &ev));
             mode.process_pending(&mut ctx);
         }
         // 松开
         let release = PointerEvent::button(58.0, 34.0, 7.0 * 16.0, 1);
-        assert!(InteractionMode::button_release(&mut mode, &mut ctx, &release));
+        assert!(InteractionMode::button_release(
+            &mut mode, &mut ctx, &release
+        ));
         mode.process_pending(&mut ctx);
 
         assert_eq!(

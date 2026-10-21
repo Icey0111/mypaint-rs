@@ -96,7 +96,8 @@ pub fn parse_binding(key: &str, action: &str) -> Option<ButtonBinding> {
     let mut shift = false;
     let mut alt = false;
     loop {
-        if let Some(r) = strip_prefix_ci(&rest, "<control>").or_else(|| strip_prefix_ci(&rest, "<ctrl>"))
+        if let Some(r) =
+            strip_prefix_ci(&rest, "<control>").or_else(|| strip_prefix_ci(&rest, "<ctrl>"))
         {
             ctrl = true;
             rest = r;
@@ -106,7 +107,8 @@ pub fn parse_binding(key: &str, action: &str) -> Option<ButtonBinding> {
         } else if let Some(r) = strip_prefix_ci(&rest, "<alt>") {
             alt = true;
             rest = r;
-        } else if let Some(r) = strip_prefix_ci(&rest, "ctrl+").or_else(|| strip_prefix_ci(&rest, "control+"))
+        } else if let Some(r) =
+            strip_prefix_ci(&rest, "ctrl+").or_else(|| strip_prefix_ci(&rest, "control+"))
         {
             ctrl = true;
             rest = r;
@@ -145,7 +147,9 @@ fn strip_prefix_ci(s: &str, prefix: &str) -> Option<String> {
 }
 
 /// 解析 `input.button_mapping` 的 `{键串: 动作}` 表。
-pub fn parse_mapping<'a>(pairs: impl IntoIterator<Item = (&'a str, &'a str)>) -> Vec<ButtonBinding> {
+pub fn parse_mapping<'a>(
+    pairs: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Vec<ButtonBinding> {
     pairs
         .into_iter()
         .filter_map(|(k, v)| parse_binding(k, v))
@@ -198,10 +202,7 @@ mod tests {
         assert_eq!(resolve(&b, 3, false, false, false), Some("PanViewMode"));
         assert_eq!(resolve(&b, 3, true, false, false), Some("ZoomViewMode"));
         assert_eq!(resolve(&b, 3, false, true, false), Some("RotateViewMode"));
-        assert_eq!(
-            resolve(&b, 3, true, true, false),
-            Some("FrameEditMode")
-        );
+        assert_eq!(resolve(&b, 3, true, true, false), Some("FrameEditMode"));
         // 未绑定的组合不匹配
         assert_eq!(resolve(&b, 3, true, true, true), None);
     }
@@ -213,14 +214,8 @@ mod tests {
             ("<Control><Shift>Button3", "FrameEditMode"),
         ];
         let b = parse_mapping(pairs);
-        assert_eq!(
-            resolve(&b, 1, true, false, false),
-            Some("BrushResizeMode")
-        );
-        assert_eq!(
-            resolve(&b, 3, true, true, false),
-            Some("FrameEditMode")
-        );
+        assert_eq!(resolve(&b, 1, true, false, false), Some("BrushResizeMode"));
+        assert_eq!(resolve(&b, 3, true, true, false), Some("FrameEditMode"));
     }
 
     #[test]

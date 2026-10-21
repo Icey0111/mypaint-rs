@@ -1,5 +1,5 @@
 # 由 crates/pigment-engine/tests/tools/gen-wheel-vectors.py 生成，请勿手改。
-# 事实来源：E:\MyPaint\_mypaint_ref 的 gui/colors/adjbases.py + hsvwheel.py + hsvsquare.py + hsvcube.py + hcywheel.py + sliders.py（ast 抽函数体后 exec）+ gui/colors/util.py + lib/alg.py（真 import）
+# 事实来源：_mypaint_ref 的 gui/colors/adjbases.py + hsvwheel.py + hsvsquare.py + hsvcube.py + hcywheel.py + sliders.py（ast 抽函数体后 exec）+ gui/colors/util.py + lib/alg.py（真 import）
 # 一行一类：见脚本 docstring 的 wh_* / hcy_* 说明。浮点 = Python repr。
 wh_const	HUE_SLICES	64
 wh_const	SAT_SLICES	5

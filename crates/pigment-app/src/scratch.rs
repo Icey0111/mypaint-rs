@@ -141,7 +141,10 @@ impl Scratchpad {
     /// 保存前还会再兜底建一次（`filehandling.py:1363-1366`）。
     pub(crate) fn new(dir: PathBuf) -> Self {
         if let Err(e) = files::ensure_dir(&dir) {
-            eprintln!("暂存区目录建不出来（{}）：{e}", dir.display());
+            eprintln!(
+                "Cannot create scratchpad directory ({}): {e}",
+                dir.display()
+            );
         }
         let path = files::autosave_path(&dir);
         let mut doc = Document::new();
@@ -247,14 +250,11 @@ impl Scratchpad {
                 // `open_scratchpad` 成功时写回绝对路径（`filehandling.py:965-974`）
                 let abs = abspath(&self.path);
                 self.path = abs.clone();
-                prefs.set_str(
-                    prefs::KEY_LAST_OPENED_SCRATCHPAD,
-                    abs.display().to_string(),
-                );
+                prefs.set_str(prefs::KEY_LAST_OPENED_SCRATCHPAD, abs.display().to_string());
                 true
             }
             Err(e) => {
-                eprintln!("暂存区载入失败（{}）：{e}", path.display());
+                eprintln!("Scratchpad load failed ({}): {e}", path.display());
                 false
             }
         }
@@ -384,18 +384,26 @@ impl Scratchpad {
         };
         let mut handled = false;
         let _ = self.dispatch(inputs, |modes, ctx| {
-            handled = modes.top_mut().button_press(ctx, &pigment_engine::mode::PointerEvent::button(x0, y0, t0, 1));
+            handled = modes.top_mut().button_press(
+                ctx,
+                &pigment_engine::mode::PointerEvent::button(x0, y0, t0, 1),
+            );
         });
         self.process_pending(inputs);
         for &(x, y, t) in rest {
             let _ = self.dispatch(inputs, |modes, ctx| {
-                modes.top_mut().motion(ctx, &pigment_engine::mode::PointerEvent::motion(x, y, t));
+                modes
+                    .top_mut()
+                    .motion(ctx, &pigment_engine::mode::PointerEvent::motion(x, y, t));
             });
             self.process_pending(inputs);
         }
         let &(x1, y1, t1) = points.last().unwrap();
         let _ = self.dispatch(inputs, |modes, ctx| {
-            modes.top_mut().button_release(ctx, &pigment_engine::mode::PointerEvent::button(x1, y1, t1, 1));
+            modes.top_mut().button_release(
+                ctx,
+                &pigment_engine::mode::PointerEvent::button(x1, y1, t1, 1),
+            );
         });
         self.process_pending(inputs);
         handled
@@ -428,7 +436,11 @@ mod tests {
     /// 每个测试一个干净目录。
     fn tmpdir(tag: &str) -> PathBuf {
         let mut p = std::env::temp_dir();
-        p.push(format!("pigment-app-scratch-{}-{}", std::process::id(), tag));
+        p.push(format!(
+            "pigment-app-scratch-{}-{}",
+            std::process::id(),
+            tag
+        ));
         let _ = std::fs::remove_dir_all(&p);
         files::ensure_dir(&p).unwrap();
         p
@@ -478,7 +490,10 @@ mod tests {
         let dir = root.join("deep").join("scratchpads");
         assert!(!dir.exists());
         let mut sp = Scratchpad::new(dir.clone());
-        assert!(dir.is_dir(), "构造时就该把目录建出来（否则第一次保存会失败）");
+        assert!(
+            dir.is_dir(),
+            "构造时就该把目录建出来（否则第一次保存会失败）"
+        );
         assert!(sp.save().unwrap(), "目录刚建好，这次保存要成功");
         assert!(sp.path.is_file());
         let _ = std::fs::remove_dir_all(&root);
@@ -491,7 +506,11 @@ mod tests {
         let sp = Scratchpad::new(dir.clone());
         assert_eq!(sp.path, dir.join("autosave.ora"));
         assert_eq!(sp.view, View::default(), "缩放/偏移与主画布无关，各自一份");
-        assert_eq!(sp.modes.len(), 1, "默认只有 FreehandMode（document.py:87-88）");
+        assert_eq!(
+            sp.modes.len(),
+            1,
+            "默认只有 FreehandMode（document.py:87-88）"
+        );
         assert_eq!(sp.modes.top().name(), "Freehand Drawing");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -634,7 +653,10 @@ mod tests {
         assert!(sp.doc.layers().has_paint_at(3, 3));
         assert!(sp.revert().unwrap());
         assert_eq!(sp.path, saved_path, "回退不改文件名");
-        assert!(!sp.doc.layers().has_paint_at(3, 3), "磁盘上没有的笔迹被丢掉");
+        assert!(
+            !sp.doc.layers().has_paint_at(3, 3),
+            "磁盘上没有的笔迹被丢掉"
+        );
         assert!(sp.doc.layers().has_paint_at(0, 0));
 
         // 文件不存在时什么都不做
@@ -759,5 +781,4 @@ mod tests {
         let reveal = actions::by_id("RevealScratchpadTool").unwrap();
         assert_eq!(reveal.accel.map(|a| a.label()), Some("Ctrl+K".to_string()));
     }
-
 }

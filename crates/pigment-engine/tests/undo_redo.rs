@@ -16,7 +16,8 @@ use pigment_surface::PigmentSurface;
 /// 真实笔刷，半径加大便于稳定地覆盖多个 tile。
 fn real_brush() -> Brush {
     let mut b = default_brush();
-    b.get_mut(pigment_engine::hokusai::BrushSetting::Radius).base_value = 3.0;
+    b.get_mut(pigment_engine::hokusai::BrushSetting::Radius)
+        .base_value = 3.0;
     b
 }
 
@@ -213,17 +214,7 @@ fn live_update_equivalent_to_repainting_with_the_new_brush() {
         let mut state = BrushState::default();
         let mut bw = Brushwork::new();
         for i in 0..60 {
-            let ev = StrokeEvent::new(
-                0.016,
-                i as f32 * 1.5,
-                20.0,
-                1.0,
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-            );
+            let ev = StrokeEvent::new(0.016, i as f32 * 1.5, 20.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0);
             bw.stroke_to(b.surface_mut(), &fatter, "Fatter", &mut state, ev);
         }
         if bw.stop_recording(b.surface_mut(), &state, false) {

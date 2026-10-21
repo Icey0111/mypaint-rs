@@ -11,6 +11,8 @@
 //! 去预乘 + EOTF —— 与 MyPaint「mipmap 存在 15 位域、渲染时才转 8 位」
 //! 的结构一致。把平均放到 8 位 sRGB 域做会整体偏亮。
 
+use hokusai::tile::TILE_SIZE;
+
 use crate::color;
 
 /// mipmap 层数上限（`libmypaint/mypaint-config.h:13 MYPAINT_MAX_MIPMAP_LEVEL`）。
@@ -36,6 +38,51 @@ where
     }
 
     // 逐级减半（原地：目标行始终落在尚未读的源行之前）
+    let mut cur = f;
+    while cur > 1 {
+        let half = cur / 2;
+        for y in 0..half {
+            for x in 0..half {
+                let o00 = ((y * 2) * cur + x * 2) * 4;
+                let o01 = o00 + 4;
+                let o10 = o00 + cur * 4;
+                let o11 = o10 + 4;
+                let mut out = [0u16; 4];
+                for c in 0..4 {
+                    out[c] =
+                        buf[o00 + c] / 4 + buf[o01 + c] / 4 + buf[o10 + c] / 4 + buf[o11 + c] / 4;
+                }
+                let od = (y * half + x) * 4;
+                buf[od..od + 4].copy_from_slice(&out);
+            }
+        }
+        cur = half;
+    }
+    [buf[0], buf[1], buf[2], buf[3]]
+}
+
+/// 从一块 64×64 的 fix15 tile 中，按 mipmap 规则平均出
+/// `(sx, sy)` 处 `2^level × 2^level` 的块。
+///
+/// 与 [`render_halved`] 的块平均逐位一致（每级各自整除再相加），但**不分配
+/// 临时 Vec**：整幅缩略图按 content tile 逐块降采样时，这个函数是热路径。
+pub fn average_tile_block(tile: &[u16], sx: usize, sy: usize, level: u32) -> [u16; 4] {
+    let f = 1usize << level;
+    let ts = TILE_SIZE;
+    if f == 1 {
+        let o = (sy * ts + sx) * 4;
+        return [tile[o], tile[o + 1], tile[o + 2], tile[o + 3]];
+    }
+    // level ≤ 6 → f ≤ 64（一个 64×64 tile 平均成 1 px）。固定一块
+    // 64×64×4 的栈缓冲（32 KiB），避免每个输出像素分配。
+    let mut buf = [0u16; 64 * 64 * 4];
+    for dy in 0..f {
+        for dx in 0..f {
+            let o = ((sy + dy) * ts + sx + dx) * 4;
+            let d = (dy * f + dx) * 4;
+            buf[d..d + 4].copy_from_slice(&tile[o..o + 4]);
+        }
+    }
     let mut cur = f;
     while cur > 1 {
         let half = cur / 2;
@@ -142,12 +189,7 @@ pub fn preview_geometry(w: i32, h: i32, preview_size: i32) -> (i32, i32, i32, i3
 ///
 /// 缩放用**双线性**（源码 `InterpType.BILINEAR`）：`thumb.composite(...)` 把
 /// 缩略图缩放到 `dw × dh` 再贴到 `(x, y)`。
-pub fn compose_preview(
-    src: &[u8],
-    sw: i32,
-    sh: i32,
-    preview_size: i32,
-) -> Vec<u8> {
+pub fn compose_preview(src: &[u8], sw: i32, sh: i32, preview_size: i32) -> Vec<u8> {
     let ps = preview_size.max(1);
     let check = checker_size(ps);
     let mut out = vec![0u8; (ps * ps * 4) as usize];
@@ -235,6 +277,41 @@ mod tests {
     use super::*;
 
     /// 平均是「各自整除后再相加」：4 个 3 → 0（不是 12/4 = 3）。
+    #[test]
+    fn average_tile_block_matches_generic_block_average() {
+        let ts = TILE_SIZE;
+        let mut tile = vec![0u16; ts * ts * 4];
+        for y in 0..ts {
+            for x in 0..ts {
+                let o = (y * ts + x) * 4;
+                tile[o] = ((x * 131 + y * 17) & 0x7fff) as u16;
+                tile[o + 1] = ((x * 7 + y * 257) & 0x7fff) as u16;
+                tile[o + 2] = ((x * 29 + y * 43) & 0x7fff) as u16;
+                tile[o + 3] = ((x * 3 + y * 5) & 0x7fff) as u16;
+            }
+        }
+        for level in 0..=4u32 {
+            let f = 1usize << level;
+            for (sx, sy) in [(0, 0), (0, 48), (48, 0), (32, 16)] {
+                let want = average_block(level, |dx, dy| {
+                    let o = ((sy + dy) * ts + sx + dx) * 4;
+                    [tile[o], tile[o + 1], tile[o + 2], tile[o + 3]]
+                });
+                assert_eq!(
+                    average_tile_block(&tile, sx, sy, level),
+                    want,
+                    "level={level} sx={sx} sy={sy} f={f}"
+                );
+            }
+        }
+        // 6 级时整块 64×64 合成 1 px（大窗口远景的纹理上限保护）。
+        let want = average_block(6, |dx, dy| {
+            let o = (dy * ts + dx) * 4;
+            [tile[o], tile[o + 1], tile[o + 2], tile[o + 3]]
+        });
+        assert_eq!(average_tile_block(&tile, 0, 0, 6), want);
+    }
+
     #[test]
     fn halving_divides_each_tap_before_adding() {
         let avg = average_block(1, |_, _| [3, 3, 3, 3]);

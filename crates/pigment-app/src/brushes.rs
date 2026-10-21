@@ -40,9 +40,10 @@
 use std::collections::{HashMap, VecDeque};
 
 use eframe::egui;
-use pigment_engine::brushlib::{translate_group_name, BrushEntry, BrushLibrary};
+use pigment_engine::brushlib::{BrushEntry, BrushLibrary};
 use pigment_engine::hokusai::Brush;
 
+use crate::i18n::tr;
 use crate::thumb;
 
 /// 图标边长 —— `BrushList.ICON_SIZE`（`gui/brushselectionwindow.py:66`）。
@@ -98,8 +99,12 @@ fn cell() -> f32 {
 /// 网格几何 —— `PixbufList.update()` 的 `tiles_w` / `tiles_h`。
 ///
 /// 返回 `(每行格数, 总行数)`。
+#[cfg(test)]
 fn grid_geometry(width: f32, count: usize) -> (usize, usize) {
-    let c = cell();
+    grid_geometry_cell(width, count, cell())
+}
+
+fn grid_geometry_cell(width: f32, count: usize, c: f32) -> (usize, usize) {
     let tiles_w = ((width / c) as usize).max(1);
     let tiles_h = count.div_ceil(tiles_w).max(1);
     (tiles_w, tiles_h)
@@ -110,11 +115,15 @@ fn grid_geometry(width: f32, count: usize) -> (usize, usize) {
 /// 坐标为**内容坐标**（相对网格左上角）。只把列/行夹到非负与最后一列；
 /// **不**把结果夹到 `count-1`：源码返回原始格子下标，调用方再用
 /// `i < len(itemlist)` 拒绝点空白处（`pixbuflist.py:322-325`）。
+#[cfg(test)]
 fn index_at(x: f32, y: f32, tiles_w: usize) -> usize {
+    index_at_cell(x, y, tiles_w, cell())
+}
+
+fn index_at_cell(x: f32, y: f32, tiles_w: usize, c: f32) -> usize {
     if tiles_w == 0 {
         return 0;
     }
-    let c = cell();
     let mut col = (x / c).floor() as i64;
     col = col.clamp(0, tiles_w as i64 - 1);
     let row = (y / c).floor() as i64;
@@ -134,6 +143,37 @@ pub struct BrushHistoryEntry {
     pub name: String,
     /// 预览图对应的 library 下标（用于 `BrushPanel::icon`）。
     pub preview: usize,
+}
+
+/// 从用户笔刷目录载回 `history_0..4.myb`（`brushmanager.py:463-474`）。
+///
+/// 源码启动时把历史当成普通 `ManagedBrush` 文件读回；这里同样按文件顺序
+/// 组成最旧→最新的队列，空目录返回空队列（调用方保留默认历史）。
+pub(crate) fn load_history_from_dir(
+    dir: &std::path::Path,
+    library: &BrushLibrary,
+) -> std::collections::VecDeque<BrushHistoryEntry> {
+    let mut loaded = std::collections::VecDeque::new();
+    for i in 0..BRUSH_HISTORY_SIZE {
+        let path = dir.join(format!("history_{i}.myb"));
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(brush) = pigment_engine::brushlib::parse_brush_json(&text) else {
+            continue;
+        };
+        let name = brush
+            .parent_brush_name
+            .clone()
+            .unwrap_or_else(|| format!("history_{i}"));
+        let preview = library.find(&name).unwrap_or(0);
+        loaded.push_back(BrushHistoryEntry {
+            brush,
+            name,
+            preview,
+        });
+    }
+    loaded
 }
 
 /// 一个分组面板 —— MyPaint 的 `BrushGroupTool`（`gui/brushselectionwindow.py:347`）。
@@ -169,8 +209,6 @@ pub struct BrushPanel {
     /// 最近用过的笔刷（最旧 → 最新，`_BRUSH_HISTORY_SIZE` 条）。
     pub history: VecDeque<BrushHistoryEntry>,
     /// 拖放起点（`visible` 下标）与当前悬停落点 —— `PixbufList` 的 DnD。
-    pub drag_from: Option<usize>,
-    pub drag_hover: Option<usize>,
     /// 右键菜单目标：`(entries 下标, 屏幕位置)`。
     pub context: Option<(usize, egui::Pos2)>,
     /// 「New Group…」对话框的输入缓冲；`None` = 未打开。
@@ -187,6 +225,14 @@ pub struct BrushPanel {
     pub import_requested: bool,
     pub download_requested: bool,
     pub export_group_requested: bool,
+    /// 组菜单里选中的组：请求 app 打开对应 `BrushGroupTool` 面板。
+    pub reveal_group_requested: Option<String>,
+    /// 顶部 BrushGroups 菜单的“重新扫描”请求。
+    pub rescan_requested: bool,
+    /// 组内拖放起点：`(组 id, 面板槽位)`。
+    drag_source: Option<(String, usize)>,
+    /// 组内拖放当前落点（面板槽位）。
+    drag_target: Option<usize>,
 }
 
 impl BrushPanel {
@@ -211,8 +257,6 @@ impl BrushPanel {
             visible: Vec::new(),
             tooltips: Vec::new(),
             history: VecDeque::new(),
-            drag_from: None,
-            drag_hover: None,
             context: None,
             new_group: None,
             new_group_focus: false,
@@ -221,6 +265,10 @@ impl BrushPanel {
             import_requested: false,
             download_requested: false,
             export_group_requested: false,
+            reveal_group_requested: None,
+            rescan_requested: false,
+            drag_source: None,
+            drag_target: None,
         };
         // `_init_default_brushkeys_and_history`（brushmanager.py:463-474）：
         // 空的历史槽位用启动分组的前 5 支补满（`group_i = i % len`）。
@@ -306,7 +354,7 @@ impl BrushPanel {
             &existing_keys,
             &existing_groups,
         )
-        .map_err(|e| format!("写入笔刷失败：{e}"))?;
+        .map_err(|e| crate::tr_fmt!("Failed to write brush: {e}", "{e}" => e))?;
         self.library.scan_dir(&user_dir);
         let _ = self.library.save_order_conf();
         self.after_brushpack_import();
@@ -373,32 +421,30 @@ impl BrushPanel {
         self.library.group_members(&self.group)
     }
 
-    /// 组内**第一支**笔刷的下标 —— `tool_widget_get_icon_pixbuf` 取的 `brushes[0]`。
+    /// 测试/诊断用的组属性（运行期由 `show_group` 内联计算）。
+    #[cfg(test)]
     fn first_in_group(&self) -> Option<usize> {
         self.group_members().first().copied()
     }
 
-    /// 面板标题 —— `tool_widget_title`（`gui/brushselectionwindow.py:384`）。
-    ///
-    /// `translate_group_name(self._group)`；本项目用 `group_display`
-    /// （`order.conf` 的 `Group:` 名）过一次同一张表。
+    #[cfg(test)]
     fn group_title(&self) -> String {
         let display = self
             .library
-            .groups()
-            .into_iter()
+            .groups
+            .iter()
             .find(|g| g.id == self.group)
-            .map(|g| g.display)
+            .map(|g| g.display.clone())
             .unwrap_or_else(|| self.group.clone());
-        translate_group_name(&display).to_string()
+        pigment_engine::brushlib::translate_group_name(&display).to_string()
     }
 
-    /// 面板描述 —— `tool_widget_description`（`gui/brushselectionwindow.py:388`）。
+    #[cfg(test)]
     fn group_count(&self) -> usize {
         self.library.group_members(&self.group).len()
     }
 
-    fn rebuild_visible(&mut self) {
+    pub(crate) fn rebuild_visible(&mut self) {
         let needle = self.search.trim().to_lowercase();
         self.visible = if needle.is_empty() {
             // ---- BrushGroupTool 形态：内容 = 该分组的 `BrushList.brushes` ----
@@ -421,321 +467,72 @@ impl BrushPanel {
         if !self.visible.is_empty() && !self.visible.contains(&self.selected) {
             self.selected = self.visible[0];
         }
-        self.rebuild_tooltips();
     }
 
-    /// 预生成 tooltip 列表 —— `managedbrush_namefunc`（`gui/brushselectionwindow.py:46`）。
+    /// 当前可见的库下标（新 chrome 的网格用）。
     ///
-    /// tooltip 模板：`"{name}\n{description}"`（description 为空时只有 name）。
-    /// 我们额外补一行路径与来源（MyPaint 的 tooltip 只有两行，这是新增信息）。
-    fn rebuild_tooltips(&mut self) {
-        self.tooltips.clear();
-        for &i in &self.visible {
-            let Some(e) = self.library.entries.get(i) else {
-                continue;
-            };
-            let mut tip = e.mypaint_name();
-            if !e.display.is_empty() {
-                tip.push('\n');
-                tip.push_str(&e.display);
-            }
-            tip.push_str(&format!(
-                "\n{}\n{}",
-                e.key,
-                if e.is_embedded() {
-                    "内嵌官方包 (CC0)"
-                } else {
-                    "用户目录"
-                }
-            ));
-            self.tooltips.push(tip);
-        }
+    /// 和旧版 `BrushPanel::show` 共用同一份 `visible`，搜索/分组切换后不需要
+    /// 再复制一套过滤逻辑。
+    pub(crate) fn visible_indices(&self) -> &[usize] {
+        &self.visible
     }
 
-    /// 绘制面板。返回 `true` 表示**选中笔刷发生变化**（调用方需重载笔刷）。
-    pub fn show(&mut self, ui: &mut egui::Ui) -> bool {
-        // ---- 面板头（照搬工具面板页签：图标 + 标题 + 描述）----
-        let switched = self.header(ui);
-        // ---- 搜索框（本项目新增；为空时面板行为与 MyPaint 完全一致）----
-        let searched = ui
-            .add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("搜索笔刷…（跨分组；MyPaint 无此控件）")
-                    .desired_width(f32::INFINITY),
-            )
-            .changed();
-        if let Some(g) = switched {
-            // 切分组时清掉搜索，否则网格仍是跨分组结果、看起来像「菜单没反应」
-            self.group = g;
-            self.search.clear();
-            self.rebuild_visible();
-        } else if searched {
-            self.rebuild_visible();
+    /// 源码布局里的组参数是 `order.conf` 的展示名（"Classic"），内部
+    /// `BrushPanel.group` 用资产目录名（"classic"）。两者都接受。
+    fn resolve_group_id(&self, group: &str) -> String {
+        if self.library.groups.iter().any(|g| g.id == group) {
+            return group.to_string();
         }
-
-        ui.separator();
-        let mut changed = self.grid(ui);
-        let ctx = ui.ctx().clone();
-        changed |= self.context_menu(&ctx);
-        self.new_group_dialog(&ctx);
-        self.delete_brush_dialog(&ctx);
-        changed
+        self.library
+            .groups
+            .iter()
+            .find(|g| g.title() == group || g.display == group)
+            .map(|g| g.id.clone())
+            .unwrap_or_else(|| group.to_string())
     }
 
-    /// 面板头 —— 照搬工具面板页签的构造（`gui/toolstack.py:464`
-    /// `_Notebook._make_tab_label`）。
-    ///
-    /// * 图标：**组内第一支**笔刷的 `preview`（`tool_widget_get_icon_pixbuf`，`:401`）
-    /// * 标题：`tool_widget_title` = `translate_group_name(group)`（`:384`）
-    /// * 描述：`tool_widget_description` = `"{N} brush(es)"`（`:388`），进 tooltip
-    /// * 右侧 ▾：`BrushGroupsMenu`（`:550`）
-    ///
-    /// 返回被选中的新分组（`None` = 没换分组）。
-    fn header(&mut self, ui: &mut egui::Ui) -> Option<String> {
-        let title = self.group_title();
-        let desc = brush_count_desc(self.group_count());
-        let icon = self.first_in_group().map(|i| {
-            header_icon_for(ui.ctx(), &self.library, &mut self.header_icons, i)
-        });
-        // 菜单候选先收集好：`menu_button` 的闭包里不能再借 `self`
-        let menu = group_menu_items(&self.library);
-        let current = self.group.clone();
-
-        let mut picked: Option<String> = None;
-        let mut rescan = false;
-        let mut new_group_requested = false;
-        let mut import_requested = false;
-        let mut download_requested = false;
-        let mut export_requested = false;
-        ui.horizontal(|ui| {
-            match &icon {
-                Some(t) => {
-                    ui.image((t.id(), egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE)));
-                }
-                None => {
-                    ui.allocate_space(egui::vec2(TAB_ICON_SIZE, TAB_ICON_SIZE));
-                }
-            }
-            ui.label(egui::RichText::new(&title).strong())
-                .on_hover_text(format!("{title}\n{desc}"));
-            ui.label(egui::RichText::new(&desc).weak().small());
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.menu_button("▾", |ui| {
-                    for (id, label) in &menu {
-                        if ui.selectable_label(*id == current, label).clicked() {
-                            picked = Some(id.clone());
-                            ui.close();
-                        }
-                    }
-                    ui.separator();
-                    // 静态项（`BrushGroupsMenu.__init__`，`:559-569`）：
-                    if ui.button("New Group…").clicked() {
-                        new_group_requested = true;
-                        ui.close();
-                    }
-                    if ui.button("Import Brushes…").clicked() {
-                        import_requested = true;
-                        ui.close();
-                    }
-                    if ui.button("Get More Brushes…").clicked() {
-                        download_requested = true;
-                        ui.close();
-                    }
-                    if ui.button("Export Group…").clicked() {
-                        export_requested = true;
-                        ui.close();
-                    }
-                    ui.separator();
-                    // 本项目新增入口（MyPaint 靠重启重扫笔刷目录）
-                    if ui.button("重新扫描笔刷目录（本项目新增）").clicked() {
-                        rescan = true;
-                        ui.close();
-                    }
-                });
-            });
-        });
-        if rescan {
-            self.rescan();
-        }
-        if new_group_requested {
-            self.new_group = Some(String::new());
-            self.new_group_focus = true;
-        }
-        self.import_requested |= import_requested;
-        self.download_requested |= download_requested;
-        self.export_group_requested |= export_requested;
-        picked
+    /// 组面板页签 tooltip 的第二行（`"{N} brushes"`）。
+    pub(crate) fn group_description(&self, group: &str) -> String {
+        let id = self.resolve_group_id(group);
+        brush_count_desc(self.library.group_members(&id).len())
     }
 
-    /// 48px 流式图标网格 —— `PixbufList`。
-    fn grid(&mut self, ui: &mut egui::Ui) -> bool {
-        let mut changed = false;
-        let count = self.visible.len();
-        if count == 0 {
-            ui.label(egui::RichText::new("没有匹配的笔刷").weak());
-            return false;
-        }
-        let (tiles_w, tiles_h) = grid_geometry(ui.available_width(), count);
-        let c = cell();
-        let total_size = egui::vec2(tiles_w as f32 * c, tiles_h as f32 * c);
-
-        let visuals = ui.visuals().clone();
-        let bg = visuals.extreme_bg_color;
-        let selected_fill = visuals.selection.bg_fill;
-        let hover_fill = visuals.widgets.hovered.bg_fill;
-
-        let mut clicked_idx: Option<usize> = None;
-        let mut context: Option<(usize, egui::Pos2)> = None;
-        let mut reorder: Option<(usize, usize)> = None;
-
-        egui::ScrollArea::vertical()
-            .id_salt("brush_grid_scroll")
-            .auto_shrink([false, false])
-            .show_viewport(ui, |ui, viewport| {
-                let (rect, response) =
-                    ui.allocate_exact_size(total_size, egui::Sense::click_and_drag());
-                let painter = ui.painter_at(rect);
-                // `PixbufList.draw_cb` 先铺主题背景
-                painter.rect_filled(rect, egui::CornerRadius::ZERO, bg);
-
-                // 只画滚动视口覆盖到的行（技术栈适配：避免一次性建 196 个纹理）
-                let first_row = (viewport.min.y / c).floor().max(0.0) as usize;
-                let last_row = (((viewport.max.y / c).ceil() as usize) + 1).min(tiles_h);
-
-                let hover_pos = response.hover_pos().filter(|p| rect.contains(*p));
-                let mut hovered: Option<usize> = None;
-                // 拖拽期间 `hover_pos()` 可能为 None（指针被 drag 捕获），
-                // 落点要用 `interact_pointer_pos()` 另算一份。
-                let pointer_slot = response
-                    .interact_pointer_pos()
-                    .or(hover_pos)
-                    .filter(|p| rect.contains(*p))
-                    .map(|p| {
-                        let local = p - rect.min;
-                        index_at(local.x, local.y, tiles_w)
-                    });
-
-                for row in first_row..last_row {
-                    for col in 0..tiles_w {
-                        let slot = row * tiles_w + col;
-                        if slot >= count {
-                            break;
-                        }
-                        let idx = self.visible[slot];
-                        let origin = rect.min + egui::vec2(col as f32 * c, row as f32 * c);
-                        let cell_rect = egui::Rect::from_min_size(origin, egui::vec2(c, c));
-                        let icon_rect = egui::Rect::from_min_size(
-                            origin + egui::vec2(total_border(), total_border()),
-                            egui::vec2(ICON_SIZE, ICON_SIZE),
-                        );
-
-                        let is_hovered = hover_pos.is_some_and(|p| cell_rect.contains(p));
-                        if is_hovered {
-                            hovered = Some(slot);
-                        }
-
-                        if idx == self.selected {
-                            stroke_selection(&painter, cell_rect, selected_fill);
-                        } else if is_hovered {
-                            stroke_selection(&painter, cell_rect, hover_fill);
-                        }
-                        if self.drag_hover == Some(slot) {
-                            stroke_selection(&painter, cell_rect, visuals.selection.stroke.color);
-                        }
-
-                        let tex = thumb_for(ui.ctx(), &self.library, &mut self.thumbnails, idx);
-                        painter.image(
-                            tex.id(),
-                            icon_rect,
-                            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
-                            egui::Color32::WHITE,
-                        );
-                    }
-                }
-
-                // ---- 拖放重排 / 右键菜单 ----
-                if response.drag_started() {
-                    self.drag_from = pointer_slot;
-                }
-                if response.dragged() && self.drag_from.is_some() {
-                    self.drag_hover = pointer_slot;
-                }
-                if response.drag_stopped() {
-                    if let (Some(a), Some(b)) = (self.drag_from, self.drag_hover) {
-                        reorder = Some((a, b));
-                    }
-                    self.drag_from = None;
-                    self.drag_hover = None;
-                }
-                if response.secondary_clicked() {
-                    if let (Some(slot), Some(pos)) =
-                        (hovered, response.interact_pointer_pos())
-                    {
-                        if let Some(&idx) = self.visible.get(slot) {
-                            context = Some((idx, pos));
-                        }
-                    }
-                }
-
-                // ---- tooltip（`managedbrush_namefunc`）----
-                let response = match hovered.and_then(|slot| self.tooltips.get(slot)) {
-                    Some(tip) => response.on_hover_text(tip.clone()),
-                    None => response,
-                };
-
-                // ---- 点击选中：照搬 `button_press_cb`（左键选中；右键菜单留待后续）----
-                if response.clicked() {
-                    if let Some(pos) = response.interact_pointer_pos() {
-                        let local = pos - rect.min;
-                        let slot = index_at(local.x, local.y, tiles_w);
-                        clicked_idx = self.visible.get(slot).copied();
-                    }
-                }
-            });
-
-        if let Some((from, to)) = reorder {
-            // 搜索状态下的 visible 不是组内顺序，禁止重排（MyPaint 无搜索）
-            if self.search.trim().is_empty() {
-                if let (Some(&key), Some(&target_key)) =
-                    (self.visible.get(from), self.visible.get(to))
-                {
-                    if from != to {
-                        if let Some(target) = self
-                            .group_members()
-                            .iter()
-                            .position(|&i| i == target_key)
-                        {
-                            let key = self.library.entries[key].key.clone();
-                            if self.library.move_in_group(&self.group, &key, target) {
-                                self.save_order();
-                                self.rebuild_visible();
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        if let Some(c) = context {
-            self.context = Some(c);
-        }
-
-        if let Some(idx) = clicked_idx {
-            if idx != self.selected {
-                self.selected = idx;
-                changed = true;
-            }
-        }
-        changed
+    /// 组面板的页签图标：组内第一支笔刷的 16px 预览
+    /// （`tool_widget_get_icon_pixbuf`，`brushselectionwindow.py:401-411`）。
+    pub(crate) fn group_icon(
+        &mut self,
+        ctx: &egui::Context,
+        group: &str,
+    ) -> Option<egui::TextureHandle> {
+        let id = self.resolve_group_id(group);
+        let idx = self.library.group_members(&id).first().copied()?;
+        Some(header_icon_for(
+            ctx,
+            &self.library,
+            &mut self.header_icons,
+            idx,
+        ))
     }
 
     /// 把当前分组/顺序写回用户 `order.conf`（`save_brushorder`）。
-    fn save_order(&self) {
+    ///
+    /// 首次启动用户目录可能还不存在；源码会创建 `user_brushpath`，这里同样
+    /// 在第一次保存时把 `order.conf` 指到第一个可写笔刷目录并建目录。
+    fn save_order(&mut self) {
         if self.library.order_conf_path.is_none() {
-            return;
+            let Some(dir) = pigment_engine::brushlib::default_brush_dirs()
+                .into_iter()
+                .next()
+            else {
+                return;
+            };
+            if std::fs::create_dir_all(&dir).is_err() {
+                return;
+            }
+            self.library.order_conf_path = Some(dir.join("order.conf"));
         }
         if let Err(e) = self.library.save_order_conf() {
-            eprintln!("写回 order.conf 失败: {e}");
+            eprintln!("Failed to write order.conf: {e}");
         }
     }
 
@@ -745,14 +542,18 @@ impl BrushPanel {
             return false;
         };
         let Ok(mut brush) = entry.load_with_default(self.pigment_by_default) else {
-            eprintln!("克隆失败：{} 解析不了", entry.key);
+            eprintln!("Clone failed: cannot parse {}", entry.key);
             return false;
         };
         let preview = crate::thumb::render(&brush);
         match self.library.clone_brush(
             &entry.key,
             &mut brush,
-            Some((crate::thumb::PREVIEW_W as u32, crate::thumb::PREVIEW_H as u32, &preview)),
+            Some((
+                crate::thumb::PREVIEW_W as u32,
+                crate::thumb::PREVIEW_H as u32,
+                &preview,
+            )),
         ) {
             Ok(new_idx) => {
                 self.save_order();
@@ -764,7 +565,7 @@ impl BrushPanel {
                 true
             }
             Err(e) => {
-                eprintln!("克隆失败: {e}");
+                eprintln!("Clone failed: {e}");
                 false
             }
         }
@@ -779,173 +580,8 @@ impl BrushPanel {
         self.save_order();
     }
 
-    /// 右键菜单（`BrushPopupMenu`，`brushselectionwindow.py:210-345`）。
-    ///
-    /// 已移植：Add/Remove Favorites、Remove from Group、Edit Brush Settings；
-    /// Clone 依赖 `.myb` 写回，置灰并说明。
-    fn context_menu(&mut self, ctx: &egui::Context) -> bool {
-        let mut changed = false;
-        let Some((idx, pos)) = self.context else {
-            return false;
-        };
-        let Some(entry) = self.library.entries.get(idx).cloned() else {
-            self.context = None;
-            return false;
-        };
-        let key = entry.key.clone();
-        let is_fav = self.library.is_favorite(&key);
-        let mut open = true;
-        egui::Window::new("Brush")
-            .fixed_pos(pos)
-            .resizable(false)
-            .collapsible(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                if ui
-                    .button(if is_fav {
-                        "Remove from Favorites"
-                    } else {
-                        "Add to Favorites"
-                    })
-                    .clicked()
-                {
-                    self.library.toggle_favorite(&key);
-                    self.save_order();
-                    self.context = None;
-                    ui.close();
-                }
-                if self.group != pigment_engine::brushlib::FAVORITES_BRUSH_GROUP
-                    && ui.button("Remove from Group").clicked()
-                {
-                    self.library.remove_from_group(&self.group, &key);
-                    self.save_order();
-                    self.rebuild_visible();
-                    self.context = None;
-                    ui.close();
-                }
-                if ui.button("Clone…").clicked() {
-                    if self.clone_brush_at(idx) {
-                        changed = true;
-                    }
-                    self.context = None;
-                    ui.close();
-                }
-                if ui.button("Delete Brush…").clicked() {
-                    self.delete_confirm = Some(idx);
-                    self.context = None;
-                    ui.close();
-                }
-                if ui.button("Edit Brush Settings").clicked() {
-                    if idx != self.selected {
-                        self.selected = idx;
-                        changed = true;
-                    }
-                    self.context = None;
-                    ui.close();
-                }
-            });
-        if !open {
-            self.context = None;
-        }
-        changed
-    }
-
-    /// 「New Group…」对话框（`BrushGroupsMenu._new_brush_group_cb`，`:591-610`）。
-    fn new_group_dialog(&mut self, ctx: &egui::Context) {
-        let Some(mut buf) = self.new_group.take() else {
-            return;
-        };
-        let mut open = true;
-        let mut create = false;
-        egui::Window::new("Create Group")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                let resp = ui.text_edit_singleline(&mut buf);
-                if self.new_group_focus {
-                    resp.request_focus();
-                    self.new_group_focus = false;
-                }
-                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    create = true;
-                }
-                if ui.button("Create").clicked() {
-                    create = true;
-                }
-            });
-        if create {
-            if let Some(id) = self.library.create_group(&buf) {
-                self.save_order();
-                self.group = id;
-                self.search.clear();
-                self.rebuild_visible();
-            }
-        } else if open {
-            self.new_group = Some(buf);
-        }
-    }
-
-    /// 删除确认（`brusheditor.py:1085-1115` 的确认 + `_delete_brush`）。
-    fn delete_brush_dialog(&mut self, ctx: &egui::Context) {
-        let Some(idx) = self.delete_confirm else {
-            return;
-        };
-        let Some(entry) = self.library.entries.get(idx).cloned() else {
-            self.delete_confirm = None;
-            return;
-        };
-        let mut open = true;
-        let mut delete = false;
-        let mut cancel = false;
-        egui::Window::new("Delete Brush")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label(format!("Really delete “{}”?", entry.mypaint_name()));
-                if entry.is_embedded() {
-                    ui.label(
-                        egui::RichText::new(
-                            "官方内嵌笔刷删不掉，会移到 Deleted 组（源码行为）。",
-                        )
-                        .weak()
-                        .small(),
-                    );
-                }
-                ui.horizontal(|ui| {
-                    if ui.button("Delete").clicked() {
-                        delete = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-        if delete {
-            let key = entry.key.clone();
-            match self.library.delete_brush(&key) {
-                Ok(removed) => {
-                    self.save_order();
-                    self.thumbnails.clear();
-                    self.previews.clear();
-                    self.header_icons.clear();
-                    if removed {
-                        self.rescan();
-                    } else {
-                        self.rebuild_visible();
-                    }
-                }
-                Err(e) => eprintln!("删除笔刷失败: {e}"),
-            }
-            self.delete_confirm = None;
-        } else if !open || cancel {
-            self.delete_confirm = None;
-        }
-    }
-
     /// 重新扫描用户笔刷目录（本项目新增入口；MyPaint 靠重启）。
-    fn rescan(&mut self) {
+    pub(crate) fn rescan(&mut self) {
         let selected_key = self.selected_entry().map(|e| e.key.clone());
         let group = self.group.clone();
         self.library = BrushLibrary::load();
@@ -972,7 +608,7 @@ impl BrushPanel {
 /// 原式对 `sorted(bm.groups)` 的结果 `reversed` 后逐个 `prepend`，净效果就是
 /// **按分组名正序**；MyPaint 的 key 本身就是展示名，所以这里也按标题排，
 /// 标题并列时再按 id 做稳定的 tie-break。
-fn group_menu_items(library: &BrushLibrary) -> Vec<(String, String)> {
+pub(crate) fn group_menu_items(library: &BrushLibrary) -> Vec<(String, String)> {
     let mut items: Vec<(String, String)> = library
         .groups()
         .into_iter()
@@ -1056,7 +692,7 @@ fn header_icon_for(
 }
 
 /// 笔刷原始 `preview` 缩放到 `w×h`（**不做**白底合成）。
-fn raw_icon(library: &BrushLibrary, idx: usize, w: usize, h: usize) -> Vec<u8> {
+pub(crate) fn raw_icon(library: &BrushLibrary, idx: usize, w: usize, h: usize) -> Vec<u8> {
     let Some(entry) = library.entries.get(idx) else {
         return white_icon(w, h);
     };
@@ -1075,8 +711,8 @@ fn scale_to(src: &[u8], sw: usize, sh: usize, w: usize, h: usize) -> Vec<u8> {
     if sw == 0 || sh == 0 || src.len() < sw * sh * 4 || (sw, sh) == (w, h) {
         return src.to_vec();
     }
-    let buf = image::RgbaImage::from_raw(sw as u32, sh as u32, src.to_vec())
-        .expect("源图尺寸与缓冲不符");
+    let buf =
+        image::RgbaImage::from_raw(sw as u32, sh as u32, src.to_vec()).expect("源图尺寸与缓冲不符");
     image::imageops::resize(
         &buf,
         w as u32,
@@ -1152,7 +788,10 @@ fn thumbnail_on_white(src: &[u8], sw: usize, sh: usize, w: usize, h: usize) -> V
             &buf,
             nw as u32,
             nh as u32,
-            image::imageops::FilterType::Triangle,
+            // GdkPixbuf 的 BILINEAR 在 128→48 这种大幅缩小时会做更宽的
+            // 邻域平均；image 的 Triangle 只取 2×2，会把笔画缩得过黑。
+            // 实测 CatmullRom 与参考机像素差最小（1.7/255 vs 3.0/255）。
+            image::imageops::FilterType::CatmullRom,
         )
         .into_raw()
     };
@@ -1296,15 +935,6 @@ mod tests {
 
     /// 每个条目都有 tooltip，且首行是笔刷名（`managedbrush_namefunc` 的模板）。
     #[test]
-    fn tooltips_follow_mypaint_template() {
-        let p = BrushPanel::new();
-        assert_eq!(p.tooltips.len(), p.visible.len());
-        for (slot, &idx) in p.visible.iter().enumerate() {
-            let e = &p.library.entries[idx];
-            let first_line = p.tooltips[slot].lines().next().unwrap_or_default();
-            assert_eq!(first_line, e.mypaint_name());
-        }
-    }
 
     /// 面板描述文本 —— `ngettext("{count} brush", "{count} brushes", n)`。
     #[test]
@@ -1329,6 +959,24 @@ mod tests {
     /// 笔刷历史：按 `parent_brush_name` 去重、追加到尾部、裁到 5
     /// （`brushmanager.py:1064-1100`）。
     #[test]
+    fn brush_history_files_load_in_order_and_use_parent_name() {
+        let dir = std::env::temp_dir().join(format!("pigment-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, name) in ["classic/pencil", "deevad/dry_brush"].iter().enumerate() {
+            let json = format!(r#"{{"version":3,"parent_brush_name":"{name}","settings":{{}}}}"#);
+            std::fs::write(dir.join(format!("history_{i}.myb")), json).unwrap();
+        }
+        let lib = BrushLibrary::embedded();
+        let loaded = load_history_from_dir(&dir, &lib);
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].name, "classic/pencil");
+        assert_eq!(loaded[1].name, "deevad/dry_brush");
+        assert!(loaded[0].preview < lib.entries.len());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn brush_history_dedupes_by_name_and_caps_at_five() {
         let mut p = BrushPanel::new();
         p.history.clear();
@@ -1339,7 +987,10 @@ mod tests {
         }
         let names: Vec<&str> = p.history.iter().map(|e| e.name.as_str()).collect();
         // 0..6 依次推入，0/1 被第二次推入时删掉 → [2,3,4,0,1]
-        assert_eq!(names, vec!["brush2", "brush3", "brush4", "brush0", "brush1"]);
+        assert_eq!(
+            names,
+            vec!["brush2", "brush3", "brush4", "brush0", "brush1"]
+        );
         assert!(p.history_entry(0).is_some());
         assert!(p.history_entry(5).is_none());
     }
@@ -1525,10 +1176,8 @@ mod tests {
     #[test]
     fn installed_brushpack_is_scanned_into_the_library() {
         use std::collections::HashSet;
-        let dir = std::env::temp_dir().join(format!(
-            "pigment-app-brushpack-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pigment-app-brushpack-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("user")).unwrap();
         let zip = dir.join("pack.zip");

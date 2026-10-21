@@ -24,19 +24,18 @@ use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
 use pigment_engine::color::{
-    colors_to_mask_void, convex_hull, depth_slider_amount, depth_slider_color,
-    distance_fade_stops, distort_hue, editor_luma_y, hcy_luma_slider_samples,
-    hcy_wheel_color_at_position, hcy_wheel_position_for_color, hcy_wheel_scroll,
-    hsv_ring_color_at_position, hsv_wheel_color_at_position, hsv_wheel_position_for_color,
-    hsv_wheel_scroll, hue_from_angle, mask_templates, mask_voids, masked_color_at_position,
-    nearest_point_in_segment, point_in_convex_poly, poly_area, saturation_from_radius,
-    slice_color_at_position, slice_faces, slice_position_for_color, template_mask, tumble_faces,
-    undistort_hue, visible_mask_voids, void_size, Color, HcyColor, HsvColor, HsvFace, HueRange,
-    MaskShape, Point, ScrollDirection, WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES,
-    EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH, HUE_SLICES, MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH,
-    MIN_SHAPE_SIZE, OUTLINE_RGBA, OUTLINE_WIDTH, PRIMARY_ADJUSTERS_MIN_HEIGHT,
-    PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES, SAT_GAMMA, SAT_SLICES, SLIDER_MIN_LENGTH,
-    SLIDER_MIN_WIDTH,
+    colors_to_mask_void, convex_hull, depth_slider_amount, depth_slider_color, distance_fade_stops,
+    distort_hue, editor_luma_y, hcy_luma_slider_samples, hcy_wheel_color_at_position,
+    hcy_wheel_position_for_color, hcy_wheel_scroll, hsv_ring_color_at_position,
+    hsv_wheel_color_at_position, hsv_wheel_position_for_color, hsv_wheel_scroll, hue_from_angle,
+    mask_templates, mask_voids, masked_color_at_position, nearest_point_in_segment,
+    point_in_convex_poly, poly_area, saturation_from_radius, slice_color_at_position, slice_faces,
+    slice_position_for_color, template_mask, tumble_faces, undistort_hue, visible_mask_voids,
+    void_size, Color, HcyColor, HsvColor, HsvFace, HueRange, MaskShape, Point, ScrollDirection,
+    WheelGeometry, WheelType, CUBE_SLIDER_SAMPLES, EDGE_HIGHLIGHT_RGBA, EDGE_HIGHLIGHT_WIDTH,
+    HUE_SLICES, MASK_DRAW_ALPHA, MASK_EDGE_LINE_WIDTH, MIN_SHAPE_SIZE, OUTLINE_RGBA, OUTLINE_WIDTH,
+    PRIMARY_ADJUSTERS_MIN_HEIGHT, PRIMARY_ADJUSTERS_MIN_WIDTH, RING_SAMPLES, SAT_GAMMA, SAT_SLICES,
+    SLIDER_MIN_LENGTH, SLIDER_MIN_WIDTH,
 };
 
 // ---------------------------------------------------------------------------
@@ -285,8 +284,16 @@ fn wheel_geometry_matches_source() {
     for (ln, f) in rows("wh_geom") {
         let geom = WheelGeometry::for_size(f64_of(f[1], ln), f64_of(f[2], ln), f64_of(f[3], ln));
         assert_bits(geom.radius, f64_of(f[4], ln), &format!("第 {ln} 行半径"));
-        assert_bits(geom.center_x, f64_of(f[5], ln), &format!("第 {ln} 行圆心 x"));
-        assert_bits(geom.center_y, f64_of(f[6], ln), &format!("第 {ln} 行圆心 y"));
+        assert_bits(
+            geom.center_x,
+            f64_of(f[5], ln),
+            &format!("第 {ln} 行圆心 x"),
+        );
+        assert_bits(
+            geom.center_y,
+            f64_of(f[6], ln),
+            &format!("第 {ln} 行圆心 y"),
+        );
     }
 }
 
@@ -328,11 +335,7 @@ fn saturation_gamma_round_trips_marker_positions() {
     for frac in [0.0, 0.1, 0.25, 0.5, 0.75, 0.9, 1.0] {
         let r = geom.radius * frac;
         let s = saturation_from_radius(r, geom.radius, SAT_GAMMA).unwrap();
-        assert_bits(
-            s,
-            frac.powf(SAT_GAMMA),
-            &format!("半径比 {frac} 的饱和度"),
-        );
+        assert_bits(s, frac.powf(SAT_GAMMA), &format!("半径比 {frac} 的饱和度"));
         // 画标记是逆运算，四舍五入到像素后应回到原处（±1px）
         let (x, _) = geom.position_for(s, 0.0, SAT_GAMMA);
         assert!((x - (geom.center_x + r)).abs() <= 1.0, "frac={frac} x={x}");
@@ -378,9 +381,11 @@ fn wheel_and_ring_marker_positions_match_source() {
         let color = Color::Hsv(hsv_of(&f[5..8], ln));
         let (x, y) = match kind {
             "wheel" => hsv_wheel_position_for_color(&geom, &color, wheel_type.ranges()),
-            "ring" => {
-                pigment_engine::color::hsv_ring_position_for_color(&geom, &color, wheel_type.ranges())
-            }
+            "ring" => pigment_engine::color::hsv_ring_position_for_color(
+                &geom,
+                &color,
+                wheel_type.ranges(),
+            ),
             other => panic!("第 {ln} 行未知 kind {other:?}"),
         };
         assert_bits(x, f64_of(f[8], ln), &format!("第 {ln} 行 {kind} 标记 x"));
@@ -416,7 +421,10 @@ fn wheel_scroll_matches_source() {
                 assert_bits(col.h, 0.3, "色相不该动");
                 assert_bits(col.s, 0.4, "饱和度不该动");
             }
-            Some(other) => panic!("第 {ln} 行：滚轮应回写 HSVColor，实得 {}", other.class_name()),
+            Some(other) => panic!(
+                "第 {ln} 行：滚轮应回写 HSVColor，实得 {}",
+                other.class_name()
+            ),
         }
     }
 }
@@ -462,12 +470,14 @@ fn fade_stops_match_source() {
         let rgb = [got[0].1[0], got[0].1[1], got[0].1[2]];
         let actual = distance_fade_stops(rgb, nstops, gamma, alpha);
         assert_eq!(actual.len(), got.len(), "case {case}");
-        for (i, ((a_stop, a_rgba), (e_stop, e_rgba))) in
-            actual.iter().zip(got.iter()).enumerate()
-        {
+        for (i, ((a_stop, a_rgba), (e_stop, e_rgba))) in actual.iter().zip(got.iter()).enumerate() {
             assert_bits(*a_stop, *e_stop, &format!("case {case} 第 {i} 个色标位置"));
             for c in 0..4 {
-                assert_bits(a_rgba[c], e_rgba[c], &format!("case {case} 第 {i} 个色标分量 {c}"));
+                assert_bits(
+                    a_rgba[c],
+                    e_rgba[c],
+                    &format!("case {case} 第 {i} 个色标分量 {c}"),
+                );
             }
         }
     }
@@ -675,9 +685,7 @@ fn hcy_constants_match_source() {
                 pigment_engine::color::EDITOR_MAX_NUM_SHAPES,
                 "hcywheel.py:396"
             ),
-            "MASK_EDGE_LINE_WIDTH" => {
-                assert_bits(num(), MASK_EDGE_LINE_WIDTH, "hcywheel.py:303")
-            }
+            "MASK_EDGE_LINE_WIDTH" => assert_bits(num(), MASK_EDGE_LINE_WIDTH, "hcywheel.py:303"),
             "MASK_DRAW_ALPHA" => assert_bits(num(), MASK_DRAW_ALPHA, "hcywheel.py:311"),
             "PREFS_MASK_KEY" => {
                 assert_eq!(text, pigment_engine::color::PREFS_MASK_KEY, ":43");
@@ -714,7 +722,11 @@ fn hcy_mask_templates_match_source() {
         let tpl = &templates[idx];
         assert_eq!(tpl.name, f[2], "第 {ln} 行模板名");
         assert_eq!(tpl.description, f[3], "第 {ln} 行说明");
-        assert_eq!(tpl.shapes.len(), f64_of(f[4], ln) as usize, "第 {ln} 行形状数");
+        assert_eq!(
+            tpl.shapes.len(),
+            f64_of(f[4], ln) as usize,
+            "第 {ln} 行形状数"
+        );
         seen_names.insert(tpl.name);
     }
     assert_eq!(seen_names.len(), 5, "fixture 应有五个预设");
@@ -1034,8 +1046,9 @@ fn hcy_masked_sampling_matches_source() {
         let y = f64_of(f[3], ln);
         // 脚本里 managed 固定是 HCYColor(0, 0, 0.5)
         let managed = Color::Hcy(HcyColor::new(0.0, 0.0, 0.5));
-        let got = masked_color_at_position(&case.mask, &geom, x, y, &managed, case.wheel_type.ranges())
-            .unwrap_or_else(|| panic!("第 {ln} 行：几何应可用"));
+        let got =
+            masked_color_at_position(&case.mask, &geom, x, y, &managed, case.wheel_type.ranges())
+                .unwrap_or_else(|| panic!("第 {ln} 行：几何应可用"));
         assert_bits(got.h, f64_of(f[4], ln), &format!("第 {ln} 行 h"));
         assert_bits(got.c, f64_of(f[5], ln), &format!("第 {ln} 行 c"));
         assert_bits(got.y, f64_of(f[6], ln), &format!("第 {ln} 行 y"));
@@ -1060,4 +1073,3 @@ fn hcy_mask_void_helpers_agree() {
         .collect();
     assert_eq!(voids, expected, "{tag}");
 }
-

@@ -25,9 +25,8 @@ const HIT_R: f32 = 11.0;
 
 /// MyPaint 笔刷编辑器的分组结构。
 ///
-/// 逐项照抄 `mypaint/gui/brusheditor.py:331-497` 的 `groups` 字面量（含顺序）。
-/// 唯一缺项是 `smudge_bucket` —— hokusai 的 `BrushSetting` 枚举里没有它
-/// （见《MyPaint源码逐项比对报告》第 1.1 节），所以这里无法列出。
+/// 逐项照抄 `mypaint/gui/brusheditor.py:331-497` 的 `groups` 字面量（含顺序）；
+/// MyPaint 2.0 的 `softness` 自动归入 Basic，`smudge_bucket` 归入 Smudge。
 const MP_GROUPS: &[(&str, &[BrushSetting])] = &[
     (
         "Basic",
@@ -35,6 +34,7 @@ const MP_GROUPS: &[(&str, &[BrushSetting])] = &[
             BrushSetting::Radius,
             BrushSetting::RadiusByRandom,
             BrushSetting::Hardness,
+            BrushSetting::Softness,
             BrushSetting::SnapToPixel,
             BrushSetting::AntiAliasing,
             BrushSetting::Eraser,
@@ -70,7 +70,7 @@ const MP_GROUPS: &[(&str, &[BrushSetting])] = &[
             BrushSetting::SmudgeLengthLog,
             BrushSetting::SmudgeRadiusLog,
             BrushSetting::SmudgeTransparency,
-            // smudge_bucket 缺失（hokusai 未实现）
+            BrushSetting::SmudgeBucket,
         ],
     ),
     (
@@ -231,9 +231,7 @@ impl BrushEditor {
         let ungrouped: Vec<BrushSetting> = BrushSetting::ALL
             .iter()
             .copied()
-            .filter(|s| {
-                !MP_HIDDEN.contains(s) && !MP_GROUPS.iter().any(|(_, m)| m.contains(s))
-            })
+            .filter(|s| !MP_HIDDEN.contains(s) && !MP_GROUPS.iter().any(|(_, m)| m.contains(s)))
             .collect();
         let group_count = MP_GROUPS.len() + usize::from(!ungrouped.is_empty());
         ui.horizontal(|ui| {
@@ -269,9 +267,14 @@ impl BrushEditor {
                     }
                 }
                 for (title, members) in MP_GROUPS {
-                    if let Some(p) =
-                        setting_group_ui(ui, edit, self.setting, self.only_nondefault, title, members)
-                    {
+                    if let Some(p) = setting_group_ui(
+                        ui,
+                        edit,
+                        self.setting,
+                        self.only_nondefault,
+                        title,
+                        members,
+                    ) {
                         pick = Some(p);
                     }
                 }
@@ -355,11 +358,7 @@ impl BrushEditor {
                 .width(130.0)
                 .show_ui(ui, |ui| {
                     for inp in BrushInput::ALL {
-                        let exists = edit
-                            .get(setting)
-                            .inputs
-                            .iter()
-                            .any(|m| m.input == *inp);
+                        let exists = edit.get(setting).inputs.iter().any(|m| m.input == *inp);
                         if exists {
                             continue;
                         }
@@ -409,22 +408,28 @@ impl BrushEditor {
     /// `scale_simple(w, h, BILINEAR)` 缩放；它是随附的 `_prev.png`，
     /// **不随设置改动重画**。取不到就留空（MyPaint 则显示一张透明 pixbuf）。
     fn icon_section(&mut self, ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>) {
-        let w = ui.available_width().max(64.0);
+        // MyPaint 的图标区是固定小预览，不占满整列；早期移植直接用
+        // available_width()，在宽窗口里会把 128×128 图放大成整块画布。
+        let w = ui.available_width().min(112.0).max(64.0);
         match icon {
             Some(t) => {
                 ui.image((t.id(), egui::vec2(w, w)));
             }
             None => {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::vec2(w, w), egui::Sense::hover());
-                ui.painter()
-                    .rect_filled(rect, egui::CornerRadius::ZERO, ui.visuals().extreme_bg_color);
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(w, w), egui::Sense::hover());
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::ZERO,
+                    ui.visuals().extreme_bg_color,
+                );
             }
         }
         ui.label(
-            egui::RichText::new("笔刷图标：随附的 128×128 预览图（MyPaint 同上，不随设置改动重画）")
-                .weak()
-                .small(),
+            egui::RichText::new(
+                "笔刷图标：随附的 128×128 预览图（MyPaint 同上，不随设置改动重画）",
+            )
+            .weak()
+            .small(),
         );
     }
 
@@ -472,7 +477,10 @@ impl BrushEditor {
             }
             let x = xmax * i as f32 / 8.0;
             painter.line_segment(
-                [egui::pos2(sx(x), plot.top()), egui::pos2(sx(x), plot.bottom())],
+                [
+                    egui::pos2(sx(x), plot.top()),
+                    egui::pos2(sx(x), plot.bottom()),
+                ],
                 egui::Stroke::new(1.0, grid),
             );
         }
@@ -496,7 +504,10 @@ impl BrushEditor {
             egui::Stroke::new(1.2, axis),
         );
         painter.line_segment(
-            [egui::pos2(sx(0.0), plot.top()), egui::pos2(sx(0.0), plot.bottom())],
+            [
+                egui::pos2(sx(0.0), plot.top()),
+                egui::pos2(sx(0.0), plot.bottom()),
+            ],
             egui::Stroke::new(1.2, axis),
         );
 
@@ -512,11 +523,7 @@ impl BrushEditor {
                         // 空白处按下 = 插入控制点（保持 x 升序）
                         let x = inv_x(p.x).clamp(0.0, xmax);
                         let y = mapping.eval(x).clamp(-ymax, ymax);
-                        let at = insert_point(
-                            &mut edit.get_mut(setting).inputs[ci].points,
-                            x,
-                            y,
-                        );
+                        let at = insert_point(&mut edit.get_mut(setting).inputs[ci].points, x, y);
                         self.drag = Some(at);
                         changed = true;
                     }
@@ -555,10 +562,7 @@ impl BrushEditor {
             })
             .collect();
         let accent = visuals.selection.bg_fill;
-        painter.add(egui::Shape::line(
-            curve_pts,
-            egui::Stroke::new(1.8, accent),
-        ));
+        painter.add(egui::Shape::line(curve_pts, egui::Stroke::new(1.8, accent)));
 
         // ---- 绘制控制点 ----
         let point_color = visuals.strong_text_color();
@@ -692,14 +696,7 @@ fn insert_point(points: &mut Vec<(f32, f32)>, x: f32, y: f32) -> usize {
 
 /// 移动第 `i` 个控制点：x 被相邻控制点夹住（保证升序不破），y 夹在 `±ymax`。
 /// 返回是否真的发生了变化。
-fn move_point(
-    points: &mut [(f32, f32)],
-    i: usize,
-    x: f32,
-    y: f32,
-    xmax: f32,
-    ymax: f32,
-) -> bool {
+fn move_point(points: &mut [(f32, f32)], i: usize, x: f32, y: f32, xmax: f32, ymax: f32) -> bool {
     if i >= points.len() {
         return false;
     }
@@ -733,7 +730,10 @@ mod tests {
         assert_eq!(insert_point(&mut pts, 9.0, 0.0), pts.len() - 1);
         // 允许重复 x（官方 Posterizer 的阶梯曲线就是靠重复 x 构造的）
         let at = insert_point(&mut pts, 0.0, 5.0);
-        assert!(pts.windows(2).all(|w| w[0].0 <= w[1].0), "升序被破坏: {pts:?}");
+        assert!(
+            pts.windows(2).all(|w| w[0].0 <= w[1].0),
+            "升序被破坏: {pts:?}"
+        );
         assert_eq!(pts[at], (0.0, 5.0));
     }
 

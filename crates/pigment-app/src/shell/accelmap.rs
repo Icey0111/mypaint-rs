@@ -124,7 +124,8 @@ const LABEL_KEY: &str = "Key:";
 /// 捕获对话框的提示 —— `accelmap.py:463`。
 const HINT_PRESS_KEYS: &str = "Press keys to update this assignment";
 /// 冲突提示模板 —— `accelmap.py:535-536`（去掉 `<b>` 标记）。
-const HINT_CLASH: &str = "{accel} is already in use for '{action}'. The existing assignment will be replaced.";
+const HINT_CLASH: &str =
+    "{accel} is already in use for '{action}'. The existing assignment will be replaced.";
 /// 冲突里"查不到动作名"的占位 —— `accelmap.py:523`。
 const UNKNOWN_ACTION: &str = "Unknown Action";
 /// 键名后缀 —— `accelmap.py:543,547`。
@@ -217,7 +218,10 @@ fn build_rows() -> Vec<Row> {
             action: actions::context_action_name(slot, true),
             label: format!("Save to Brush {slot}"),
             desc: format!("Store brush settings in shortcut slot {slot}"),
-            default: Some(Accel::new(slot.to_string(), conf::Mods::new(true, false, false))),
+            default: Some(Accel::new(
+                slot.to_string(),
+                conf::Mods::new(true, false, false),
+            )),
             listed: true,
         });
     }
@@ -393,7 +397,10 @@ impl AccelMap {
 
     /// 显示名（找不到 = 陌生 path，返回 `None` → 界面用 [`UNKNOWN_ACTION`]）。
     pub(crate) fn action_label_of_path(&self, path: &str) -> Option<&str> {
-        self.rows.iter().find(|r| r.path == path).map(|r| r.label.as_str())
+        self.rows
+            .iter()
+            .find(|r| r.path == path)
+            .map(|r| r.label.as_str())
     }
 
     /// 这条 path 是否认识（不认识 = `accelmap.conf` 里带进来的陌生动作，
@@ -517,8 +524,7 @@ impl AccelMap {
         allow_fallbacks: bool,
     ) -> Option<Bound> {
         let matches = |accel: &Accel| {
-            actions::egui_binding_for(&accel.key, from_engine_mods(accel.mods))
-                == Some((key, mods))
+            actions::egui_binding_for(&accel.key, from_engine_mods(accel.mods)) == Some((key, mods))
         };
         // 1. 覆盖层
         for (path, over) in &self.overrides {
@@ -648,10 +654,7 @@ impl Capture {
     /// "Key:" 那一行显示的文字 —— `accelmap.py:529-548`（无键时用当前标签）。
     fn key_text(&self, map: &AccelMap) -> String {
         match (&self.attempt, &self.clash) {
-            (None, _) => map
-                .accel(&self.path)
-                .map(|a| a.label())
-                .unwrap_or_default(),
+            (None, _) => map.accel(&self.path).map(|a| a.label()).unwrap_or_default(),
             (Some(accel), Some(_)) => format!("{} {}", accel.label(), SUFFIX_REPLACE),
             (Some(accel), None) => {
                 if map.accel(&self.path) == Some(accel) {
@@ -689,323 +692,13 @@ impl PigmentApp {
     pub(crate) fn save_accel_map(&mut self) {
         match self.accel_map.save() {
             Ok(()) => {
-                self.key_editor.status = Some(format!(
-                    "已保存到 {}",
-                    self.accel_map.conf_path().display()
-                ));
+                self.key_editor.status =
+                    Some(format!("已保存到 {}", self.accel_map.conf_path().display()));
             }
             Err(e) => {
-                let msg = format!("加速键保存失败：{e}");
+                let msg = crate::tr_fmt!("Failed to save accel map: {e}", "{e}" => e);
                 eprintln!("{msg}");
                 self.key_editor.status = Some(msg);
-            }
-        }
-    }
-
-    /// "Keys" 页签的页面体 —— `gui/preferenceswindow.glade:439` 的 `AccelMapEditor`。
-    ///
-    /// 源码把它放在偏好对话框的 "Keys" 页签里（不是独立窗口），所以 B6-3 起
-    /// 由 [`crate::shell::prefs_window`] 的 Keys 页直接调用本函数；页签标题
-    /// `Keys`（glade `:489`）在偏好窗口那张表里。
-    ///
-    /// B6-2 时期这里还画过 "Disable fallback key bindings" 复选框
-    /// （glade `:451-466`）；它讲的偏好键属于对话框外壳，已随外壳一起搬到
-    /// `prefs_window::CONTROLS`（`keyboard.disable_fallbacks`）。
-    pub(crate) fn keys_editor_page(&mut self, ui: &mut egui::Ui) {
-        // 过滤框（`accelmap.py:83-89`）
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.key_editor.filter)
-                    .hint_text(FILTER_PLACEHOLDER)
-                    .desired_width(200.0),
-            );
-            ui.label(
-                egui::RichText::new(format!(
-                    "{} 项 / 默认表 {} 条 / 覆盖 {} 条",
-                    self.accel_map.editor_rows().len(),
-                    self.accel_map.row_count(),
-                    self.accel_map.override_count()
-                ))
-                .weak()
-                .small(),
-            );
-        });
-        ui.separator();
-
-        // 两列表格（`accelmap.py:110-143`）
-        //
-        // **技术栈适配**：GTK 的 `Gtk.TreeView` 自己管列宽（可拖、可排序）；
-        // egui 没有列模型，这里按"动作列占 62%，其余给按键列"手工分配宽度
-        // （`allocate_ui_with_layout` 的定宽分配），否则长描述会把布局挤成
-        // 一列单字换行。
-        let mut start_capture: Option<String> = None;
-        let mut reset_one: Option<String> = None;
-        let action_w = (ui.available_width() * 0.62).clamp(260.0, 560.0);
-        egui::ScrollArea::vertical()
-            .id_salt("accelmap_key_list")
-            .auto_shrink([false, false])
-            .max_height((ui.available_height() - 40.0).max(80.0))
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    // 表头也按同一套列宽分配，否则 `add_sized` 会把文字居中
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(action_w, 18.0),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            ui.label(egui::RichText::new(COLUMN_ACTION).strong());
-                        },
-                    );
-                    ui.label(egui::RichText::new(COLUMN_ACCEL).strong());
-                });
-                ui.separator();
-                let filter = self.key_editor.filter.clone();
-                for row in self.accel_map.editor_rows() {
-                    if !self.accel_map.row_matches(row, &filter) {
-                        continue;
-                    }
-                    let accel = self.accel_map.accel(&row.path);
-                    ui.horizontal_top(|ui| {
-                        // 动作名 + 描述（源码是 `<b>label</b><small>\ndesc</small>`）
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(action_w, 0.0),
-                            egui::Layout::top_down(egui::Align::LEFT),
-                            |ui| {
-                                let mut label = egui::RichText::new(&row.label).strong();
-                                if self.accel_map.is_overridden(&row.path) {
-                                    label = label.color(egui::Color32::LIGHT_BLUE);
-                                }
-                                ui.label(label);
-                                if !row.desc.is_empty() {
-                                    ui.label(egui::RichText::new(&row.desc).weak().small());
-                                }
-                                if let Some(other) = self.accel_map.clash_of(&row.path) {
-                                    let who = self
-                                        .accel_map
-                                        .action_label_of_path(other)
-                                        .unwrap_or(UNKNOWN_ACTION);
-                                    ui.label(
-                                        egui::RichText::new(format!("冲突：{who}"))
-                                            .color(egui::Color32::LIGHT_RED)
-                                            .small(),
-                                    );
-                                }
-                            },
-                        );
-                        // 加速键单元格 = 可点的按钮（源码里点它进编辑，
-                        // `accelmap.py:125-129` 的 `editable=True` + `edited` 信号）
-                        ui.allocate_ui_with_layout(
-                            egui::vec2(0.0, 0.0),
-                            egui::Layout::left_to_right(egui::Align::Center),
-                            |ui| {
-                                let text = accel
-                                    .map(|a| a.label())
-                                    .unwrap_or_else(|| EMPTY_ACCEL.to_string());
-                                if ui
-                                    .button(egui::RichText::new(text).strong())
-                                    .on_hover_text(format!("{}\n{}", row.label, row.path))
-                                    .clicked()
-                                {
-                                    start_capture = Some(row.path.clone());
-                                }
-                                // "重置此项"：源码编辑器没有这个动作（只有 Delete），
-                                // 这里补的是"丢掉覆盖层、回到默认表"，只在改过时出现。
-                                if self.accel_map.is_overridden(&row.path)
-                                    && ui
-                                        .button(egui::RichText::new("重置").small())
-                                        .on_hover_text(format!(
-                                            "回到默认值：{}",
-                                            self.accel_map
-                                                .default_accel(&row.path)
-                                                .map(|a| a.label())
-                                                .unwrap_or_else(|| "（无）".to_string())
-                                        ))
-                                        .clicked()
-                                {
-                                    reset_one = Some(row.path.clone());
-                                }
-                            },
-                        );
-                    });
-                    ui.separator();
-                }
-            });
-
-        ui.separator();
-        ui.horizontal(|ui| {
-            if ui.button("保存").clicked() {
-                self.save_accel_map();
-            }
-            if ui.button("重新载入").clicked() {
-                self.load_accel_map();
-            }
-            if ui.button("全部重置").clicked() {
-                let n = self.accel_map.reset_all();
-                self.key_editor.status = Some(format!("已重置 {n} 条覆盖"));
-                self.save_accel_map();
-            }
-            if let Some(status) = &self.key_editor.status {
-                ui.label(egui::RichText::new(status).weak().small());
-            }
-        });
-
-        if let Some(path) = start_capture {
-            self.key_editor.capture = Some(Capture::new(&self.accel_map, &path));
-        }
-        if let Some(path) = reset_one {
-            self.accel_map.reset_one(&path);
-            self.save_accel_map();
-        }
-    }
-
-    /// 按键捕获对话框 —— `accelmap.py:352-568`。
-    ///
-    /// 用 `egui::Modal`（遮罩 + 挡住背后输入）对应 GTK 的 `set_modal(True)`
-    /// （`accelmap.py:361`）。
-    ///
-    /// 调用点：偏好窗口每帧末尾（[`crate::shell::prefs_window`]）——
-    /// 源码里它是编辑器弹出来的模态对话框，窗口藏起来它也就没了。
-    pub(crate) fn key_capture_modal(&mut self, ctx: &egui::Context) {
-        if self.key_editor.capture.is_none() {
-            return;
-        }
-        // 先取按键事件（Return/Escape/BackSpace 三个"对话框默认键"优先，
-        // `accelmap.py:466-480` 的 `_USE_NORMAL_DIALOG_KEYS` 分支）
-        let events: Vec<(egui::Key, Mods, bool)> = ctx.input(|i| {
-            i.events
-                .iter()
-                .filter_map(|e| match e {
-                    egui::Event::Key {
-                        key,
-                        pressed: true,
-                        repeat,
-                        modifiers,
-                        ..
-                    } => Some((*key, Mods::from_egui(modifiers), *repeat)),
-                    _ => None,
-                })
-                .collect()
-        });
-
-        let mut action: Option<CaptureAction> = None;
-        let mut attempt: Option<Accel> = None;
-        let mut bad_key: Option<egui::Key> = None;
-        for (key, mods, repeat) in events {
-            if repeat {
-                continue;
-            }
-            // `accelmap.py:469` 的 `if event.is_modifier: return False`
-            if actions::is_modifier_key(key) {
-                continue;
-            }
-            // `accelmap.py:471-480`：三个对话框默认键（它们因此无法被绑定 ——
-            // 源码 `_USE_NORMAL_DIALOG_KEYS = True` 就是这个代价）
-            match key {
-                egui::Key::Enter => {
-                    action = Some(CaptureAction::Ok);
-                    break;
-                }
-                egui::Key::Escape => {
-                    action = Some(CaptureAction::Cancel);
-                    break;
-                }
-                egui::Key::Backspace => {
-                    action = Some(CaptureAction::Delete);
-                    break;
-                }
-                _ => {}
-            }
-            match actions::capture_accel(key, mods) {
-                Some((name, accel_mods)) => attempt = Some(Accel::new(name, accel_mods.to_accel())),
-                None => bad_key = Some(key),
-            }
-            break;
-        }
-
-        // 先把要显示的东西全部取出来（之后才能可变地动 `self`）
-        let (title, path, action_label, key_text, hint) = {
-            let capture = self.key_editor.capture.as_mut().expect("上面判过");
-            if let Some(accel) = attempt {
-                capture.set_attempt(&self.accel_map, accel);
-            }
-            if let Some(key) = bad_key {
-                capture.hint = format!(
-                    "这个键没有 GDK 键值名（egui 的浏览器键/媒体键），记不下来：{key:?}"
-                );
-            }
-            (
-                EDIT_TITLE.replace("{action}", &capture.action_label),
-                capture.path.clone(),
-                capture.action_label.clone(),
-                capture.key_text(&self.accel_map),
-                capture.hint.clone(),
-            )
-        };
-
-        egui::Modal::new(egui::Id::unique("pigment_key_capture")).show(ctx, |ui| {
-            ui.set_width(420.0);
-            ui.heading(&title);
-            ui.add_space(6.0);
-            egui::Grid::new("pigment_key_capture_grid")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| {
-                    ui.label(LABEL_ACTION);
-                    ui.label(&action_label);
-                    ui.end_row();
-                    // `_SHOW_ACCEL_PATH = True`（`accelmap.py:59,399-414`）
-                    ui.label(LABEL_PATH);
-                    ui.label(egui::RichText::new(&path).weak());
-                    ui.end_row();
-                    ui.label(LABEL_KEY);
-                    ui.label(egui::RichText::new(&key_text).strong());
-                    ui.end_row();
-                });
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(&hint).small());
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.button(BUTTON_DELETE).clicked() {
-                    action = Some(CaptureAction::Delete);
-                }
-                if ui.button(BUTTON_CANCEL).clicked() {
-                    action = Some(CaptureAction::Cancel);
-                }
-                if ui.button(BUTTON_OK).clicked() {
-                    action = Some(CaptureAction::Ok);
-                }
-            });
-        });
-
-        match action {
-            None => {}
-            Some(CaptureAction::Cancel) => {
-                // `accelmap.py:553-568`：取消 = 什么都不改
-                self.key_editor.capture = None;
-            }
-            Some(CaptureAction::Delete) => {
-                // `accelmap.py:556-562`：REJECT = 删掉这条绑定
-                self.accel_map.clear(&path);
-                self.key_editor.capture = None;
-                self.key_editor.status = Some(format!("已删除 {path} 的按键"));
-                self.save_accel_map();
-            }
-            Some(CaptureAction::Ok) => {
-                // `accelmap.py:563-566`：OK = 写新键（先删同键的其它条目）
-                if let Some(accel) = self
-                    .key_editor
-                    .capture
-                    .as_ref()
-                    .and_then(|c| c.attempt.clone())
-                {
-                    let deleted = self.accel_map.set_accel(&path, accel.clone());
-                    let mut status = format!("{path} → {}", accel.to_gtk_name());
-                    if !deleted.is_empty() {
-                        status.push_str(&format!("（替换了 {} 条）", deleted.len()));
-                    }
-                    self.key_editor.status = Some(status);
-                    self.save_accel_map();
-                }
-                self.key_editor.capture = None;
             }
         }
     }
@@ -1038,7 +731,10 @@ mod tests {
     /// 一份不碰真实 `accelmap.conf` 的映射。
     fn fresh(tag: &str) -> AccelMap {
         let mut p = std::env::temp_dir();
-        p.push(format!("pigment-accelmap-{}-{tag}.conf", std::process::id()));
+        p.push(format!(
+            "pigment-accelmap-{}-{tag}.conf",
+            std::process::id()
+        ));
         let _ = std::fs::remove_file(&p);
         AccelMap::new(p)
     }
@@ -1183,7 +879,10 @@ mod tests {
         );
         // 全部重置：覆盖层清空（F13/F14 都是空闲键，不会连累别的动作）
         map.set_accel(save, Accel::new("F13", conf::Mods::NONE));
-        map.set_accel("<Actions>/DocumentActions/Redo", Accel::new("F14", conf::Mods::NONE));
+        map.set_accel(
+            "<Actions>/DocumentActions/Redo",
+            Accel::new("F14", conf::Mods::NONE),
+        );
         assert_eq!(map.override_count(), 2);
         assert_eq!(map.reset_all(), 2);
         assert_eq!(map.override_count(), 0);
@@ -1248,8 +947,10 @@ mod tests {
     fn unknown_paths_in_the_file_are_kept_but_never_dispatch() {
         // `keyboard.py:89`：路径对不上任何已注册动作 → 只记 warning
         let mut map = fresh("unknown");
-        map.overrides
-            .insert("<Actions>/GoneActions/Gone".to_string(), Some(Accel::new("F9", conf::Mods::NONE)));
+        map.overrides.insert(
+            "<Actions>/GoneActions/Gone".to_string(),
+            Some(Accel::new("F9", conf::Mods::NONE)),
+        );
         map.recompute_conflicts();
         assert!(map.is_known_path("<Actions>/GoneActions/Gone") == false);
         // 落盘时保留（不然用户的文件会被悄悄改小）
@@ -1270,7 +971,10 @@ mod tests {
     fn save_writes_the_whole_table_and_reload_keeps_overrides() {
         let mut map = fresh("save");
         // F13 不被任何默认动作占用 → 不会顺带删掉别人（那会多出一条注释行）
-        map.set_accel("<Actions>/DocumentActions/Undo", Accel::new("F13", conf::Mods::NONE));
+        map.set_accel(
+            "<Actions>/DocumentActions/Undo",
+            Accel::new("F13", conf::Mods::NONE),
+        );
         map.save().unwrap();
         let text = std::fs::read_to_string(map.conf_path()).unwrap();
         assert!(text.starts_with("; mypaint GtkAccelMap rc-file"));
@@ -1344,7 +1048,6 @@ mod tests {
             egui::Key::Minus,
             egui::Key::Equals,
             egui::Key::Plus,
-            egui::Key::Pipe,
             egui::Key::Backslash,
             egui::Key::OpenBracket,
             egui::Key::CloseBracket,
@@ -1407,10 +1110,11 @@ mod tests {
         assert_eq!((name, mods), ("less", Mods::NONE));
         let (name, mods) = actions::capture_accel(egui::Key::A, SHIFT).unwrap();
         assert_eq!((name, mods), ("a", SHIFT));
-        // 小键盘与主键盘在 egui 里合并：不带 Shift 的 Plus 只能是 KP_Add
+        // 小键盘与主键盘在 egui 里合并：不带 Shift 的 Plus 只能是 KP_Add；
+        // 主键盘 `+` 是 Shift+=，egui-winit 报 Equals。
         let (name, _) = actions::capture_accel(egui::Key::Plus, Mods::NONE).unwrap();
         assert_eq!(name, "KP_Add");
-        let (name, _) = actions::capture_accel(egui::Key::Plus, SHIFT).unwrap();
+        let (name, _) = actions::capture_accel(egui::Key::Equals, SHIFT).unwrap();
         assert_eq!(name, "plus");
     }
 
@@ -1427,8 +1131,14 @@ mod tests {
         }
         assert!(!actions::is_modifier_key(egui::Key::A));
         // 浏览器/媒体键没有 GDK 键值名 → 捕获要说"记不下来"而不是瞎记
-        assert_eq!(actions::capture_accel(egui::Key::BrowserBack, Mods::NONE), None);
-        assert_eq!(actions::capture_accel(egui::Key::MediaPlayPause, Mods::NONE), None);
+        assert_eq!(
+            actions::capture_accel(egui::Key::BrowserBack, Mods::NONE),
+            None
+        );
+        assert_eq!(
+            actions::capture_accel(egui::Key::MediaPlayPause, Mods::NONE),
+            None
+        );
     }
 
     #[test]
@@ -1438,7 +1148,11 @@ mod tests {
         let mut capture = Capture::new(&map, export);
         // 显示名就是 `resources.xml` 的 label 原文（Export 带省略号）
         assert_eq!(capture.action_label, "Export…");
-        assert_eq!(capture.key_text(&map), "Shift+Ctrl+E", "还没按 = 显示当前键");
+        assert_eq!(
+            capture.key_text(&map),
+            "Shift+Ctrl+E",
+            "还没按 = 显示当前键"
+        );
         assert_eq!(capture.hint, HINT_PRESS_KEYS);
 
         // 按下一个没被占用的键 → "(changed)" + 标准提示
@@ -1449,14 +1163,15 @@ mod tests {
         // 按下一个被占用的键 → "(replace)" + 警告（`accelmap.py:532-544`）
         capture.set_attempt(&map, Accel::new("s", conf::Mods::new(true, false, false)));
         assert_eq!(capture.key_text(&map), "Ctrl+S (replace)");
-        assert!(capture.hint.contains("already in use for 'Save'"), "{}", capture.hint);
+        assert!(
+            capture.hint.contains("already in use for 'Save'"),
+            "{}",
+            capture.hint
+        );
 
         // 按回它自己的键 → 没有后缀（`accelmap.py:527-530`）
         // Export 的默认键是 `<Primary><Shift>e`（Ctrl+Shift+E）
-        capture.set_attempt(
-            &map,
-            Accel::new("e", conf::Mods::new(true, true, false)),
-        );
+        capture.set_attempt(&map, Accel::new("e", conf::Mods::new(true, true, false)));
         assert_eq!(capture.key_text(&map), "Shift+Ctrl+E");
         assert_eq!(capture.hint, HINT_PRESS_KEYS);
     }
@@ -1470,7 +1185,10 @@ mod tests {
         capture.set_attempt(&map, Accel::new("j", conf::Mods::NONE));
         let deleted = map.set_accel(save, capture.attempt.clone().unwrap());
         // 裸 `j` 在默认表里是 FlipSequenceMode
-        assert_eq!(deleted, vec!["<Actions>/ModeStackActions/FlipSequenceMode".to_string()]);
+        assert_eq!(
+            deleted,
+            vec!["<Actions>/ModeStackActions/FlipSequenceMode".to_string()]
+        );
         assert_eq!(
             map.lookup(egui::Key::J, Mods::NONE, true),
             Some(Bound::Action("Save"))

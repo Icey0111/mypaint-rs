@@ -14,8 +14,8 @@ use std::path::PathBuf;
 use pigment_engine::brushlib::default_brush;
 use pigment_engine::hokusai::{BrushSetting, BrushState};
 use pigment_engine::{Brushwork, Document, StrokeEvent};
-use pigment_surface::layer::{Layer, LayerMode};
 use pigment_surface::combine::DEFAULT_MODE;
+use pigment_surface::layer::{Layer, LayerMode};
 
 fn tmp(name: &str) -> PathBuf {
     let mut p = std::env::temp_dir();
@@ -122,7 +122,7 @@ fn pass_through_forces_opacity_and_undo_restores() {
     assert_eq!(doc.layers().layer_at(&[0]).unwrap().opacity, 1.0);
     // 空改动的 SetLayerOpacity 也入了栈（源码同：redo 里设置器拒绝，但命令照样入栈）
     doc.undo(); // 撤销那次被拒的 opacity（无效果）
-    // 再撤销 mode → 回到隔离；撤销顺序照 command.py:1557-1560（先 mode 后 opacity）
+                // 再撤销 mode → 回到隔离；撤销顺序照 command.py:1557-1560（先 mode 后 opacity）
     doc.undo();
     let g = doc.layers().layer_at(&[0]).unwrap();
     assert_eq!(g.mode, LayerMode::Standard(DEFAULT_MODE));
@@ -143,14 +143,15 @@ fn painting_on_a_group_does_nothing() {
     assert!(doc.paintable_surface_mut().is_some());
     paint(&mut doc, 20.0);
     assert!(doc.command_stack.undo_len() > before, "子层上作画应入栈");
-    assert!(doc
-        .layers()
-        .layer_at(&[0, 0])
-        .unwrap()
-        .surface()
-        .unwrap()
-        .tile_count()
-        > 0);
+    assert!(
+        doc.layers()
+            .layer_at(&[0, 0])
+            .unwrap()
+            .surface()
+            .unwrap()
+            .tile_count()
+            > 0
+    );
 }
 
 /// 隐藏组 → 子层不可画、也要抬高合成版本号（GPU 水位线）。
@@ -200,7 +201,11 @@ fn ora_round_trips_group_structure() {
     let g = back.layers().layer_at(&g).unwrap();
     assert!(g.is_group(), "组结构要保留");
     assert_eq!(g.mode, LayerMode::Standard(DEFAULT_MODE));
-    assert!((g.opacity - 0.7).abs() < 1e-3, "组不透明度要往返：{}", g.opacity);
+    assert!(
+        (g.opacity - 0.7).abs() < 1e-3,
+        "组不透明度要往返：{}",
+        g.opacity
+    );
     assert_eq!(g.child_count(), 2, "子层数不变");
     // 直通组：写 isolation="auto"、丢 opacity/composite-op → 读回仍是直通
     let pt = path_of(&back, "PT");
@@ -212,7 +217,11 @@ fn ora_round_trips_group_structure() {
         "pass-through 不参与 ORA 往返（源码同）"
     );
     // 子层的名字也回来了
-    assert!(back.layers().walk().iter().any(|(_, l)| l.name.as_deref() == Some("A")));
+    assert!(back
+        .layers()
+        .walk()
+        .iter()
+        .any(|(_, l)| l.name.as_deref() == Some("A")));
 }
 
 /// 合并下行：当前层与**下一个兄弟**合并；组会被摊平成绘画层。

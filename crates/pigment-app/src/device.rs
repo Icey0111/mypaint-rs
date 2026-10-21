@@ -130,6 +130,186 @@ pub(crate) fn device_label(id: &str) -> String {
     }
 }
 
+/// `gui/device.py::ScrollAction`（`:115-131`）：设备的滚轮默认动作。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ScrollAction {
+    /// 滚轮缩放（默认）。
+    #[default]
+    Zoom,
+    /// 滚轮平移。
+    Pan,
+}
+
+impl ScrollAction {
+    pub(crate) const VALUES: [Self; 2] = [Self::Zoom, Self::Pan];
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Zoom => "zoom",
+            Self::Pan => "pan",
+        }
+    }
+
+    pub(crate) fn from_str(s: &str) -> Self {
+        if s.trim().eq_ignore_ascii_case("pan") {
+            Self::Pan
+        } else {
+            Self::Zoom
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Zoom => "Zoom",
+            Self::Pan => "Pan",
+        }
+    }
+}
+
+/// MyPaint 的 per-device 键：`<name>:<source>:<n_axes>`（`device.py:655-660`）。
+///
+/// winit 不暴露 source/n_axes；数位板笔统一按 `pen:5` 处理。
+pub(crate) fn mypaint_device_key(id: &str) -> String {
+    format!("{}:pen:5", device_label(id))
+}
+
+/// 读 `input.devices[<key>][sub]`。
+pub(crate) fn device_pref<'a>(
+    prefs: &'a pigment_engine::prefs::Prefs,
+    id: &str,
+    sub: &str,
+) -> Option<&'a str> {
+    let key = mypaint_device_key(id);
+    prefs
+        .get_object("input.devices")?
+        .get(&key)?
+        .get(sub)?
+        .as_str()
+}
+
+/// 写/删 `input.devices[<key>][sub]`，保持 MyPaint 的嵌套对象形状。
+pub(crate) fn set_device_pref(
+    prefs: &mut pigment_engine::prefs::Prefs,
+    id: &str,
+    sub: &str,
+    value: Option<&str>,
+) {
+    use serde_json::{Map, Value};
+    let key = mypaint_device_key(id);
+    let mut devices = prefs
+        .get_object("input.devices")
+        .cloned()
+        .unwrap_or_default();
+    let mut entry: Map<String, Value> = devices
+        .get(&key)
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    match value {
+        Some(v) => {
+            entry.insert(sub.to_string(), Value::String(v.to_string()));
+        }
+        None => {
+            entry.remove(sub);
+        }
+    }
+    if entry.is_empty() {
+        devices.remove(&key);
+    } else {
+        devices.insert(key, Value::Object(entry));
+    }
+    prefs.set("input.devices", Value::Object(devices));
+}
+
+/// MyPaint 的 per-device 笔刷文件名：`devbrush_<uuid5(device_name)>`
+/// （`brushmanager.py:64,82-94`）。
+pub(crate) fn device_brush_key(id: &str) -> String {
+    let name = device_label(id);
+    format!("devbrush_{}", uuid5(DEVBRUSH_NAMESPACE, &name))
+}
+
+/// `_DEVICE_NAME_NAMESPACE`（`brushmanager.py:72`）。
+const DEVBRUSH_NAMESPACE: [u8; 16] = [
+    0x16, 0x9e, 0xaf, 0x8a, 0x55, 0x4e, 0x45, 0xb8, 0x82, 0x95, 0xfc, 0x09, 0xb1, 0x00, 0x31, 0xcc,
+];
+
+fn uuid5(namespace: [u8; 16], name: &str) -> String {
+    let mut data = namespace.to_vec();
+    data.extend_from_slice(name.as_bytes());
+    let digest = sha1(&data);
+    let mut b = [0u8; 16];
+    b.copy_from_slice(&digest[..16]);
+    b[6] = (b[6] & 0x0f) | 0x50;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13],
+        b[14], b[15]
+    )
+}
+
+/// 最小 SHA-1（UUID5 只需要它；不引入额外依赖）。
+fn sha1(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let mut msg = data.to_vec();
+    let bit_len = (data.len() as u64) * 8;
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(*wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, v) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+    }
+    out
+}
+
 /// 逐设备覆盖优先，缺失时回落到全局策略。
 pub(crate) fn resolve_usage(specific: Option<&str>, global: &str) -> TabletUsage {
     specific
@@ -157,10 +337,7 @@ mod tests {
             device_label(r"\\?\HID#VID_056A&PID_0374#abc"),
             "Wacom 056A:0374"
         );
-        assert_eq!(
-            device_label(r"\\?\HID#VID_1234&PID_5678#abc"),
-            "1234:5678"
-        );
+        assert_eq!(device_label(r"\\?\HID#VID_1234&PID_5678#abc"), "1234:5678");
         assert_eq!(device_label("#42"), "42");
     }
 
@@ -172,9 +349,51 @@ mod tests {
     }
 
     #[test]
+    fn device_brush_filename_uses_mypaint_uuid5() {
+        // brushmanager.py:85-87 的官方 doctest 向量。
+        assert_eq!(
+            uuid5(DEVBRUSH_NAMESPACE, "Wacom Intuos5 touch S Pen stylus"),
+            "e97830e9-f9f9-50a5-8fff-68bead1a7021"
+        );
+    }
+
+    #[test]
+    fn scroll_actions_and_mypaint_device_keys() {
+        assert_eq!(ScrollAction::from_str("pan"), ScrollAction::Pan);
+        assert_eq!(ScrollAction::from_str("ZOOM"), ScrollAction::Zoom);
+        assert_eq!(ScrollAction::Pan.as_str(), "pan");
+        assert_eq!(
+            mypaint_device_key(r"\\?\HID#VID_056A&PID_0374#abc"),
+            "Wacom 056A:0374:pen:5"
+        );
+    }
+
+    #[test]
+    fn device_prefs_use_the_native_nested_schema() {
+        let mut prefs =
+            pigment_engine::prefs::Prefs::from_values(std::collections::BTreeMap::new());
+        let id = r"\\?\HID#VID_056A&PID_0374#abc";
+        set_device_pref(&mut prefs, id, "usage", Some("ignored"));
+        set_device_pref(&mut prefs, id, "scroll", Some("pan"));
+        assert_eq!(device_pref(&prefs, id, "usage"), Some("ignored"));
+        assert_eq!(device_pref(&prefs, id, "scroll"), Some("pan"));
+        let devices = prefs.get_object("input.devices").expect("嵌套对象");
+        assert!(devices.contains_key("Wacom 056A:0374:pen:5"));
+        set_device_pref(&mut prefs, id, "usage", None);
+        assert_eq!(device_pref(&prefs, id, "usage"), None);
+        assert_eq!(device_pref(&prefs, id, "scroll"), Some("pan"));
+        set_device_pref(&mut prefs, id, "scroll", None);
+        assert!(prefs.get_object("input.devices").unwrap().is_empty());
+    }
+
+    #[test]
     fn only_any_allows_painting() {
         assert!(TabletUsage::Any.allows_painting());
-        for u in [TabletUsage::Ignored, TabletUsage::NoPaint, TabletUsage::NavOnly] {
+        for u in [
+            TabletUsage::Ignored,
+            TabletUsage::NoPaint,
+            TabletUsage::NavOnly,
+        ] {
             assert!(!u.allows_painting(), "{u:?}");
         }
     }

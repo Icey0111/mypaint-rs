@@ -237,8 +237,7 @@ pub fn layers_have_pigment(layers: &LayerStack) -> bool {
 /// 解析偏好里的模式名（`default_compatibility_mode`），非法回落 2.x
 /// （`compatibility.py:449-451` 的 "Unknown compatibility mode" 分支）。
 pub fn default_mode(prefs: &Prefs) -> CompatMode {
-    CompatMode::from_str(prefs.str_or("default_compatibility_mode", C2X))
-        .unwrap_or(CompatMode::C2X)
+    CompatMode::from_str(prefs.str_or("default_compatibility_mode", C2X)).unwrap_or(CompatMode::C2X)
 }
 
 /// 把 `compability_settings` 的 JSON 值原样读出来（测试/诊断用）。

@@ -56,6 +56,13 @@ pub fn default_brush() -> Brush {
 fn fallback_brush() -> Brush {
     let mut b = Brush::new();
     b.get_mut(BrushSetting::Opaque).base_value = 1.0;
+    // Match `mypaint_brush_from_defaults`: opaque_multiply starts at 0 with
+    // a [(0,0),(1,1)] pressure curve, which is 1.0 at full pressure.
+    b.get_mut(BrushSetting::OpaqueMultiply).base_value = 0.0;
+    b.get_mut(BrushSetting::OpaqueMultiply).inputs = vec![InputMapping {
+        input: BrushInput::Pressure,
+        points: vec![(0.0, 0.0), (1.0, 1.0)],
+    }];
     b.get_mut(BrushSetting::OpaqueLinearize).base_value = 0.9;
     b.get_mut(BrushSetting::Radius).base_value = 2.0;
     b.get_mut(BrushSetting::Hardness).base_value = 0.5;
@@ -160,7 +167,7 @@ impl BrushEntry {
     ///
     /// 补一条 MyPaint **应用层**的默认：`.myb` 没写 `paint_mode` 时，
     /// MyPaint 2.x 用 `pigment_on_by_default=True` → 1.0（光谱 WGM），
-    /// 而 libmypaint/hokusai 的引擎默认是 0.0。官方 196 支里 177 支省略
+    /// 1.x 兼容模式用该设置的最小值 0.0。官方 196 支里 177 支省略
     /// 了该键（显式写出的 19 支全是 1.0），所以这是绝大多数笔刷的默认手感。
     /// 见 `gui/compatconfig.py:36-48` + `gui/brushmanager.py:609-643`。
     pub fn load(&self) -> Result<Brush, BrushLoadError> {
@@ -173,6 +180,17 @@ impl BrushEntry {
         let json = self.read_json()?;
         parse_brush_json_with_default(&json, pigment_by_default)
             .map_err(|e| BrushLoadError::Parse(e))
+    }
+
+    /// `.myb` 是否显式写了 `paint_mode`。
+    ///
+    /// `BrushManager._reset_pigment_setting`（`brushmanager.py:616-643`）
+    /// 只重置 `undefined_settings` 里的设置；runtime 切换兼容模式时
+    /// 必须能区分“省略”与“显式 0/1”。
+    pub fn has_explicit_paint_mode(&self) -> bool {
+        self.read_json()
+            .map(|json| json_has_setting(&json, "paint_mode"))
+            .unwrap_or(true)
     }
 
     /// 是否来自内嵌官方包。
@@ -410,10 +428,7 @@ pub fn merge_order_groups(
 
 /// 从 `order.conf` 形式的 `(组名, key 列表)` 建组：
 /// 官方组沿用资产目录 id（`Deevad` → `deevad`），特殊/用户组用组名。
-fn groups_from_order(
-    entries: &[BrushEntry],
-    order: &[(String, Vec<String>)],
-) -> Vec<BrushGroup> {
+fn groups_from_order(entries: &[BrushEntry], order: &[(String, Vec<String>)]) -> Vec<BrushGroup> {
     let key_to_entry: std::collections::HashMap<&str, &BrushEntry> =
         entries.iter().map(|e| (e.key.as_str(), e)).collect();
     let mut groups: Vec<BrushGroup> = Vec::new();
@@ -540,7 +555,11 @@ impl BrushLibrary {
         collect_myb(dir, 0, &mut found);
         found.sort();
         for path in found {
-            let Some(name) = path.file_stem().and_then(|s| s.to_str()).map(str::to_string) else {
+            let Some(name) = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
                 continue;
             };
             let group = path
@@ -602,6 +621,81 @@ impl BrushLibrary {
         }
     }
 
+    /// 查找分组下标：接受 id / display / 翻译后的标题。
+    fn group_index(&self, name: &str) -> Option<usize> {
+        self.groups
+            .iter()
+            .position(|g| g.id == name || g.display == name || g.title() == name)
+    }
+
+    /// 重命名分组（`brushmanager.rename_group`，`brushmanager.py:1143-1153`）。
+    ///
+    /// 源码是 `create_group(new) + move old + delete_group(old)`；这里在
+    /// 原位置改 id/display，保持 UI 顺序稳定。重名/空名拒绝。
+    pub fn rename_group(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = new.trim();
+        if new.is_empty() {
+            return Err("分组名不能为空".to_string());
+        }
+        let Some(idx) = self.group_index(old) else {
+            return Err(format!("分组不存在: {old}"));
+        };
+        if self
+            .groups
+            .iter()
+            .enumerate()
+            .any(|(i, g)| i != idx && (g.id == new || g.display == new || g.title() == new))
+        {
+            return Err("A group with this name already exists!".to_string());
+        }
+        // 官方包目录组（id != display）只改展示名；用户组 id 跟着改。
+        let g = &mut self.groups[idx];
+        if g.id == g.display {
+            g.id = new.to_string();
+        }
+        g.display = new.to_string();
+        let _ = self.save_order_conf();
+        Ok(())
+    }
+
+    /// 删除分组（`brushmanager.delete_group`，`brushmanager.py:1155-1171`）。
+    ///
+    /// 特殊组（Favorites / Deleted / Lost & Found）不可删；其余组的成员移到
+    /// Deleted 组头部。
+    pub fn delete_group(&mut self, name: &str) -> bool {
+        let Some(idx) = self.group_index(name) else {
+            return false;
+        };
+        if matches!(
+            self.groups[idx].id.as_str(),
+            FAVORITES_BRUSH_GROUP | DELETED_BRUSH_GROUP | FOUND_BRUSHES_GROUP
+        ) {
+            return false;
+        }
+        let group = self.groups.remove(idx);
+        if !group.members.is_empty() {
+            let dst = self
+                .groups
+                .iter()
+                .position(|g| g.id == DELETED_BRUSH_GROUP)
+                .unwrap_or_else(|| {
+                    self.groups.push(BrushGroup {
+                        id: DELETED_BRUSH_GROUP.to_string(),
+                        display: DELETED_BRUSH_GROUP.to_string(),
+                        members: Vec::new(),
+                    });
+                    self.groups.len() - 1
+                });
+            for key in group.members.into_iter().rev() {
+                if !self.groups[dst].members.iter().any(|k| *k == key) {
+                    self.groups[dst].members.insert(0, key);
+                }
+            }
+        }
+        let _ = self.save_order_conf();
+        true
+    }
+
     /// 按 `order.conf` 顺序返回分组摘要（含空组 Favorites）。
     pub fn groups(&self) -> Vec<GroupInfo> {
         self.groups
@@ -619,10 +713,7 @@ impl BrushLibrary {
         let Some(g) = self.groups.iter().find(|g| g.id == group_id) else {
             return Vec::new();
         };
-        g.members
-            .iter()
-            .filter_map(|k| self.find(k))
-            .collect()
+        g.members.iter().filter_map(|k| self.find(k)).collect()
     }
 
     /// 用户 order.conf 覆盖组顺序/成员（`_load_ordered_groups` 的简化版：
@@ -878,6 +969,59 @@ impl BrushLibrary {
         Ok(path)
     }
 
+    /// 重命名笔刷（`gui/brusheditor.py:574-636` 的 `rename_button_clicked_cb`）。
+    ///
+    /// 把当前编辑设置写到用户目录的新 key（保留原 `_prev.png`），并把所有
+    /// 分组里的成员 key 换掉；原 key 从库中移除（官方笔刷会在下次 rescan 回来）。
+    pub fn rename_brush(
+        &mut self,
+        key: &str,
+        new_name: &str,
+        brush: &Brush,
+        preview: Option<(u32, u32, &[u8])>,
+    ) -> Result<String, String> {
+        let new_name = new_name.trim().replace(' ', "_");
+        if new_name.is_empty() {
+            return Err("No brush selected!".to_string());
+        }
+        let Some(idx) = self.find(key) else {
+            return Err(format!("笔刷不存在: {key}"));
+        };
+        if self
+            .entries
+            .iter()
+            .any(|e| e.key != key && e.name == new_name)
+        {
+            return Err("A brush with this name already exists!".to_string());
+        }
+        let new_key = match key.rsplit_once('/') {
+            Some((group, _)) => format!("{group}/{new_name}"),
+            None => new_name.clone(),
+        };
+        if self.entries.iter().any(|e| e.key == new_key) {
+            return Err("A brush with this name already exists!".to_string());
+        }
+        let path = self
+            .save_brush_files_with_meta(&new_key, brush, preview, Some(&self.entries[idx]))
+            .map_err(|e| format!("保存笔刷失败: {e}"))?;
+        let mut entry = self.entries[idx].clone();
+        entry.key = new_key.clone();
+        entry.name = new_name.clone();
+        entry.display = new_name.replace('_', " ");
+        entry.origin = Origin::File(path);
+        entry.embedded_preview = None;
+        for group in &mut self.groups {
+            for member in &mut group.members {
+                if member == key {
+                    *member = new_key.clone();
+                }
+            }
+        }
+        self.entries[idx] = entry;
+        let _ = self.save_order_conf();
+        Ok(new_key)
+    }
+
     /// 唯一笔刷 key：若已存在则追加 ` 1`、` 2`……
     fn unique_key(&self, base: &str) -> String {
         if self.find(base).is_none() {
@@ -911,11 +1055,7 @@ impl BrushLibrary {
         let new_key = self.unique_key(&format!("{src_key} copy"));
         brush.parent_brush_name = Some(src_key.to_string());
         let path = self.save_brush_files_with_meta(&new_key, brush, preview, Some(&src))?;
-        let name = new_key
-            .rsplit('/')
-            .next()
-            .unwrap_or(&new_key)
-            .to_string();
+        let name = new_key.rsplit('/').next().unwrap_or(&new_key).to_string();
         let idx = self.entries.len();
         self.entries.push(BrushEntry {
             group: src.group.clone(),
@@ -972,9 +1112,9 @@ impl BrushLibrary {
         let Some(idx) = self.find(key) else {
             return Err(io::Error::other(format!("笔刷不存在: {key}")));
         };
-        let brush = self.entries[idx].load().map_err(|e| {
-            io::Error::other(format!("重新读取笔刷失败: {e}"))
-        })?;
+        let brush = self.entries[idx]
+            .load()
+            .map_err(|e| io::Error::other(format!("重新读取笔刷失败: {e}")))?;
         self.save_brush_entry(key, &brush, Some(preview))
     }
 
@@ -1290,7 +1430,6 @@ pub fn setting_default(cname: &str) -> Option<f64> {
         "opaque_linearize" => Some(0.9),
         "radius_logarithmic" => Some(2.0),
         "hardness" => Some(0.8),
-        "softness" => Some(0.0),
         "anti_aliasing" => Some(1.0),
         "dabs_per_basic_radius" => Some(0.0),
         "dabs_per_actual_radius" => Some(2.0),
@@ -1357,24 +1496,24 @@ pub fn setting_default(cname: &str) -> Option<f64> {
 /// 输入轴的显示名 —— `brushsettings.json` 的 `displayed_name`。
 pub fn input_display_name(cname: &str) -> &str {
     match cname {
-    "pressure" => "Pressure",
-    "random" => "Random",
-    "stroke" => "Stroke",
-    "direction" => "Direction",
-    "tilt_declination" => "Declination/Tilt",
-    "tilt_ascension" => "Ascension",
-    "speed1" => "Fine speed",
-    "speed2" => "Gross speed",
-    "custom" => "Custom",
-    "direction_angle" => "Direction 360",
-    "attack_angle" => "Attack Angle",
-    "tilt_declinationx" => "Declination/Tilt X",
-    "tilt_declinationy" => "Declination/Tilt Y",
-    "gridmap_x" => "GridMap X",
-    "gridmap_y" => "GridMap Y",
-    "viewzoom" => "Zoom Level",
-    "brush_radius" => "Base Brush Radius",
-    "barrel_rotation" => "Barrel Rotation",
+        "pressure" => "Pressure",
+        "random" => "Random",
+        "stroke" => "Stroke",
+        "direction" => "Direction",
+        "tilt_declination" => "Declination/Tilt",
+        "tilt_ascension" => "Ascension",
+        "speed1" => "Fine speed",
+        "speed2" => "Gross speed",
+        "custom" => "Custom",
+        "direction_angle" => "Direction 360",
+        "attack_angle" => "Attack Angle",
+        "tilt_declinationx" => "Declination/Tilt X",
+        "tilt_declinationy" => "Declination/Tilt Y",
+        "gridmap_x" => "GridMap X",
+        "gridmap_y" => "GridMap Y",
+        "viewzoom" => "Zoom Level",
+        "brush_radius" => "Base Brush Radius",
+        "barrel_rotation" => "Barrel Rotation",
         other => other,
     }
 }
@@ -1428,10 +1567,7 @@ fn apply_raw_settings(json: &str, brush: &mut Brush) {
                         a.iter()
                             .filter_map(|p| {
                                 let a = p.as_array()?;
-                                Some((
-                                    a.first()?.as_f64()? as f32,
-                                    a.get(1)?.as_f64()? as f32,
-                                ))
+                                Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
                             })
                             .collect()
                     })
@@ -1583,14 +1719,8 @@ mod tests {
             assert_eq!(got, Some(group[idx]), "槽位 {i} 应为分组第 {idx} 支");
         }
         // 键盘序的直接体现：数字键 1 → 第 1 支；数字键 0 → 第 10 支
-        assert_eq!(
-            seed[1].map(|e| lib.entries[e].key.as_str()),
-            Some(group[0])
-        );
-        assert_eq!(
-            seed[0].map(|e| lib.entries[e].key.as_str()),
-            Some(group[9])
-        );
+        assert_eq!(seed[1].map(|e| lib.entries[e].key.as_str()), Some(group[0]));
+        assert_eq!(seed[0].map(|e| lib.entries[e].key.as_str()), Some(group[9]));
     }
 
     #[test]
@@ -1631,11 +1761,74 @@ mod tests {
     }
 
     #[test]
+    fn groups_rename_and_delete_move_orphans_to_deleted() {
+        let mut lib = BrushLibrary::default();
+        let dir = std::env::temp_dir().join(format!("pigment-group-rename-{}", std::process::id()));
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        lib.groups = vec![
+            BrushGroup {
+                id: "mine".into(),
+                display: "Mine".into(),
+                members: vec!["classic/pencil".into()],
+            },
+            BrushGroup {
+                id: FAVORITES_BRUSH_GROUP.into(),
+                display: FAVORITES_BRUSH_GROUP.into(),
+                members: Vec::new(),
+            },
+        ];
+        assert!(lib.rename_group("Mine", "Renamed").is_ok());
+        assert_eq!(lib.groups[0].display, "Renamed");
+        assert!(
+            lib.rename_group("Renamed", "Favorites").is_err(),
+            "重名拒绝"
+        );
+        assert!(lib.delete_group("Renamed"));
+        assert!(lib.delete_group(FAVORITES_BRUSH_GROUP) == false);
+        let deleted = lib
+            .groups
+            .iter()
+            .find(|g| g.id == DELETED_BRUSH_GROUP)
+            .expect("Deleted 组自动创建");
+        assert_eq!(deleted.members, vec!["classic/pencil".to_string()]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_brush_writes_new_key_and_updates_groups() {
+        let mut lib = BrushLibrary::embedded();
+        let dir = std::env::temp_dir().join(format!("pigment-brush-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        lib.order_conf_path = Some(dir.join("order.conf"));
+        let key = lib.entries[0].key.clone();
+        let brush = lib.entries[0].load().expect("加载首支笔刷");
+        let old_in_group = lib
+            .groups
+            .iter()
+            .any(|g| g.members.iter().any(|m| *m == key));
+        let new_key = lib
+            .rename_brush(&key, "Renamed Brush", &brush, None)
+            .expect("重命名成功");
+        assert_ne!(new_key, key);
+        assert!(new_key.ends_with("Renamed_Brush"));
+        let idx = lib.find(&new_key).expect("新 key 在库里");
+        assert_eq!(lib.entries[idx].name, "Renamed_Brush");
+        assert!(lib.entries[idx].origin_path().is_some_and(|p| p.is_file()));
+        assert!(
+            lib.groups
+                .iter()
+                .any(|g| g.members.iter().any(|m| *m == new_key))
+                == old_in_group
+        );
+        assert!(lib.find(&key).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn order_conf_parser_keeps_empty_groups_and_comments() {
         // 逐行照 _parse_order_conf：空行/# 注释跳过、Group 起组、组内去重
-        let parsed = parse_order_conf(
-            "# header\nGroup: Favorites\nGroup: A\na/one\n# note\nA/two\na/one\n",
-        );
+        let parsed =
+            parse_order_conf("# header\nGroup: Favorites\nGroup: A\na/one\n# note\nA/two\na/one\n");
         assert_eq!(
             parsed,
             vec![
@@ -1650,10 +1843,8 @@ mod tests {
 
     #[test]
     fn user_dir_myb_overrides_embedded_brush() {
-        let dir = std::env::temp_dir().join(format!(
-            "pigment-brush-override-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pigment-brush-override-{}", std::process::id()));
         let group = dir.join("classic");
         fs::create_dir_all(&group).unwrap();
         // 最小 .myb：只改半径；其余设置由 hokusai 的默认值补齐。
@@ -1685,7 +1876,11 @@ mod tests {
         // MyPaint 2.x 应用层默认 `pigment_on_by_default=True`（compatconfig.py:44-46）
         let lib = BrushLibrary::embedded();
         let i = lib.find("classic/dry_brush").unwrap();
-        assert!(!json_has_setting(&lib.entries[i].read_json().unwrap(), "paint_mode"));
+        assert!(!json_has_setting(
+            &lib.entries[i].read_json().unwrap(),
+            "paint_mode"
+        ));
+        assert!(!lib.entries[i].has_explicit_paint_mode());
         let b = lib.entries[i].load().unwrap();
         assert_eq!(
             b.get(BrushSetting::Paint).base_value,
@@ -1693,9 +1888,7 @@ mod tests {
             "省略 paint_mode 的官方笔刷应以光谱 WGM 起手"
         );
         // 1.x 兼容模式：同一个省略键的笔刷默认 Normal
-        let b1x = lib.entries[i]
-            .load_with_default(false)
-            .expect("解析失败");
+        let b1x = lib.entries[i].load_with_default(false).expect("解析失败");
         assert_eq!(
             b1x.get(BrushSetting::Paint).base_value,
             0.0,
@@ -1703,10 +1896,8 @@ mod tests {
         );
 
         // 显式写 0.0 的笔刷必须保留 Normal，不能被默认覆盖
-        let dir = std::env::temp_dir().join(format!(
-            "pigment-brush-paintmode-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pigment-brush-paintmode-{}", std::process::id()));
         let group = dir.join("classic");
         fs::create_dir_all(&group).unwrap();
         fs::write(
@@ -1717,7 +1908,15 @@ mod tests {
         let mut lib2 = BrushLibrary::embedded();
         lib2.scan_dir(&dir);
         let j = lib2.find("classic/dry_brush").unwrap();
-        assert_eq!(lib2.entries[j].load().unwrap().get(BrushSetting::Paint).base_value, 0.0);
+        assert!(lib2.entries[j].has_explicit_paint_mode());
+        assert_eq!(
+            lib2.entries[j]
+                .load()
+                .unwrap()
+                .get(BrushSetting::Paint)
+                .base_value,
+            0.0
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1727,7 +1926,10 @@ mod tests {
         // 当成未定义并回填 1.0（源码用“键是否存在”区分，`brush.py:300-305`）。
         let lib = BrushLibrary::embedded();
         let i = lib.find("classic/pencil").unwrap();
-        assert!(!json_has_setting(&lib.entries[i].read_json().unwrap(), "paint_mode"));
+        assert!(!json_has_setting(
+            &lib.entries[i].read_json().unwrap(),
+            "paint_mode"
+        ));
         let b = lib.entries[i].load().unwrap();
         assert_eq!(b.get(BrushSetting::AntiAliasing).base_value, 0.0);
 
@@ -1768,10 +1970,8 @@ mod tests {
 
     #[test]
     fn context_slots_roundtrip_through_files() {
-        let dir = std::env::temp_dir().join(format!(
-            "pigment-brush-context-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("pigment-brush-context-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let mut lib = BrushLibrary::embedded();
@@ -1900,8 +2100,14 @@ mod tests {
         let stock = "classic/pencil";
         assert!(!lib.delete_brush(stock).unwrap());
         assert!(lib.find(stock).is_some());
-        assert_eq!(lib.group_members(DELETED_BRUSH_GROUP)[0], lib.find(stock).unwrap());
-        assert!(!lib.group_members("classic").iter().any(|&i| lib.entries[i].key == stock));
+        assert_eq!(
+            lib.group_members(DELETED_BRUSH_GROUP)[0],
+            lib.find(stock).unwrap()
+        );
+        assert!(!lib
+            .group_members("classic")
+            .iter()
+            .any(|&i| lib.entries[i].key == stock));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1981,9 +2187,7 @@ mod tests {
         let mut brush = src.load().unwrap();
         lib.new_brush(&mut brush, Some((w, h, &px))).unwrap();
 
-        let out = image::open(dir.join("b000_prev.png"))
-            .unwrap()
-            .to_rgb8();
+        let out = image::open(dir.join("b000_prev.png")).unwrap().to_rgb8();
         assert_eq!(out.dimensions(), (w, h));
         // 抽样：RGBA 按源码规则合成到白底
         for (x, y) in [(0, 0), (w / 3, h / 2), (w - 1, h - 1), (10, 20)] {
@@ -2006,10 +2210,7 @@ mod tests {
         let pair = |s: &str, v: &[&str]| (s.to_string(), v.iter().map(|x| x.to_string()).collect());
         let base = vec![pair("A", &["a1", "a2"]), pair("B", &["b1"])];
         let our = vec![pair("A", &["a2", "a1"]), pair("D", &["d1"])];
-        let their = vec![
-            pair("A", &["a1", "new", "a2"]),
-            pair("C", &["c1"]),
-        ];
+        let their = vec![pair("A", &["a1", "new", "a2"]), pair("C", &["c1"])];
         let merged = merge_order_groups(&base, &our, &their);
         let get = |name: &str| {
             merged

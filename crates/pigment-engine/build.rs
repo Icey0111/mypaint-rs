@@ -54,7 +54,9 @@ fn main() {
             continue;
         }
         let group = found[key].0.clone();
-        group_display.entry(group).or_insert_with(|| display_group.clone());
+        group_display
+            .entry(group)
+            .or_insert_with(|| display_group.clone());
         ordered_keys.push(key.clone());
     }
     // order.conf 未覆盖的（自定义新增笔刷）按 key 排序追加
@@ -70,11 +72,15 @@ fn main() {
     out.push_str("/// 一条内嵌笔刷记录。`json` 为 .myb 原文（编译期内联）。\n");
     out.push_str("pub struct IndexedBrush {\n");
     out.push_str("    /// 分组 id（= 资产目录名）\n    pub group: &'static str,\n");
-    out.push_str("    /// 分组展示名（来自官方 order.conf）\n    pub group_display: &'static str,\n");
+    out.push_str(
+        "    /// 分组展示名（来自官方 order.conf）\n    pub group_display: &'static str,\n",
+    );
     out.push_str("    /// 笔刷名（= 文件名去扩展名）\n    pub name: &'static str,\n");
     out.push_str("    /// 展示名（优先取 .myb 的 description，缺省为文件名）\n    pub display: &'static str,\n");
     out.push_str("    /// .myb 的 notes 字段（作者/授权/说明，用于工具提示）\n    pub notes: &'static str,\n");
-    out.push_str("    /// 相对 assets/brushes 的路径，形如 `classic/brush`\n    pub path: &'static str,\n");
+    out.push_str(
+        "    /// 相对 assets/brushes 的路径，形如 `classic/brush`\n    pub path: &'static str,\n",
+    );
     out.push_str("    pub json: &'static str,\n");
     out.push_str("    /// 随附的 `{name}_prev.png` 原文（MyPaint `ManagedBrush.get_preview()` 的首选来源；\n");
     out.push_str("    /// 官方包 196 支全部具备，缺失时为 `None` 并回退到实时渲染）\n");
@@ -100,7 +106,10 @@ fn main() {
         } else {
             display.trim().to_string()
         };
-        let gd = group_display.get(group).cloned().unwrap_or_else(|| group.clone());
+        let gd = group_display
+            .get(group)
+            .cloned()
+            .unwrap_or_else(|| group.clone());
         // 预览图：MyPaint 的 `_get_fileprefix()` + "_prev.png"（brushmanager.py:1446）
         let prev_rel = format!("{group}/{name}_prev.png");
         let prev = if root.join(&prev_rel).is_file() {
@@ -148,7 +157,11 @@ fn walk_myb(root: &Path) -> Vec<(String, String)> {
     for entry in entries.flatten() {
         let path = entry.path();
         if path.is_dir() {
-            let Some(group) = path.file_name().and_then(|s| s.to_str()).map(str::to_string) else {
+            let Some(group) = path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .map(str::to_string)
+            else {
                 continue;
             };
             let Ok(files) = std::fs::read_dir(&path) else {

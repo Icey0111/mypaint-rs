@@ -1,5 +1,5 @@
 # 由 .workbuddy/tools/gen-color-vectors.py 生成，请勿手改。
-# 事实来源：E:\MyPaint\_mypaint_ref（lib/color.py 逐位对照；gui/document.py 回调原文 exec）
+# 事实来源：_mypaint_ref（lib/color.py 逐位对照；gui/document.py 回调原文 exec）
 # 浮点 = Python repr（最短往返）；Rust 侧应逐位 assert_eq!。
 # radius_logarithmic ∈ [-2.0, 6.0]，opaque ∈ [0.0, 2.0]
 rgb2hsv	0.0	0.0	0.0	0.0	0.0	0.0

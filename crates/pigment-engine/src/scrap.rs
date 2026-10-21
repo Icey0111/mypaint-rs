@@ -150,11 +150,7 @@ fn max_number(scrap_dir: &Path) -> u32 {
 /// `ext` 带点（如 `".ora"`，来自 `saving.default_format`）。
 ///
 /// `_md5...` 开头的文件直接返回自身（源码的"直接覆盖"分支）。
-pub fn next_scrap_path(
-    scrap_dir: &Path,
-    current: Option<&Path>,
-    ext: &str,
-) -> PathBuf {
+pub fn next_scrap_path(scrap_dir: &Path, current: Option<&Path>, ext: &str) -> PathBuf {
     if let Some(cur) = current {
         if cur
             .file_name()
@@ -198,7 +194,11 @@ pub fn list_scraps(scrap_dir: &Path) -> Vec<PathBuf> {
             let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
                 return false;
             };
-            let numeric = name.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false);
+            let numeric = name
+                .chars()
+                .next()
+                .map(|c| c.is_ascii_digit())
+                .unwrap_or(false);
             if !(numeric || name.starts_with("_md5")) {
                 return false;
             }
@@ -296,17 +296,11 @@ mod tests {
     #[test]
     fn names_start_at_001_a_and_increment_the_letter() {
         let dir = temp_dir("letters");
-        assert_eq!(
-            next_scrap_path(&dir, None, ".ora"),
-            dir.join("001_a.ora")
-        );
+        assert_eq!(next_scrap_path(&dir, None, ".ora"), dir.join("001_a.ora"));
         touch(&dir, "001_a.ora");
         // 当前不是 scrap（None 或普通文件）：永远开新编号（源码的
         // `number=None` → `max + 1`）
-        assert_eq!(
-            next_scrap_path(&dir, None, ".ora"),
-            dir.join("002_a.ora")
-        );
+        assert_eq!(next_scrap_path(&dir, None, ".ora"), dir.join("002_a.ora"));
         // 当前文件是已存在的 scrap：沿用编号，找下一个字母
         let cur = dir.join("001_a.ora");
         assert_eq!(
@@ -327,10 +321,7 @@ mod tests {
         for c in 'a'..='z' {
             touch(&dir, &format!("001_{c}.ora"));
         }
-        assert_eq!(
-            next_scrap_path(&dir, None, ".ora"),
-            dir.join("002_a.ora")
-        );
+        assert_eq!(next_scrap_path(&dir, None, ".ora"), dir.join("002_a.ora"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -356,10 +347,7 @@ mod tests {
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
             .collect();
-        assert_eq!(
-            got,
-            ["001_a.jpg", "001_b.PNG", "002_a.ora", "_md5abc.ora"]
-        );
+        assert_eq!(got, ["001_a.jpg", "001_b.PNG", "002_a.ora", "_md5abc.ora"]);
         assert_eq!(scrap_id(Path::new("001_b.PNG")), "001");
         assert_eq!(scrap_id(Path::new("_md5abc.ora")), "_md5abc.ora");
         let _ = std::fs::remove_dir_all(&dir);

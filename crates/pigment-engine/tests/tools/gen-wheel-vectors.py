@@ -140,7 +140,7 @@ import textwrap
 import types
 from pathlib import Path
 
-DEFAULT_REF = r"E:\MyPaint\_mypaint_ref"
+DEFAULT_REF = r"_mypaint_ref"
 HERE = Path(__file__).resolve()
 DEFAULT_OUT = HERE.parents[1] / "fixtures" / "wheel_vectors.txt"
 

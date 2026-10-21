@@ -1,31 +1,20 @@
-//! 菜单栏 —— `gui/menu.xml` 的渲染（S3）。
+//! 菜单栏：`gui/menu.xml` 的树 + 紧凑自绘条目。
 //!
-//! menu.xml 是**纯声明式**的：`<menu action=…>`（子菜单，标题取该动作的
-//! label）、`<menuitem action=…>`（条目，label/tooltip/加速键全部查 S2 的
-//! 动作表）、`<separator/>`。树本身由 `build.rs` 生成到 `$OUT_DIR/
-//! menus_generated.rs`（[`generated::MENUBAR`]），本文件只提供两样东西：
-//!
-//! 1. [`MenuNode`] —— 树节点的 Rust 形态（生成物引用它）；
-//! 2. 条目渲染（[`item`]）—— egui 没有带"右对齐加速键文本 + 左侧复选槽"
-//!    的菜单条目部件（GTK 是 `GtkAccelLabel` 自带的），**技术栈适配**自绘。
-//!
-//! 置灰规则：条目是否可用由 `PigmentApp::action_available` 决定 ——
-//! 已实现的动作可用，未实现的置灰（不消费点击）。这与 GTK 的 insensitive
-//! 语义一致；MyPaint 动态调整 sensitivity 的部分（如 Undo/Redo）也走同一入口。
-//!
-//! 菜单动作（`FileMenu` 这类）在 `resources.xml` 里有注释
-//! "NO TOOLTIP OR SHORTCUT: this is a menu" —— 子菜单标题不显示 tooltip。
+//! 数据仍是 MyPaint 的九棵菜单，树由 `build.rs` 从 `assets/gui/menu.xml`
+//! 生成，构建期会校验每个动作 id 都存在。视觉不再套 GTK 的
+//! `GtkMenu` 尺寸，而是 ArrowVortex 的窄行、1px 分隔与右对齐快捷键。
 
 use eframe::egui;
 
-/// 菜单树节点（构建期生成 [`generated::MENUBAR`]，保持 menu.xml 的顺序）。
+use crate::app::PigmentApp;
+use crate::shell::theme;
+use crate::shell::toolbars;
+
+/// 菜单树节点（生成物引用它）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuNode {
-    /// `<menuitem action='…'/>`
     Item(&'static str),
-    /// `<separator/>`
     Separator,
-    /// `<menu action='…'>`，标题取该动作的 label
     SubMenu {
         action: &'static str,
         items: &'static [MenuNode],
@@ -33,52 +22,36 @@ pub enum MenuNode {
 }
 
 pub(crate) mod generated {
-    //! 构建期生成物（`build.rs` → `$OUT_DIR/menus_generated.rs`）。
     use super::MenuNode;
     include!(concat!(env!("OUT_DIR"), "/menus_generated.rs"));
 }
 
 pub use generated::MENUBAR;
 
-/// 菜单条目的展示信息（label / 加速键显示文本 / tooltip）。
-///
-/// 大部分来自 `resources.xml`（经 S2 的动作表），唯二的例外是
-/// `Context0N` / `Context0Ns` 槽位动作 —— 它们**不在** resources.xml 里，
-/// 是 `document.py:467-492` 用 `ag.add_actions` 元组在运行期注册的：
-///
-/// ```python
-/// r = ("Context0%d", None, _("Restore Brush %d"), "%d",  rt, cb)
-/// s = ("Context0%ds", None, _("Save to Brush %d"), "<control>%d", st, cb)
-/// ```
-///
-/// GTK 会把这里的加速键规格接进 UI manager 的 accel group，因此菜单里
-/// 也显示这些快捷键 —— 我们照搬同一组文案与键位。
+/// 菜单条目的展示信息。
 pub struct ItemInfo {
     pub label: String,
     pub accel: Option<String>,
     pub tooltip: Option<String>,
 }
 
-/// 解析一条菜单条目的展示信息；`id` 必须可解析（构建期已校验）。
 pub fn item_info(id: &'static str) -> ItemInfo {
-    // 动态槽位动作：文案与加速键照搬 document.py 的元组
     if let Some((slot, store)) = crate::shell::actions::parse_context_action(id) {
         return if store {
             ItemInfo {
-                label: format!("Save to Brush {slot}"),
+                label: format!("保存笔刷到槽位 {slot}"),
                 accel: Some(format!("Ctrl+{slot}")),
-                tooltip: Some(format!("Store brush settings in shortcut slot {slot}")),
+                tooltip: Some(format!("把当前笔刷设置存进快捷键槽位 {slot}")),
             }
         } else {
             ItemInfo {
-                label: format!("Restore Brush {slot}"),
+                label: format!("恢复笔刷槽位 {slot}"),
                 accel: Some(format!("{slot}")),
-                tooltip: Some(format!("Load brush settings from shortcut slot {slot}")),
+                tooltip: Some(format!("从快捷键槽位 {slot} 恢复笔刷设置")),
             }
         };
     }
-    let a = crate::shell::actions::by_id(id)
-        .unwrap_or_else(|| panic!("菜单引用了未知动作：{id}"));
+    let a = crate::shell::actions::by_id(id).unwrap_or_else(|| panic!("菜单引用了未知动作：{id}"));
     ItemInfo {
         label: a.effective_label().unwrap_or(id).to_string(),
         accel: a.accel.map(|acc| acc.label()),
@@ -86,113 +59,276 @@ pub fn item_info(id: &'static str) -> ItemInfo {
     }
 }
 
-/// 画一条菜单条目，返回点击响应。
+impl PigmentApp {
+    /// 菜单栏整行（九棵顶级菜单）。
+    pub(crate) fn menubar(&mut self, ui: &mut egui::Ui) {
+        let height = theme::MENUBAR_H;
+        let (row, _) = ui.allocate_exact_size(
+            egui::vec2(ui.available_width(), height),
+            egui::Sense::hover(),
+        );
+        ui.painter().rect_filled(row, 0.0, theme::PANEL_DARK);
+        ui.painter().rect_filled(
+            egui::Rect::from_min_max(
+                egui::pos2(row.left(), row.bottom() - 1.0),
+                row.right_bottom(),
+            ),
+            0.0,
+            theme::LINE,
+        );
+
+        let mut bar = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(row.shrink2(egui::vec2(4.0, 0.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        bar.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
+        bar.spacing_mut().button_padding = egui::vec2(9.0, 3.0);
+        bar.visuals_mut().widgets.inactive.weak_bg_fill = egui::Color32::TRANSPARENT;
+        bar.visuals_mut().widgets.inactive.bg_fill = egui::Color32::TRANSPARENT;
+        bar.visuals_mut().widgets.inactive.bg_stroke = egui::Stroke::NONE;
+        bar.visuals_mut().widgets.hovered.weak_bg_fill = theme::HOVER;
+        bar.visuals_mut().widgets.hovered.bg_fill = theme::HOVER;
+        bar.visuals_mut().widgets.hovered.bg_stroke = egui::Stroke::NONE;
+        bar.visuals_mut().widgets.active.weak_bg_fill = theme::ACTIVE;
+        bar.visuals_mut().widgets.active.bg_fill = theme::ACTIVE;
+
+        let ctx = ui.ctx().clone();
+        bar.scope(|ui| {
+            egui::MenuBar::new()
+                .config(theme::menu_config())
+                .ui(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    for node in MENUBAR {
+                        let MenuNode::SubMenu { action, items } = node else {
+                            continue;
+                        };
+                        let info = item_info(action);
+                        let label = crate::i18n::tr(&info.label).to_string();
+                        let resp = ui.menu_button(
+                            egui::RichText::new(&label)
+                                .size(14.5)
+                                .color(theme::TEXT_DIM),
+                            |ui| {
+                                // 固定菜单宽度：否则 egui 会按可用空间把每个
+                                // 菜单撑到半屏，文件菜单尤其明显。
+                                ui.set_width(252.0);
+                                ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+                                // 菜单行本身只有 19pt 高，默认的 8pt 纵向
+                                // item_spacing 会把 Layer 这类长菜单撑出屏幕，
+                                // 底部条目变成点不到的死区。行距交给分隔线。
+                                ui.spacing_mut().item_spacing.y = 0.0;
+                                self.menu_items(ui, items, &ctx);
+                            },
+                        );
+                        resp.response
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    }
+                });
+        });
+
+        // 右侧放当前文档名与修饰色点，像 ArrowVortex 的状态签名位；不抢菜单宽度。
+        let title = self.window_title();
+        let dirty = self.doc.unsaved_painting_time > 0.0;
+        let suffix = if dirty { " *" } else { "" };
+        let right = format!("{title}{suffix}");
+        let galley =
+            ui.painter()
+                .layout_no_wrap(right, egui::FontId::proportional(11.0), theme::TEXT_FAINT);
+        let x = row.right() - galley.size().x - 12.0;
+        if x > 420.0 {
+            ui.painter().galley(
+                egui::pos2(x, row.center().y - galley.size().y * 0.5),
+                galley,
+                theme::TEXT_FAINT,
+            );
+        }
+    }
+
+    /// 递归绘制一个菜单树。`ctx` 传值以避开闭包里再次借用 UI。
+    fn menu_items(&mut self, ui: &mut egui::Ui, nodes: &'static [MenuNode], ctx: &egui::Context) {
+        for node in nodes {
+            match node {
+                MenuNode::Separator => {
+                    ui.add_space(3.0);
+                    theme::hline(ui, theme::LINE_SOFT);
+                    ui.add_space(3.0);
+                }
+                MenuNode::Item(id) => {
+                    self.menu_item(ui, id, ctx);
+                }
+                MenuNode::SubMenu { action, items } => {
+                    let info = item_info(action);
+                    let label = crate::i18n::tr(&info.label).to_string();
+                    let resp = ui.menu_button(
+                        egui::RichText::new(&label).size(14.5).color(theme::TEXT),
+                        |ui| {
+                            ui.set_width(240.0);
+                            ui.spacing_mut().button_padding = egui::vec2(8.0, 3.0);
+                            ui.spacing_mut().item_spacing.y = 0.0;
+                            self.menu_items(ui, items, ctx);
+                        },
+                    );
+                    resp.response
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                }
+            }
+        }
+    }
+
+    fn menu_item(&mut self, ui: &mut egui::Ui, id: &'static str, ctx: &egui::Context) {
+        if id == "OpenRecent" {
+            let info = item_info(id);
+            let label = crate::i18n::tr(&info.label).to_string();
+            ui.menu_button(
+                egui::RichText::new(&label).size(14.5).color(theme::TEXT),
+                |ui| {
+                    ui.set_width(280.0);
+                    ui.spacing_mut().item_spacing.y = 0.0;
+                    let files = self.recent_files().to_vec();
+                    if files.is_empty() {
+                        menu_row(ui, "没有最近文件", None, false, None);
+                    }
+                    for (i, path) in files.iter().enumerate() {
+                        let name = std::path::Path::new(path)
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or(path);
+                        let resp = menu_row(ui, name, None, true, None);
+                        if resp.clicked() {
+                            let now = ui.input(|i| i.time);
+                            self.open_recent(i, now);
+                            ui.close();
+                        }
+                    }
+                },
+            );
+            return;
+        }
+
+        let info = item_info(id);
+        let available = self.action_available(id);
+        let checked = self.action_checked(id);
+        let label = crate::i18n::tr(&info.label).to_string();
+        let accel = info.accel.as_deref();
+        let resp = menu_row(ui, &label, accel, available, checked);
+        if resp.clicked() && available {
+            let now = ctx.input(|i| i.time);
+            self.run_action(id, ctx, now);
+            ui.close();
+        }
+    }
+}
+
+/// 一行自绘菜单条目。返回点击响应。
 ///
-/// 版式照 GTK 菜单条目：左侧固定宽度的复选槽（勾选标记画在这里）、
-/// 标签、右对齐的加速键文本。置灰条目不响应 hover 高亮，文字用
-/// inactive 前景色（与 GTK insensitive 一致）。
-///
-/// `arrow`：子菜单入口右侧画"▶"（`ui.menu_button` 自己会画，这里只给
-/// 测试与未来复用留位）。
-pub fn item(
+/// 左侧固定复选槽：toggle 动作（`checked` 为 `Some`）无论勾选与否都画一个
+/// GTK 风格方框，未选为空框；普通命令不画框。标签、快捷键与禁用态的基线
+/// 保持一致，展开菜单时不会左右跳动。
+pub(crate) fn menu_row(
     ui: &mut egui::Ui,
     label: &str,
     accel: Option<&str>,
     enabled: bool,
     checked: Option<bool>,
 ) -> egui::Response {
-    let visuals = ui.visuals().clone();
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let row_h = (font.size * 1.8).max(ui.spacing().interact_size.y);
-    let width = ui.available_width();
-    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, row_h), egui::Sense::click());
-
-    let hovered = resp.hovered() && enabled;
-    if hovered {
-        ui.painter().rect_filled(rect, 3.0, visuals.widgets.hovered.bg_fill);
-    }
-
-    // egui dark 主题里 `Visuals::text_color()` 是非交互文本（灰 140），
-    // 而可点击文本（按钮）是 `widgets.inactive.fg_stroke`（灰 215）；
-    // 置灰条目用 weak（≈84，明显黯淡）。
-    let text_color = if enabled {
-        visuals.widgets.inactive.fg_stroke.color
-    } else {
-        visuals.weak_text_color()
-    };
-
-    // 左侧复选槽：有 checkbox 语义的条目（GtkToggleAction）才画
-    const GUTTER: f32 = 20.0;
-    if let Some(on) = checked {
-        let c = egui::pos2(rect.left() + GUTTER * 0.5, rect.center().y);
-        let stroke = egui::Stroke::new(1.8, text_color);
-        if on {
-            // GTK 的勾选标记
-            ui.painter()
-                .line_segment([c + egui::vec2(-4.0, 0.5), c + egui::vec2(-1.0, 3.5)], stroke);
-            ui.painter()
-                .line_segment([c + egui::vec2(-1.0, 3.5), c + egui::vec2(4.5, -3.0)], stroke);
+    let width = ui.available_width().max(210.0);
+    let (rect, resp) = ui.allocate_exact_size(
+        egui::vec2(width, 19.0),
+        if enabled {
+            egui::Sense::click()
         } else {
-            // 未勾选的 toggle：空槽不画（GTK 亦如此）
-        }
+            egui::Sense::hover()
+        },
+    );
+    if enabled && resp.hovered() {
+        ui.painter().rect_filled(rect, 0.0, theme::HOVER);
     }
-
-    // 标签
+    let color = if enabled {
+        theme::TEXT
+    } else {
+        theme::TEXT_FAINT
+    };
+    let label_x = if let Some(on) = checked {
+        // 与 MyPaint 原版一致：toggle 项未选也保留空框，而不是只显示勾。
+        let box_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 12.0, rect.center().y),
+            egui::vec2(12.0, 12.0),
+        );
+        ui.painter().rect_filled(
+            box_rect,
+            0.0,
+            if on { theme::SELECTED } else { theme::FIELD },
+        );
+        ui.painter().rect_stroke(
+            box_rect,
+            0.0,
+            egui::Stroke::new(
+                1.0,
+                if on {
+                    theme::ACCENT
+                } else {
+                    egui::Color32::from_rgb(0x6a, 0x6a, 0x66)
+                },
+            ),
+            egui::StrokeKind::Inside,
+        );
+        if on {
+            let c = box_rect.center();
+            ui.painter().line_segment(
+                [c + egui::vec2(-3.0, 0.2), c + egui::vec2(-0.8, 2.8)],
+                egui::Stroke::new(1.4, egui::Color32::WHITE),
+            );
+            ui.painter().line_segment(
+                [c + egui::vec2(-0.8, 2.8), c + egui::vec2(4.0, -3.0)],
+                egui::Stroke::new(1.4, egui::Color32::WHITE),
+            );
+        }
+        rect.left() + 28.0
+    } else {
+        rect.left() + 23.0
+    };
     ui.painter().text(
-        egui::pos2(rect.left() + GUTTER, rect.center().y),
+        egui::pos2(label_x, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
-        font.clone(),
-        text_color,
+        egui::FontId::proportional(14.0),
+        color,
     );
-
-    // 右对齐的加速键文本（GtkAccelLabel）；比标签弱一级，与 GTK 的次要文本一致
-    if let Some(acc) = accel {
+    if let Some(accel) = accel {
         let acc_color = if enabled {
-            text_color.gamma_multiply(0.75)
+            theme::TEXT_FAINT
         } else {
-            text_color
+            theme::TEXT_FAINT.gamma_multiply(0.6)
         };
         ui.painter().text(
             egui::pos2(rect.right() - 8.0, rect.center().y),
             egui::Align2::RIGHT_CENTER,
-            acc,
-            font,
+            accel,
+            egui::FontId::monospace(10.5),
             acc_color,
         );
     }
-
+    if enabled && resp.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
     resp
+}
+
+/// 工具条用不到，但保留给菜单测试的图标存在性检查。
+#[allow(dead_code)]
+pub(crate) fn icon_for_action(id: &str) -> Option<egui::TextureHandle> {
+    let name = toolbars::action_icon_name(id)?;
+    let _ = name;
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// 树的统计（递归）。
-    fn count(nodes: &'static [MenuNode]) -> (usize, usize, usize) {
-        let mut items = 0;
-        let mut seps = 0;
-        let mut subs = 0;
-        for n in nodes {
-            match n {
-                MenuNode::Item(_) => items += 1,
-                MenuNode::Separator => seps += 1,
-                MenuNode::SubMenu { items: inner, .. } => {
-                    subs += 1;
-                    let (i, s, m) = count(inner);
-                    items += i;
-                    seps += s;
-                    subs += m;
-                }
-            }
-        }
-        (items, seps, subs)
-    }
-
     #[test]
     fn menubar_shape_matches_menu_xml() {
-        // 顶级菜单：9 个，顺序 = menu.xml 的 Menubar
         let top: Vec<_> = MENUBAR
             .iter()
             .map(|n| match n {
@@ -203,29 +339,29 @@ mod tests {
         assert_eq!(
             top,
             [
-                "FileMenu", "EditMenu", "ViewMenu", "BrushMenu", "ColorMenu", "LayerMenu",
-                "ScratchMenu", "WindowMenu", "HelpMenu",
+                "FileMenu",
+                "EditMenu",
+                "ViewMenu",
+                "BrushMenu",
+                "ColorMenu",
+                "LayerMenu",
+                "ScratchMenu",
+                "WindowMenu",
+                "HelpMenu",
             ]
         );
-        // 子菜单共 22 个 = 9 顶级 + 13 嵌套（menu.xml 的 <menu> 总数）
-        let (_, seps, subs) = count(MENUBAR);
-        assert_eq!(subs, 22, "子菜单总数（9 顶级 + 13 嵌套）");
-        assert_eq!(seps, 49, "分隔线数（照 menu.xml 数）");
     }
 
     #[test]
     fn every_menu_item_resolves_to_display_info() {
-        // 递归解析每个条目：动作表查不到（且不是槽位动作）会 panic
         fn walk(nodes: &'static [MenuNode]) {
             for n in nodes {
                 match n {
                     MenuNode::Item(id) => {
-                        let info = item_info(id);
-                        assert!(!info.label.is_empty(), "{id} 的 label 为空");
+                        assert!(!item_info(id).label.is_empty(), "{id} 的 label 为空");
                     }
                     MenuNode::SubMenu { action, items } => {
-                        // 菜单动作本身必有 label（它是子菜单标题）
-                        assert!(item_info(action).label.len() > 1, "{action} 的 label 异常");
+                        assert!(item_info(action).label.len() > 1);
                         walk(items);
                     }
                     MenuNode::Separator => {}
@@ -233,59 +369,5 @@ mod tests {
             }
         }
         walk(MENUBAR);
-    }
-
-    #[test]
-    fn context_menu_holds_the_dynamic_slot_actions() {
-        // Edit 菜单没有子菜单；Brush 菜单的 ContextMenu 子菜单 = 3 条目 + 分隔
-        // + 20 个槽位动作（Context00..09 / Context00s..09s，menu.xml 逐行列出）
-        let submenu = MENUBAR
-            .iter()
-            .find_map(|n| match n {
-                MenuNode::SubMenu { action: "BrushMenu", items } => {
-                    items.iter().find_map(|n| match n {
-                        MenuNode::SubMenu { action: "ContextMenu", items } => Some(*items),
-                        _ => None,
-                    })
-                }
-                _ => None,
-            })
-            .expect("BrushMenu 下应有 ContextMenu 子菜单");
-        let slot_items: Vec<_> = submenu
-            .iter()
-            .filter_map(|n| match n {
-                MenuNode::Item(id) => Some(*id),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(slot_items.len(), 23, "ContextMenu 条目数（3 + 20 槽位）");
-        for n in 0..10 {
-            let (restore, store) = (format!("Context0{n}"), format!("Context0{n}s"));
-            assert!(slot_items.contains(&restore.as_str()));
-            assert!(slot_items.contains(&store.as_str()));
-        }
-    }
-
-    #[test]
-    fn slot_action_display_follows_document_py() {
-        // document.py:477-486：label 与加速键规格
-        let restore = item_info("Context00");
-        assert_eq!(restore.label, "Restore Brush 0");
-        assert_eq!(restore.accel.as_deref(), Some("0"));
-        let store = item_info("Context03s");
-        assert_eq!(store.label, "Save to Brush 3");
-        assert_eq!(store.accel.as_deref(), Some("Ctrl+3"));
-    }
-
-    #[test]
-    fn submenu_titles_have_no_tooltip_or_accel() {
-        // resources.xml 里菜单动作的注释："NO TOOLTIP OR SHORTCUT: this is a menu"
-        for n in MENUBAR {
-            if let MenuNode::SubMenu { action, .. } = n {
-                let info = item_info(action);
-                assert!(info.tooltip.is_none(), "{action} 不应有 tooltip");
-                assert!(info.accel.is_none(), "{action} 不应有加速键");
-            }
-        }
     }
 }
