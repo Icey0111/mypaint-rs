@@ -4,11 +4,12 @@ description = "Infinite-canvas tile surface backend for pigment (implements hoku
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 
 [dependencies]
-# 钉死精确版本：上游发布节奏未知，升级须显式进行（P0 决策）
-hokusai = "=0.3.0"
+hokusai = { git = "https://github.com/Icey0111/hokusai.git", branch = "main" }
+# 大 dab 跨 tile 并行：低缩放刮刀的大笔尖一次覆盖多格，逐格光栅化互不重叠。
+rayon = "1"
 # PNG 编解码 —— 照搬 lib/surface.py:220 的 save_as_png（tile-blittable 层）
 image = { version = "0.25", default-features = false, features = ["png"] }
 # 直接控制 PNG 辅助块（sRGB/gAMA/cHRM），对齐 lib/surface.py:275 的
@@ -16,6 +17,9 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 png = "0.18"
 # strokemap 的 "v2" 格式用 zlib 压缩 tile 位图（lib/strokemap.py）
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# VectorLayer 的 SVG 栅格化（`lib/layer/data.py:1153-1239` 用 GdkPixbuf 的
+# SVG loader；Rust 侧用 resvg，与构建期图标栅格化同一套依赖）。
+resvg = "0.48.1"
 
 [dev-dependencies]
 # parity 测试需要参考后端 MemSurface 做逐像素对比（tile-mem 在默认 feature 里）

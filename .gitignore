@@ -2,3 +2,8 @@
 
 # 冒烟测试产物（可再生，不入库）
 /spectral_smoke_*.png
+
+# 本机诊断快照（含截图，可再生，不入库）
+/capstart/
+/recovered/
+/trace.txt

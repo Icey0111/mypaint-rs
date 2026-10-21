@@ -9,10 +9,12 @@ license = "GPL-3.0-or-later"
 [dependencies]
 pigment-engine = { path = "../pigment-engine" }
 pigment-surface = { path = "../pigment-surface" }
+# 画布/图层/笔刷渲染层：wgpu 管线与 egui 解耦（本 crate 只做 shell 适配）。
+pigment-render = { path = "../pigment-render" }
 # egui/wgpu 迭代快，按 P0 校对结论锁版本、里程碑间统一升级
 eframe = { version = "0.37", features = ["wgpu"] }
 # 诊断导出（F2）与后续 OpenRaster 导出复用
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 # 压力曲线等需要把嵌套数组写回偏好（与引擎同一份 serde_json）
 serde_json = "1"
 # Plan A 外壳：直接用 egui-wgpu / wgpu / winit 0.31（不经 eframe）
@@ -23,7 +25,7 @@ winit = "=0.31.0-beta.3"
 pollster = "1"
 arboard = "3"
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Foundation", "Win32_Globalization", "Win32_UI_Controls_Dialogs", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 resvg = "0.48.1"

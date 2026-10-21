@@ -4,11 +4,13 @@ description = "Brush engine / spectral mixing / tile surface layer (built on hok
 edition.workspace = true
 rust-version.workspace = true
 version.workspace = true
-license = "MIT OR Apache-2.0"
+license = "GPL-3.0-or-later"
 
 [dependencies]
-# 钉死精确版本：上游发布节奏未知，升级须显式进行（P0 决策）
-hokusai = "=0.3.0"
+# Engine fork carrying the libmypaint parity fixes; see NOTICE.md and
+# https://github.com/Icey0111/hokusai. To hack on both trees at once, add a
+# [patch] block pointing hokusai at a local path (see README "Development").
+hokusai = { git = "https://github.com/Icey0111/hokusai.git", branch = "main" }
 pigment-surface = { path = "../pigment-surface" }
 # 仅用于扫描用户笔刷目录时读 description/notes（已在依赖图内，无新增下载）
 serde_json = "1"
