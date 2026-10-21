@@ -131,6 +131,21 @@ cargo run -p pigment-app            # starts with the bundled brush pack
 cargo test --workspace              # 933 tests
 ```
 
+The test suites are not fully hermetic yet, and this bites hardest on a fresh
+checkout or a CI box:
+
+- many tests write scratch documents into `std::env::temp_dir()`;
+- `pigment-engine`'s `autosave::tests::doc_cache_dir_names_use_the_source_prefix`
+  calls the production `create_doc_cache_dir()`, which creates a real `doc.*`
+  directory under the user's app-cache root and leaves it behind.
+
+Under a restricted or unusual environment those show up as
+`PermissionDenied (os error 5)` failures — roughly 19 in `pigment-app` when
+`TEMP` points somewhere a native binary cannot write (an MSYS/Git-Bash `/tmp`
+resolves against the current drive root), plus the one autosave test. All 933
+pass on the development machine with a normal `TEMP`. Giving that autosave test
+its own cache-root override instead of the real one is a good first commit.
+
 Asset XML (menus, toolbars, actions) is parsed at build time from
 `crates/pigment-app/assets/gui/`, so the app's action table is generated from
 MyPaint's own definitions.
