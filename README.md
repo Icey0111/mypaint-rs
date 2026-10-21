@@ -12,6 +12,10 @@ The crate names inside are still `pigment-*` (the port's working title).
 **It exists because the port works, and it is posted because one person cannot
 maintain a painting program.** See [Looking for maintainers](#looking-for-maintainers).
 
+A Windows x64 build of the tagged source (`v0.1.0`) is attached to the
+[releases page](https://github.com/Icey0111/mypaint-rs/releases) if you would
+rather try it than build it.
+
 ## The two repositories
 
 | Repository | Contents | Licence |
